@@ -82,7 +82,7 @@ func testTrieTracer(t *testing.T, vals []struct{ k, v string }) {
 	}
 
 	// Determine all deletions are tracked
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	for _, val := range vals {
 		trie.MustDelete([]byte(val.k))
 	}
@@ -139,14 +139,14 @@ func testAccessList(t *testing.T, vals []struct{ k, v string }) {
 	root, nodes, _ := trie.Commit(false)
 	db.Update(root, types.EmptyRootHash, 0, trienode.NewWithNodeSet(nodes), nil)
 
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	if err := verifyAccessList(orig, trie, nodes); err != nil {
 		t.Fatalf("Invalid accessList %v", err)
 	}
 
 	// Update trie
 	parent := root
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	orig = trie.Copy()
 	for _, val := range vals {
 		trie.MustUpdate([]byte(val.k), randBytes(32))
@@ -154,14 +154,14 @@ func testAccessList(t *testing.T, vals []struct{ k, v string }) {
 	root, nodes, _ = trie.Commit(false)
 	db.Update(root, parent, 0, trienode.NewWithNodeSet(nodes), nil)
 
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	if err := verifyAccessList(orig, trie, nodes); err != nil {
 		t.Fatalf("Invalid accessList %v", err)
 	}
 
 	// Add more new nodes
 	parent = root
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	orig = trie.Copy()
 	var keys []string
 	for i := 0; i < 30; i++ {
@@ -172,14 +172,14 @@ func testAccessList(t *testing.T, vals []struct{ k, v string }) {
 	root, nodes, _ = trie.Commit(false)
 	db.Update(root, parent, 0, trienode.NewWithNodeSet(nodes), nil)
 
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	if err := verifyAccessList(orig, trie, nodes); err != nil {
 		t.Fatalf("Invalid accessList %v", err)
 	}
 
 	// Partial deletions
 	parent = root
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	orig = trie.Copy()
 	for _, key := range keys {
 		trie.MustUpdate([]byte(key), nil)
@@ -187,14 +187,14 @@ func testAccessList(t *testing.T, vals []struct{ k, v string }) {
 	root, nodes, _ = trie.Commit(false)
 	db.Update(root, parent, 0, trienode.NewWithNodeSet(nodes), nil)
 
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	if err := verifyAccessList(orig, trie, nodes); err != nil {
 		t.Fatalf("Invalid accessList %v", err)
 	}
 
 	// Delete all
 	parent = root
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	orig = trie.Copy()
 	for _, val := range vals {
 		trie.MustUpdate([]byte(val.k), nil)
@@ -202,7 +202,7 @@ func testAccessList(t *testing.T, vals []struct{ k, v string }) {
 	root, nodes, _ = trie.Commit(false)
 	db.Update(root, parent, 0, trienode.NewWithNodeSet(nodes), nil)
 
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	if err := verifyAccessList(orig, trie, nodes); err != nil {
 		t.Fatalf("Invalid accessList %v", err)
 	}
@@ -247,7 +247,7 @@ func TestAccessListLeak(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		trie, _ = New(TrieID(root), db)
+		trie, _ = New(TrieID(root), db, 0)
 		n1 := len(trie.tracer.accessList)
 		c.op(trie)
 		n2 := len(trie.tracer.accessList)
@@ -272,7 +272,7 @@ func TestTinyTree(t *testing.T) {
 	db.Update(root, types.EmptyRootHash, 0, trienode.NewWithNodeSet(set), nil)
 
 	parent := root
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	orig := trie.Copy()
 	for _, val := range tiny {
 		trie.MustUpdate([]byte(val.k), []byte(val.v))
@@ -280,7 +280,7 @@ func TestTinyTree(t *testing.T) {
 	root, set, _ = trie.Commit(false)
 	db.Update(root, parent, 0, trienode.NewWithNodeSet(set), nil)
 
-	trie, _ = New(TrieID(root), db)
+	trie, _ = New(TrieID(root), db, 0)
 	if err := verifyAccessList(orig, trie, set); err != nil {
 		t.Fatalf("Invalid accessList %v", err)
 	}
@@ -313,7 +313,7 @@ func forNodes(tr *Trie) map[string][]byte {
 }
 
 func iterNodes(db *Database, root common.Hash) map[string][]byte {
-	tr, _ := New(TrieID(root), db)
+	tr, _ := New(TrieID(root), db, 0)
 	return forNodes(tr)
 }
 

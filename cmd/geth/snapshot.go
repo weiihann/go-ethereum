@@ -278,7 +278,7 @@ func traverseState(ctx *cli.Context) error {
 		log.Info("Start traversing the state", "root", root, "number", headBlock.NumberU64())
 	}
 	triedb := trie.NewDatabase(chaindb)
-	t, err := trie.NewStateTrie(trie.StateTrieID(root), triedb)
+	t, err := trie.NewStateTrie(trie.StateTrieID(root), triedb, 0)
 	if err != nil {
 		log.Error("Failed to open trie", "root", root, "err", err)
 		return err
@@ -305,7 +305,7 @@ func traverseState(ctx *cli.Context) error {
 		}
 		if acc.Root != types.EmptyRootHash {
 			id := trie.StorageTrieID(root, common.BytesToHash(accIter.Key), acc.Root)
-			storageTrie, err := trie.NewStateTrie(id, triedb)
+			storageTrie, err := trie.NewStateTrie(id, triedb, headBlock.NumberU64())
 			if err != nil {
 				log.Error("Failed to open storage trie", "root", acc.Root, "err", err)
 				return err
@@ -378,7 +378,7 @@ func traverseRawState(ctx *cli.Context) error {
 		log.Info("Start traversing the state", "root", root, "number", headBlock.NumberU64())
 	}
 	triedb := trie.NewDatabase(chaindb)
-	t, err := trie.NewStateTrie(trie.StateTrieID(root), triedb)
+	t, err := trie.NewStateTrie(trie.StateTrieID(root), triedb, headBlock.NumberU64())
 	if err != nil {
 		log.Error("Failed to open trie", "root", root, "err", err)
 		return err
@@ -429,7 +429,7 @@ func traverseRawState(ctx *cli.Context) error {
 			}
 			if acc.Root != types.EmptyRootHash {
 				id := trie.StorageTrieID(root, common.BytesToHash(accIter.LeafKey()), acc.Root)
-				storageTrie, err := trie.NewStateTrie(id, triedb)
+				storageTrie, err := trie.NewStateTrie(id, triedb, headBlock.NumberU64())
 				if err != nil {
 					log.Error("Failed to open storage trie", "root", acc.Root, "err", err)
 					return errors.New("missing storage trie")

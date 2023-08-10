@@ -57,5 +57,5 @@ func RandomAddress() common.Address {
 // RandomNode generates a random node.
 func RandomNode() *trienode.Node {
 	val := RandBytes(100)
-	return trienode.New(crypto.Keccak256Hash(val), val)
+	return trienode.New(crypto.Keccak256Hash(val), val, 0)
 }

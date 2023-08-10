@@ -142,11 +142,14 @@ type StateDB struct {
 	StorageUpdated int
 	AccountDeleted int
 	StorageDeleted int
+
+	blockNum uint64
 }
 
 // New creates a new state from a given trie.
-func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
+func New(root common.Hash, db Database, snaps *snapshot.Tree, blockNum uint64) (*StateDB, error) {
 	tr, err := db.OpenTrie(root)
+	tr.SetBlockNum(blockNum)
 	if err != nil {
 		return nil, err
 	}
@@ -169,11 +172,19 @@ func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) 
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
 		hasher:               crypto.NewKeccakState(),
+		blockNum:             blockNum,
 	}
 	if sdb.snaps != nil {
 		sdb.snap = sdb.snaps.Snapshot(root)
 	}
 	return sdb, nil
+}
+
+func (s *StateDB) SetBlockNum(blockNum uint64) {
+	if s.blockNum > blockNum {
+		return
+	}
+	s.blockNum = blockNum
 }
 
 // StartPrefetcher initializes a new trie prefetcher to pull in nodes from the
@@ -594,6 +605,9 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	// Prefer live objects if any is available
 	if obj := s.stateObjects[addr]; obj != nil {
+		if obj.trie != nil {
+			obj.trie.SetBlockNum(s.blockNum)
+		}
 		return obj
 	}
 	// If no live objects are available, attempt to use snapshots
@@ -626,6 +640,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	if data == nil {
 		start := time.Now()
 		var err error
+		s.trie.SetBlockNum(s.blockNum)
 		data, err = s.trie.GetAccount(addr)
 		if metrics.EnabledExpensive {
 			s.AccountReads += time.Since(start)

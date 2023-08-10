@@ -174,7 +174,7 @@ func runRandTest(rt randTest) error {
 					return err
 				}
 			}
-			newtr, err := trie.New(trie.TrieID(hash), triedb)
+			newtr, err := trie.New(trie.TrieID(hash), triedb, 0)
 			if err != nil {
 				return err
 			}

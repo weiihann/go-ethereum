@@ -96,14 +96,14 @@ func (h *testHasher) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 		if len(val) == 0 {
 			set.AddNode(hash.Bytes(), trienode.NewDeleted())
 		} else {
-			set.AddNode(hash.Bytes(), trienode.New(crypto.Keccak256Hash(val), val))
+			set.AddNode(hash.Bytes(), trienode.New(crypto.Keccak256Hash(val), val, 0))
 		}
 	}
 	root, blob := hash(nodes)
 
 	// Include the dirty root node as well.
 	if root != types.EmptyRootHash && root != h.root {
-		set.AddNode(nil, trienode.New(root, blob))
+		set.AddNode(nil, trienode.New(root, blob, 0))
 	}
 	if root == types.EmptyRootHash && h.root != types.EmptyRootHash {
 		set.AddNode(nil, trienode.NewDeleted())

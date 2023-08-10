@@ -739,7 +739,7 @@ func (s *Syncer) loadSyncStatus() {
 					},
 				}
 				task.genTrie = trie.NewStackTrie(func(owner common.Hash, path []byte, hash common.Hash, val []byte) {
-					rawdb.WriteTrieNode(task.genBatch, owner, path, hash, val, s.scheme)
+					rawdb.WriteTrieNode(task.genBatch, owner, path, hash, val, s.scheme, 0)
 				})
 				for accountHash, subtasks := range task.SubTasks {
 					for _, subtask := range subtasks {
@@ -752,7 +752,7 @@ func (s *Syncer) loadSyncStatus() {
 							},
 						}
 						subtask.genTrie = trie.NewStackTrieWithOwner(func(owner common.Hash, path []byte, hash common.Hash, val []byte) {
-							rawdb.WriteTrieNode(subtask.genBatch, owner, path, hash, val, s.scheme)
+							rawdb.WriteTrieNode(subtask.genBatch, owner, path, hash, val, s.scheme, 0)
 						}, accountHash)
 					}
 				}
@@ -811,7 +811,7 @@ func (s *Syncer) loadSyncStatus() {
 			SubTasks: make(map[common.Hash][]*storageTask),
 			genBatch: batch,
 			genTrie: trie.NewStackTrie(func(owner common.Hash, path []byte, hash common.Hash, val []byte) {
-				rawdb.WriteTrieNode(batch, owner, path, hash, val, s.scheme)
+				rawdb.WriteTrieNode(batch, owner, path, hash, val, s.scheme, 0)
 			}),
 		})
 		log.Debug("Created account sync task", "from", next, "last", last)
@@ -2010,7 +2010,7 @@ func (s *Syncer) processStorageResponse(res *storageResponse) {
 						root:     acc.Root,
 						genBatch: batch,
 						genTrie: trie.NewStackTrieWithOwner(func(owner common.Hash, path []byte, hash common.Hash, val []byte) {
-							rawdb.WriteTrieNode(batch, owner, path, hash, val, s.scheme)
+							rawdb.WriteTrieNode(batch, owner, path, hash, val, s.scheme, 0)
 						}, account),
 					})
 					for r.Next() {
@@ -2026,7 +2026,7 @@ func (s *Syncer) processStorageResponse(res *storageResponse) {
 							root:     acc.Root,
 							genBatch: batch,
 							genTrie: trie.NewStackTrieWithOwner(func(owner common.Hash, path []byte, hash common.Hash, val []byte) {
-								rawdb.WriteTrieNode(batch, owner, path, hash, val, s.scheme)
+								rawdb.WriteTrieNode(batch, owner, path, hash, val, s.scheme, 0)
 							}, account),
 						})
 					}
@@ -2073,7 +2073,7 @@ func (s *Syncer) processStorageResponse(res *storageResponse) {
 
 		if i < len(res.hashes)-1 || res.subTask == nil {
 			tr := trie.NewStackTrieWithOwner(func(owner common.Hash, path []byte, hash common.Hash, val []byte) {
-				rawdb.WriteTrieNode(batch, owner, path, hash, val, s.scheme)
+				rawdb.WriteTrieNode(batch, owner, path, hash, val, s.scheme, 0)
 			}, account)
 			for j := 0; j < len(res.hashes[i]); j++ {
 				tr.Update(res.hashes[i][j][:], res.slots[i][j])
