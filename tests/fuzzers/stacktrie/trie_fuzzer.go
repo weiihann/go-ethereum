@@ -141,7 +141,7 @@ func (f *fuzzer) fuzz() int {
 		spongeB = &spongeDb{sponge: sha3.NewLegacyKeccak256()}
 		dbB     = trie.NewDatabase(rawdb.NewDatabase(spongeB))
 		trieB   = trie.NewStackTrie(func(owner common.Hash, path []byte, hash common.Hash, blob []byte) {
-			rawdb.WriteTrieNode(spongeB, owner, path, hash, blob, dbB.Scheme())
+			rawdb.WriteTrieNode(spongeB, owner, path, hash, blob, dbB.Scheme(), 0)
 		})
 		vals        []kv
 		useful      bool
@@ -223,7 +223,7 @@ func (f *fuzzer) fuzz() int {
 	if rootA != rootC {
 		panic(fmt.Sprintf("roots differ: (trie) %x != %x (stacktrie)", rootA, rootC))
 	}
-	trieA, _ = trie.New(trie.TrieID(rootA), dbA)
+	trieA, _ = trie.New(trie.TrieID(rootA), dbA, 0)
 	iterA := trieA.MustNodeIterator(nil)
 	for iterA.Next(true) {
 		if iterA.Hash() == (common.Hash{}) {

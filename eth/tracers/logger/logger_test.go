@@ -48,6 +48,8 @@ type dummyStatedb struct {
 	state.StateDB
 }
 
+func (*dummyStatedb) SetBlockNum(_ uint64) {}
+
 func (*dummyStatedb) GetRefund() uint64                                       { return 1337 }
 func (*dummyStatedb) GetState(_ common.Address, _ common.Hash) common.Hash    { return common.Hash{} }
 func (*dummyStatedb) SetState(_ common.Address, _ common.Hash, _ common.Hash) {}

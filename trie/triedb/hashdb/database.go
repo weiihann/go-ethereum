@@ -104,12 +104,20 @@ type cachedNode struct {
 	external  map[common.Hash]struct{} // The set of external children
 	flushPrev common.Hash              // Previous node in the flush-list
 	flushNext common.Hash              // Next node in the flush-list
+	blockNum  uint64                   // Block number of the node
 }
 
 // cachedNodeSize is the raw size of a cachedNode data structure without any
 // node data included. It's an approximate size, but should be a lot better
 // than not counting them.
 var cachedNodeSize = int(reflect.TypeOf(cachedNode{}).Size())
+
+func (n *cachedNode) SetBlockNum(blockNum uint64) {
+	if n.blockNum > blockNum {
+		return
+	}
+	n.blockNum = blockNum
+}
 
 // forChildren invokes the callback for all the tracked children of this node,
 // both the implicit ones from inside the node as well as the explicit ones
@@ -140,9 +148,10 @@ func New(diskdb ethdb.Database, size int, resolver ChildResolver) *Database {
 // insert inserts a simplified trie node into the memory database.
 // All nodes inserted by this function will be reference tracked
 // and in theory should only used for **trie nodes** insertion.
-func (db *Database) insert(hash common.Hash, node []byte) {
+func (db *Database) insert(hash common.Hash, node []byte, blockNum uint64) {
 	// If the node's already cached, skip
-	if _, ok := db.dirties[hash]; ok {
+	if existingNode, ok := db.dirties[hash]; ok {
+		existingNode.SetBlockNum(blockNum)
 		return
 	}
 	memcacheDirtyWriteMeter.Mark(int64(len(node)))
@@ -151,7 +160,9 @@ func (db *Database) insert(hash common.Hash, node []byte) {
 	entry := &cachedNode{
 		node:      node,
 		flushPrev: db.newest,
+		blockNum:  blockNum,
 	}
+
 	entry.forChildren(db.resolver, func(child common.Hash) {
 		if c := db.dirties[child]; c != nil {
 			c.parents++
@@ -351,7 +362,7 @@ func (db *Database) Cap(limit common.StorageSize) error {
 	for size > limit && oldest != (common.Hash{}) {
 		// Fetch the oldest referenced node and push into the batch
 		node := db.dirties[oldest]
-		rawdb.WriteLegacyTrieNode(batch, oldest, node.node)
+		rawdb.WriteLegacyTrieNode(batch, oldest, node.node, node.blockNum)
 
 		// If we exceeded the ideal batch size, commit and reset
 		if batch.ValueSize() >= ethdb.IdealBatchSize {
@@ -479,7 +490,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleane
 		return err
 	}
 	// If we've reached an optimal batch size, commit and start over
-	rawdb.WriteLegacyTrieNode(batch, hash, node.node)
+	rawdb.WriteLegacyTrieNode(batch, hash, node.node, node.blockNum)
 	if batch.ValueSize() >= ethdb.IdealBatchSize {
 		if err := batch.Write(); err != nil {
 			return err
@@ -588,7 +599,7 @@ func (db *Database) Update(root common.Hash, parent common.Hash, block uint64, n
 			if n.IsDeleted() {
 				return // ignore deletion
 			}
-			db.insert(n.Hash, n.Blob)
+			db.insert(n.Hash, n.Blob, n.BlockNum)
 		})
 	}
 	// Link up the account trie and storage trie if the node points

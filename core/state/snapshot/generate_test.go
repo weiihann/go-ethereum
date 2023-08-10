@@ -151,7 +151,7 @@ type testHelper struct {
 func newHelper() *testHelper {
 	diskdb := rawdb.NewMemoryDatabase()
 	triedb := trie.NewDatabase(diskdb)
-	accTrie, _ := trie.NewStateTrie(trie.StateTrieID(types.EmptyRootHash), triedb)
+	accTrie, _ := trie.NewStateTrie(trie.StateTrieID(types.EmptyRootHash), triedb, 0)
 	return &testHelper{
 		diskdb:  diskdb,
 		triedb:  triedb,
@@ -184,7 +184,7 @@ func (t *testHelper) addSnapStorage(accKey string, keys []string, vals []string)
 
 func (t *testHelper) makeStorageTrie(owner common.Hash, keys []string, vals []string, commit bool) common.Hash {
 	id := trie.StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash)
-	stTrie, _ := trie.NewStateTrie(id, t.triedb)
+	stTrie, _ := trie.NewStateTrie(id, t.triedb, 0)
 	for i, k := range keys {
 		stTrie.MustUpdate([]byte(k), []byte(vals[i]))
 	}

@@ -54,6 +54,15 @@ type Trie struct {
 	// tracer is the tool to track the trie changes.
 	// It will be reset after each commit operation.
 	tracer *tracer
+
+	blockNum uint64 // block number of the trie root
+}
+
+func (t *Trie) SetBlockNum(blockNum uint64) {
+	if t.blockNum > blockNum {
+		return
+	}
+	t.blockNum = blockNum
 }
 
 // newFlag returns the cache flag value for a newly created node.
@@ -79,15 +88,16 @@ func (t *Trie) Copy() *Trie {
 // zero hash or the sha3 hash of an empty string, then trie is initially
 // empty, otherwise, the root node must be present in database or returns
 // a MissingNodeError if not.
-func New(id *ID, db *Database) (*Trie, error) {
+func New(id *ID, db *Database, blockNum uint64) (*Trie, error) {
 	reader, err := newTrieReader(id.StateRoot, id.Owner, db)
 	if err != nil {
 		return nil, err
 	}
 	trie := &Trie{
-		owner:  id.Owner,
-		reader: reader,
-		tracer: newTracer(),
+		owner:    id.Owner,
+		reader:   reader,
+		tracer:   newTracer(),
+		blockNum: blockNum,
 	}
 	if id.Root != (common.Hash{}) && id.Root != types.EmptyRootHash {
 		rootnode, err := trie.resolveAndTrack(id.Root[:], nil)
@@ -101,7 +111,7 @@ func New(id *ID, db *Database) (*Trie, error) {
 
 // NewEmpty is a shortcut to create empty tree. It's mostly used in tests.
 func NewEmpty(db *Database) *Trie {
-	tr, _ := New(TrieID(types.EmptyRootHash), db)
+	tr, _ := New(TrieID(types.EmptyRootHash), db, 0)
 	return tr
 }
 
@@ -163,6 +173,7 @@ func (t *Trie) get(origNode node, key []byte, pos int) (value []byte, newnode no
 			// key not found in trie
 			return nil, n, false, nil
 		}
+		n.updateBlockNum(t.blockNum)
 		value, newnode, didResolve, err = t.get(n.Val, key, pos+len(n.Key))
 		if err == nil && didResolve {
 			n = n.copy()
@@ -170,6 +181,7 @@ func (t *Trie) get(origNode node, key []byte, pos int) (value []byte, newnode no
 		}
 		return value, n, didResolve, err
 	case *fullNode:
+		n.updateBlockNum(t.blockNum)
 		value, newnode, didResolve, err = t.get(n.Children[key[pos]], key, pos+1)
 		if err == nil && didResolve {
 			n = n.copy()
@@ -254,6 +266,7 @@ func (t *Trie) getNode(origNode node, path []byte, pos int) (item []byte, newnod
 			// Path branches off from short node
 			return nil, n, 0, nil
 		}
+		n.updateBlockNum(t.blockNum)
 		item, newnode, resolved, err = t.getNode(n.Val, path, pos+len(n.Key))
 		if err == nil && resolved > 0 {
 			n = n.copy()
@@ -262,6 +275,7 @@ func (t *Trie) getNode(origNode node, path []byte, pos int) (item []byte, newnod
 		return item, n, resolved, err
 
 	case *fullNode:
+		n.updateBlockNum(t.blockNum)
 		item, newnode, resolved, err = t.getNode(n.Children[path[pos]], path, pos+1)
 		if err == nil && resolved > 0 {
 			n = n.copy()
@@ -335,6 +349,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 	}
 	switch n := n.(type) {
 	case *shortNode:
+		n.updateBlockNum(t.blockNum)
 		matchlen := prefixLen(key, n.Key)
 		// If the whole key matches, keep this short node as is
 		// and only update the value.
@@ -343,10 +358,10 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 			if !dirty || err != nil {
 				return false, n, err
 			}
-			return true, &shortNode{n.Key, nn, t.newFlag()}, nil
+			return true, &shortNode{n.Key, nn, t.newFlag(), t.blockNum}, nil
 		}
 		// Otherwise branch out at the index where they differ.
-		branch := &fullNode{flags: t.newFlag()}
+		branch := &fullNode{flags: t.newFlag(), blockNum: t.blockNum}
 		var err error
 		_, branch.Children[n.Key[matchlen]], err = t.insert(nil, append(prefix, n.Key[:matchlen+1]...), n.Key[matchlen+1:], n.Val)
 		if err != nil {
@@ -366,9 +381,10 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		t.tracer.onInsert(append(prefix, key[:matchlen]...))
 
 		// Replace it with a short node leading up to the branch.
-		return true, &shortNode{key[:matchlen], branch, t.newFlag()}, nil
+		return true, &shortNode{key[:matchlen], branch, t.newFlag(), t.blockNum}, nil
 
 	case *fullNode:
+		n.updateBlockNum(t.blockNum)
 		dirty, nn, err := t.insert(n.Children[key[0]], append(prefix, key[0]), key[1:], value)
 		if !dirty || err != nil {
 			return false, n, err
@@ -384,7 +400,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		// since it's always embedded in its parent.
 		t.tracer.onInsert(prefix)
 
-		return true, &shortNode{key, value, t.newFlag()}, nil
+		return true, &shortNode{key, value, t.newFlag(), t.blockNum}, nil
 
 	case hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
@@ -438,6 +454,7 @@ func (t *Trie) Delete(key []byte) error {
 func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 	switch n := n.(type) {
 	case *shortNode:
+		n.updateBlockNum(t.blockNum)
 		matchlen := prefixLen(key, n.Key)
 		if matchlen < len(n.Key) {
 			return false, n, nil // don't replace n on mismatch
@@ -470,12 +487,13 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 			// always creates a new slice) instead of append to
 			// avoid modifying n.Key since it might be shared with
 			// other nodes.
-			return true, &shortNode{concat(n.Key, child.Key...), child.Val, t.newFlag()}, nil
+			return true, &shortNode{concat(n.Key, child.Key...), child.Val, t.newFlag(), t.blockNum}, nil
 		default:
-			return true, &shortNode{n.Key, child, t.newFlag()}, nil
+			return true, &shortNode{n.Key, child, t.newFlag(), t.blockNum}, nil
 		}
 
 	case *fullNode:
+		n.updateBlockNum(t.blockNum)
 		dirty, nn, err := t.delete(n.Children[key[0]], append(prefix, key[0]), key[1:])
 		if !dirty || err != nil {
 			return false, n, err
@@ -531,12 +549,12 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 					t.tracer.onDelete(append(prefix, byte(pos)))
 
 					k := append([]byte{byte(pos)}, cnode.Key...)
-					return true, &shortNode{k, cnode.Val, t.newFlag()}, nil
+					return true, &shortNode{k, cnode.Val, t.newFlag(), t.blockNum}, nil
 				}
 			}
 			// Otherwise, n is replaced by a one-nibble short node
 			// containing the child.
-			return true, &shortNode{[]byte{byte(pos)}, n.Children[pos], t.newFlag()}, nil
+			return true, &shortNode{[]byte{byte(pos)}, n.Children[pos], t.newFlag(), t.blockNum}, nil
 		}
 		// n still contains at least two values and cannot be reduced.
 		return true, n, nil

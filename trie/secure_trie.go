@@ -35,7 +35,7 @@ func NewSecure(stateRoot common.Hash, owner common.Hash, root common.Hash, db *D
 		Owner:     owner,
 		Root:      root,
 	}
-	return NewStateTrie(id, db)
+	return NewStateTrie(id, db, 0)
 }
 
 // StateTrie wraps a trie with key hashing. In a stateTrie trie, all
@@ -54,6 +54,15 @@ type StateTrie struct {
 	hashKeyBuf       [common.HashLength]byte
 	secKeyCache      map[string][]byte
 	secKeyCacheOwner *StateTrie // Pointer to self, replace the key cache on mismatch
+	blockNum         uint64
+}
+
+func (t *StateTrie) SetBlockNum(blockNum uint64) {
+	if t.blockNum > blockNum {
+		return
+	}
+	t.trie.SetBlockNum(blockNum)
+	t.blockNum = blockNum
 }
 
 // NewStateTrie creates a trie with an existing root node from a backing database.
@@ -61,15 +70,15 @@ type StateTrie struct {
 // If root is the zero hash or the sha3 hash of an empty string, the
 // trie is initially empty. Otherwise, New will panic if db is nil
 // and returns MissingNodeError if the root node cannot be found.
-func NewStateTrie(id *ID, db *Database) (*StateTrie, error) {
+func NewStateTrie(id *ID, db *Database, blockNum uint64) (*StateTrie, error) {
 	if db == nil {
 		panic("trie.NewStateTrie called without a database")
 	}
-	trie, err := New(id, db)
+	trie, err := New(id, db, blockNum)
 	if err != nil {
 		return nil, err
 	}
-	return &StateTrie{trie: *trie, preimages: db.preimages}, nil
+	return &StateTrie{trie: *trie, preimages: db.preimages, blockNum: blockNum}, nil
 }
 
 // MustGet returns the value for key stored in the trie.

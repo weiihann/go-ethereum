@@ -350,7 +350,7 @@ func (s *Sync) Commit(dbw ethdb.Batch) error {
 	// Dump the membatch into a database dbw
 	for path, value := range s.membatch.nodes {
 		owner, inner := ResolvePath([]byte(path))
-		rawdb.WriteTrieNode(dbw, owner, inner, s.membatch.hashes[path], value, s.scheme)
+		rawdb.WriteTrieNode(dbw, owner, inner, s.membatch.hashes[path], value, s.scheme, 0)
 	}
 	for hash, value := range s.membatch.codes {
 		rawdb.WriteCode(dbw, hash, value)

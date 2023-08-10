@@ -403,7 +403,7 @@ func extractGenesis(db ethdb.Database, stateBloom *stateBloom) error {
 	if genesis == nil {
 		return errors.New("missing genesis block")
 	}
-	t, err := trie.NewStateTrie(trie.StateTrieID(genesis.Root()), trie.NewDatabase(db))
+	t, err := trie.NewStateTrie(trie.StateTrieID(genesis.Root()), trie.NewDatabase(db), 0)
 	if err != nil {
 		return err
 	}
@@ -427,7 +427,7 @@ func extractGenesis(db ethdb.Database, stateBloom *stateBloom) error {
 			}
 			if acc.Root != types.EmptyRootHash {
 				id := trie.StorageTrieID(genesis.Root(), common.BytesToHash(accIter.LeafKey()), acc.Root)
-				storageTrie, err := trie.NewStateTrie(id, trie.NewDatabase(db))
+				storageTrie, err := trie.NewStateTrie(id, trie.NewDatabase(db), 0)
 				if err != nil {
 					return err
 				}

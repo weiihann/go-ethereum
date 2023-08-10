@@ -528,16 +528,16 @@ func testGetNodeData(t *testing.T, protocol uint, drop bool) {
 	// Reconstruct state tree from the received data.
 	reconstructDB := rawdb.NewMemoryDatabase()
 	for i := 0; i < len(data); i++ {
-		rawdb.WriteLegacyTrieNode(reconstructDB, hashes[i], data[i])
+		rawdb.WriteLegacyTrieNode(reconstructDB, hashes[i], data[i], 0)
 	}
 
 	// Sanity check whether all state matches.
 	accounts := []common.Address{testAddr, acc1Addr, acc2Addr}
 	for i := uint64(0); i <= backend.chain.CurrentBlock().Number.Uint64(); i++ {
 		root := backend.chain.GetBlockByNumber(i).Root()
-		reconstructed, _ := state.New(root, state.NewDatabase(reconstructDB), nil)
+		reconstructed, _ := state.New(root, state.NewDatabase(reconstructDB), nil, 0)
 		for j, acc := range accounts {
-			state, _ := backend.chain.StateAt(root)
+			state, _ := backend.chain.StateAt(root, i)
 			bw := state.GetBalance(acc)
 			bh := reconstructed.GetBalance(acc)
 

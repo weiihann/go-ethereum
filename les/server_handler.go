@@ -359,7 +359,7 @@ func (h *serverHandler) AddTxsSync() bool {
 
 // getAccount retrieves an account from the state based on root.
 func getAccount(triedb *trie.Database, root common.Hash, addr common.Address) (types.StateAccount, error) {
-	trie, err := trie.NewStateTrie(trie.StateTrieID(root), triedb)
+	trie, err := trie.NewStateTrie(trie.StateTrieID(root), triedb, 0)
 	if err != nil {
 		return types.StateAccount{}, err
 	}
@@ -390,7 +390,7 @@ func (h *serverHandler) GetHelperTrie(typ uint, index uint64) *trie.Trie {
 	if root == (common.Hash{}) {
 		return nil
 	}
-	trie, _ := trie.New(trie.TrieID(root), trie.NewDatabase(rawdb.NewTable(h.chainDb, prefix)))
+	trie, _ := trie.New(trie.TrieID(root), trie.NewDatabase(rawdb.NewTable(h.chainDb, prefix)), 0)
 	return trie
 }
 

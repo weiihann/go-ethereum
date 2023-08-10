@@ -17,6 +17,7 @@
 package rawdb
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 
@@ -158,9 +159,25 @@ func HasLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) bool {
 }
 
 // WriteLegacyTrieNode writes the provided legacy trie node to database.
-func WriteLegacyTrieNode(db ethdb.KeyValueWriter, hash common.Hash, node []byte) {
+func WriteLegacyTrieNode(db ethdb.KeyValueWriter, hash common.Hash, node []byte, blockNum uint64) {
 	if err := db.Put(hash.Bytes(), node); err != nil {
 		log.Crit("Failed to store legacy trie node", "err", err)
+	}
+
+	if blockNum != 0 {
+		WriteTrieNodeMeta(db, hash, blockNum)
+	}
+}
+
+func uint64ToBytes(value uint64) []byte {
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, value)
+	return bytes
+}
+
+func WriteTrieNodeMeta(db ethdb.KeyValueWriter, hash common.Hash, blockNum uint64) {
+	if err := db.Put(MetaKey(hash), uint64ToBytes(blockNum)); err != nil {
+		log.Crit("Failed to store trie node block number", "err", err)
 	}
 }
 
@@ -226,10 +243,10 @@ func ReadTrieNode(db ethdb.KeyValueReader, owner common.Hash, path []byte, hash 
 // pathScheme-based lookup requires the following:
 //   - owner
 //   - path
-func WriteTrieNode(db ethdb.KeyValueWriter, owner common.Hash, path []byte, hash common.Hash, node []byte, scheme string) {
+func WriteTrieNode(db ethdb.KeyValueWriter, owner common.Hash, path []byte, hash common.Hash, node []byte, scheme string, blockNum uint64) {
 	switch scheme {
 	case HashScheme:
-		WriteLegacyTrieNode(db, hash, node)
+		WriteLegacyTrieNode(db, hash, node, blockNum)
 	case PathScheme:
 		if owner == (common.Hash{}) {
 			WriteAccountTrieNode(db, path, node)

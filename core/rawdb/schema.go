@@ -112,6 +112,8 @@ var (
 	trieNodeStoragePrefix = []byte("O") // trieNodeStoragePrefix + accountHash + hexPath -> trie node
 	stateIDPrefix         = []byte("L") // stateIDPrefix + state root -> state id
 
+	MetaPrefix = []byte("m") // Block number for trie nodes
+
 	PreimagePrefix = []byte("secure-key-")       // PreimagePrefix + hash -> preimage
 	configPrefix   = []byte("ethereum-config-")  // config prefix for the db
 	genesisPrefix  = []byte("ethereum-genesis-") // genesis state prefix for the db
@@ -260,6 +262,17 @@ func accountTrieNodeKey(path []byte) []byte {
 // storageTrieNodeKey = trieNodeStoragePrefix + accountHash + nodePath.
 func storageTrieNodeKey(accountHash common.Hash, path []byte) []byte {
 	return append(append(trieNodeStoragePrefix, accountHash.Bytes()...), path...)
+}
+
+func MetaKey(hash common.Hash) []byte {
+	return append(MetaPrefix, hash.Bytes()...)
+}
+
+func IsMetaKey(key []byte) (bool, []byte) {
+	if bytes.HasPrefix(key, MetaPrefix) && len(key) == common.HashLength+len(MetaPrefix) {
+		return true, key[len(MetaPrefix):]
+	}
+	return false, nil
 }
 
 // IsLegacyTrieNode reports whether a provided database entry is a legacy trie

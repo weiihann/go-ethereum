@@ -58,6 +58,7 @@ Remove blockchain and state databases`,
 		ArgsUsage: "",
 		Subcommands: []*cli.Command{
 			dbInspectCmd,
+			dbInspectNodesCmd,
 			dbStatCmd,
 			dbCompactCmd,
 			dbGetCmd,
@@ -80,6 +81,16 @@ Remove blockchain and state databases`,
 		}, utils.NetworkFlags, utils.DatabasePathFlags),
 		Usage:       "Inspect the storage size for each type of data in the database",
 		Description: `This commands iterates the entire database. If the optional 'prefix' and 'start' arguments are provided, then the iteration is limited to the given subset of data.`,
+	}
+	dbInspectNodesCmd = &cli.Command{
+		Action:    inspectNodes,
+		Name:      "inspect-nodes",
+		ArgsUsage: "<startBlock> <endBlock> <range>",
+		Flags: flags.Merge([]cli.Flag{
+			utils.SyncModeFlag,
+		}, utils.NetworkFlags, utils.DatabasePathFlags),
+		Usage:       "Inspect the storage size used by each node type in the database within a range of blocks",
+		Description: `This commands iterates the entire WorldState. The default range is 1,296,000 (~6 months) from the genesis block to the latest block.`,
 	}
 	dbCheckStateContentCmd = &cli.Command{
 		Action:    checkStateContent,
@@ -284,6 +295,59 @@ func inspect(ctx *cli.Context) error {
 	defer db.Close()
 
 	return rawdb.InspectDatabase(db, prefix, start)
+}
+
+func inspectNodes(ctx *cli.Context) error {
+	if ctx.NArg() > 3 {
+		return fmt.Errorf("Max 3 arguments: %v", ctx.Command.ArgsUsage)
+	}
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	var fromBlock, toBlock uint64
+	var bucketRange uint64
+
+	headerHash := rawdb.ReadHeadHeaderHash(db)
+	latestBlock := *(rawdb.ReadHeaderNumber(db, headerHash))
+	defaultBucketRange := uint64(1_296_000) // 6 months
+
+	if ctx.NArg() == 3 {
+		fromBlock, _ = strconv.ParseUint(ctx.Args().Get(0), 10, 64)
+		toBlock, _ = strconv.ParseUint(ctx.Args().Get(1), 10, 64)
+		bucketRange, _ = strconv.ParseUint(ctx.Args().Get(2), 10, 64)
+	} else if ctx.NArg() == 2 {
+		fromBlock, _ = strconv.ParseUint(ctx.Args().Get(0), 10, 64)
+		toBlock = latestBlock
+		bucketRange, _ = strconv.ParseUint(ctx.Args().Get(1), 10, 64)
+	} else if ctx.NArg() == 1 {
+		fromBlock = 1
+		toBlock = latestBlock
+		bucketRange, _ = strconv.ParseUint(ctx.Args().Get(0), 10, 64)
+	} else {
+		fromBlock = 1
+		toBlock = latestBlock
+		bucketRange = defaultBucketRange
+	}
+
+	if bucketRange > (toBlock - fromBlock + 1) {
+		return fmt.Errorf("bucketRange is larger than block range")
+	}
+
+	inspector, err := trie.NewMetaInspector(db, fromBlock, toBlock, bucketRange)
+	if err != nil {
+		fmt.Printf("fail to create meta inspector\n")
+		return err
+	}
+
+	inspector.Run()
+
+	inspector.Display()
+
+	return nil
 }
 
 func checkStateContent(ctx *cli.Context) error {
@@ -515,7 +579,7 @@ func dbDumpTrie(ctx *cli.Context) error {
 		}
 	}
 	id := trie.StorageTrieID(common.BytesToHash(state), common.BytesToHash(account), common.BytesToHash(storage))
-	theTrie, err := trie.New(id, trie.NewDatabase(db))
+	theTrie, err := trie.New(id, trie.NewDatabase(db), 0)
 	if err != nil {
 		return err
 	}

@@ -35,7 +35,7 @@ func makeTestTrie(scheme string) (ethdb.Database, *Database, *StateTrie, map[str
 	// Create an empty trie
 	db := rawdb.NewMemoryDatabase()
 	triedb := newTestDatabase(db, scheme)
-	trie, _ := NewStateTrie(TrieID(types.EmptyRootHash), triedb)
+	trie, _ := NewStateTrie(TrieID(types.EmptyRootHash), triedb, 0)
 
 	// Fill it with some arbitrary data
 	content := make(map[string][]byte)
@@ -64,7 +64,7 @@ func makeTestTrie(scheme string) (ethdb.Database, *Database, *StateTrie, map[str
 		panic(err)
 	}
 	// Re-create the trie based on the new state
-	trie, _ = NewStateTrie(TrieID(root), triedb)
+	trie, _ = NewStateTrie(TrieID(root), triedb, 0)
 	return db, triedb, trie, content
 }
 
@@ -73,7 +73,7 @@ func makeTestTrie(scheme string) (ethdb.Database, *Database, *StateTrie, map[str
 func checkTrieContents(t *testing.T, db ethdb.Database, scheme string, root []byte, content map[string][]byte) {
 	// Check root availability and trie contents
 	ndb := newTestDatabase(db, scheme)
-	trie, err := NewStateTrie(TrieID(common.BytesToHash(root)), ndb)
+	trie, err := NewStateTrie(TrieID(common.BytesToHash(root)), ndb, 0)
 	if err != nil {
 		t.Fatalf("failed to create trie at %x: %v", root, err)
 	}
@@ -90,7 +90,7 @@ func checkTrieContents(t *testing.T, db ethdb.Database, scheme string, root []by
 // checkTrieConsistency checks that all nodes in a trie are indeed present.
 func checkTrieConsistency(db ethdb.Database, scheme string, root common.Hash) error {
 	ndb := newTestDatabase(db, scheme)
-	trie, err := NewStateTrie(TrieID(root), ndb)
+	trie, err := NewStateTrie(TrieID(root), ndb, 0)
 	if err != nil {
 		return nil // Consider a non existent state consistent
 	}
@@ -115,9 +115,9 @@ func TestEmptySync(t *testing.T) {
 	dbD := newTestDatabase(rawdb.NewMemoryDatabase(), rawdb.PathScheme)
 
 	emptyA := NewEmpty(dbA)
-	emptyB, _ := New(TrieID(types.EmptyRootHash), dbB)
+	emptyB, _ := New(TrieID(types.EmptyRootHash), dbB, 0)
 	emptyC := NewEmpty(dbC)
-	emptyD, _ := New(TrieID(types.EmptyRootHash), dbD)
+	emptyD, _ := New(TrieID(types.EmptyRootHash), dbD, 0)
 
 	for i, trie := range []*Trie{emptyA, emptyB, emptyC, emptyD} {
 		sync := NewSync(trie.Hash(), memorydb.New(), nil, []*Database{dbA, dbB, dbC, dbD}[i].Scheme())
@@ -572,7 +572,7 @@ func testIncompleteSync(t *testing.T, scheme string) {
 		if err := checkTrieConsistency(diskdb, srcDb.Scheme(), root); err == nil {
 			t.Fatalf("trie inconsistency not caught, missing: %x", path)
 		}
-		rawdb.WriteTrieNode(diskdb, owner, inner, nodeHash, value, scheme)
+		rawdb.WriteTrieNode(diskdb, owner, inner, nodeHash, value, scheme, 0)
 	}
 }
 
@@ -745,7 +745,7 @@ func testSyncMovingTarget(t *testing.T, scheme string) {
 		panic(err)
 	}
 	preRoot = root
-	srcTrie, _ = NewStateTrie(TrieID(root), srcDb)
+	srcTrie, _ = NewStateTrie(TrieID(root), srcDb, 0)
 
 	syncWith(t, srcTrie.Hash(), diskdb, srcDb)
 	checkTrieContents(t, diskdb, srcDb.Scheme(), srcTrie.Hash().Bytes(), diff)
@@ -769,7 +769,7 @@ func testSyncMovingTarget(t *testing.T, scheme string) {
 	if err := srcDb.Commit(root, false); err != nil {
 		panic(err)
 	}
-	srcTrie, _ = NewStateTrie(TrieID(root), srcDb)
+	srcTrie, _ = NewStateTrie(TrieID(root), srcDb, 0)
 
 	syncWith(t, srcTrie.Hash(), diskdb, srcDb)
 	checkTrieContents(t, diskdb, srcDb.Scheme(), srcTrie.Hash().Bytes(), reverted)

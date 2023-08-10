@@ -65,7 +65,7 @@ func TestNull(t *testing.T) {
 
 func TestMissingRoot(t *testing.T) {
 	root := common.HexToHash("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33")
-	trie, err := New(TrieID(root), NewDatabase(rawdb.NewMemoryDatabase()))
+	trie, err := New(TrieID(root), NewDatabase(rawdb.NewMemoryDatabase()), 0)
 	if trie != nil {
 		t.Error("New returned non-nil trie for invalid root")
 	}
@@ -95,27 +95,27 @@ func testMissingNode(t *testing.T, memonly bool, scheme string) {
 		triedb.Commit(root, false)
 	}
 
-	trie, _ = New(TrieID(root), triedb)
+	trie, _ = New(TrieID(root), triedb, 0)
 	_, err := trie.Get([]byte("120000"))
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-	trie, _ = New(TrieID(root), triedb)
+	trie, _ = New(TrieID(root), triedb, 0)
 	_, err = trie.Get([]byte("120099"))
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-	trie, _ = New(TrieID(root), triedb)
+	trie, _ = New(TrieID(root), triedb, 0)
 	_, err = trie.Get([]byte("123456"))
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-	trie, _ = New(TrieID(root), triedb)
+	trie, _ = New(TrieID(root), triedb, 0)
 	err = trie.Update([]byte("120099"), []byte("zxcvzxcvzxcvzxcvzxcvzxcvzxcvzxcv"))
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-	trie, _ = New(TrieID(root), triedb)
+	trie, _ = New(TrieID(root), triedb, 0)
 	err = trie.Delete([]byte("123456"))
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
@@ -131,7 +131,7 @@ func testMissingNode(t *testing.T, memonly bool, scheme string) {
 			break
 		}
 	}
-	trie, _ = New(TrieID(root), triedb)
+	trie, _ = New(TrieID(root), triedb, 0)
 	if memonly {
 		trie.reader.banned = map[string]struct{}{string(path): {}}
 	} else {
@@ -204,7 +204,7 @@ func TestGet(t *testing.T) {
 		}
 		root, nodes, _ := trie.Commit(false)
 		db.Update(root, types.EmptyRootHash, 0, trienode.NewWithNodeSet(nodes), nil)
-		trie, _ = New(TrieID(root), db)
+		trie, _ = New(TrieID(root), db, 0)
 	}
 }
 
@@ -278,7 +278,7 @@ func TestReplication(t *testing.T) {
 	db.Update(root, types.EmptyRootHash, 0, trienode.NewWithNodeSet(nodes), nil)
 
 	// create a new trie on top of the database and check that lookups work.
-	trie2, err := New(TrieID(root), db)
+	trie2, err := New(TrieID(root), db, 0)
 	if err != nil {
 		t.Fatalf("can't recreate trie at %x: %v", root, err)
 	}
@@ -296,7 +296,7 @@ func TestReplication(t *testing.T) {
 	if nodes != nil {
 		db.Update(hash, types.EmptyRootHash, 0, trienode.NewWithNodeSet(nodes), nil)
 	}
-	trie2, err = New(TrieID(hash), db)
+	trie2, err = New(TrieID(hash), db, 0)
 	if err != nil {
 		t.Fatalf("can't recreate trie at %x: %v", hash, err)
 	}
@@ -505,7 +505,7 @@ func runRandTest(rt randTest) bool {
 			if nodes != nil {
 				triedb.Update(root, origin, 0, trienode.NewWithNodeSet(nodes), nil)
 			}
-			newtr, err := New(TrieID(root), triedb)
+			newtr, err := New(TrieID(root), triedb, 0)
 			if err != nil {
 				rt[i].err = err
 				return false
@@ -898,7 +898,7 @@ func TestCommitSequenceStackTrie(t *testing.T) {
 		// Another sponge is used for the stacktrie commits
 		stackTrieSponge := &spongeDb{sponge: sha3.NewLegacyKeccak256(), id: "b"}
 		stTrie := NewStackTrie(func(owner common.Hash, path []byte, hash common.Hash, blob []byte) {
-			rawdb.WriteTrieNode(stackTrieSponge, owner, path, hash, blob, db.Scheme())
+			rawdb.WriteTrieNode(stackTrieSponge, owner, path, hash, blob, db.Scheme(), 0)
 		})
 		// Fill the trie with elements
 		for i := 0; i < count; i++ {
@@ -957,7 +957,7 @@ func TestCommitSequenceSmallRoot(t *testing.T) {
 	// Another sponge is used for the stacktrie commits
 	stackTrieSponge := &spongeDb{sponge: sha3.NewLegacyKeccak256(), id: "b"}
 	stTrie := NewStackTrie(func(owner common.Hash, path []byte, hash common.Hash, blob []byte) {
-		rawdb.WriteTrieNode(stackTrieSponge, owner, path, hash, blob, db.Scheme())
+		rawdb.WriteTrieNode(stackTrieSponge, owner, path, hash, blob, db.Scheme(), 0)
 	})
 	// Add a single small-element to the trie(s)
 	key := make([]byte, 5)

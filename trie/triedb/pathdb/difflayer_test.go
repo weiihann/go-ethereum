@@ -69,7 +69,7 @@ func benchmarkSearch(b *testing.B, depth int, total int) {
 				path = testutil.RandBytes(32)
 				node = testutil.RandomNode()
 			)
-			nodes[common.Hash{}][string(path)] = trienode.New(node.Hash, node.Blob)
+			nodes[common.Hash{}][string(path)] = trienode.New(node.Hash, node.Blob, node.BlockNum)
 			if npath == nil && depth == index {
 				npath = common.CopyBytes(path)
 				nblob = common.CopyBytes(node.Blob)
@@ -115,7 +115,7 @@ func BenchmarkPersist(b *testing.B) {
 				path = testutil.RandBytes(32)
 				node = testutil.RandomNode()
 			)
-			nodes[common.Hash{}][string(path)] = trienode.New(node.Hash, node.Blob)
+			nodes[common.Hash{}][string(path)] = trienode.New(node.Hash, node.Blob, node.BlockNum)
 		}
 		return newDiffLayer(parent, common.Hash{}, 0, 0, nodes, nil)
 	}
@@ -152,7 +152,7 @@ func BenchmarkJournal(b *testing.B) {
 				path = testutil.RandBytes(32)
 				node = testutil.RandomNode()
 			)
-			nodes[common.Hash{}][string(path)] = trienode.New(node.Hash, node.Blob)
+			nodes[common.Hash{}][string(path)] = trienode.New(node.Hash, node.Blob, node.BlockNum)
 		}
 		// TODO(rjl493456442) a non-nil state set is expected.
 		return newDiffLayer(parent, common.Hash{}, 0, 0, nodes, nil)

@@ -139,7 +139,16 @@ func (c *committer) store(path []byte, n node) node {
 	}
 	// Collect the dirty node to nodeset for return.
 	nhash := common.BytesToHash(hash)
-	c.nodes.AddNode(path, trienode.New(nhash, nodeToBytes(n)))
+
+	blockNum := uint64(0)
+	switch n := n.(type) {
+	case *shortNode:
+		blockNum = n.blockNum
+	case *fullNode:
+		blockNum = n.blockNum
+	}
+
+	c.nodes.AddNode(path, trienode.New(nhash, nodeToBytes(n), blockNum))
 
 	// Collect the corresponding leaf node if it's required. We don't check
 	// full node since it's impossible to store value in fullNode. The key
