@@ -590,21 +590,21 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		{"Light client", "Bloom trie nodes", bloomTrieNodes.Size(), bloomTrieNodes.Count()},
 	}
 	// Inspect all registered append-only file store then.
-	ancients, err := inspectFreezers(db)
-	if err != nil {
-		return err
-	}
-	for _, ancient := range ancients {
-		for _, table := range ancient.sizes {
-			stats = append(stats, []string{
-				fmt.Sprintf("Ancient store (%s)", strings.Title(ancient.name)),
-				strings.Title(table.name),
-				table.size.String(),
-				fmt.Sprintf("%d", ancient.count()),
-			})
-		}
-		total += ancient.size()
-	}
+	// ancients, err := inspectFreezers(db)
+	// if err != nil {
+	// 	return err
+	// }
+	// for _, ancient := range ancients {
+	// 	for _, table := range ancient.sizes {
+	// 		stats = append(stats, []string{
+	// 			fmt.Sprintf("Ancient store (%s)", strings.Title(ancient.name)),
+	// 			strings.Title(table.name),
+	// 			table.size.String(),
+	// 			fmt.Sprintf("%d", ancient.count()),
+	// 		})
+	// 	}
+	// 	total += ancient.size()
+	// }
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader([]string{"Database", "Category", "Size", "Items"})
 	table.SetFooter([]string{"", "Total", total.String(), " "})
