@@ -43,7 +43,7 @@ func makeTestState() (ethdb.Database, Database, common.Hash, []*testAccount) {
 	// Create an empty state
 	db := rawdb.NewMemoryDatabase()
 	sdb := NewDatabaseWithConfig(db, &trie.Config{Preimages: true})
-	state, _ := New(types.EmptyRootHash, sdb, nil)
+	state, _ := New(types.EmptyRootHash, sdb, nil, 0)
 
 	// Fill it with some arbitrary data
 	var accounts []*testAccount
@@ -80,7 +80,7 @@ func makeTestState() (ethdb.Database, Database, common.Hash, []*testAccount) {
 // account array.
 func checkStateAccounts(t *testing.T, db ethdb.Database, root common.Hash, accounts []*testAccount) {
 	// Check root availability and state contents
-	state, err := New(root, NewDatabase(db), nil)
+	state, err := New(root, NewDatabase(db), nil, 0)
 	if err != nil {
 		t.Fatalf("failed to create state trie at %x: %v", root, err)
 	}
@@ -102,7 +102,7 @@ func checkStateAccounts(t *testing.T, db ethdb.Database, root common.Hash, accou
 
 // checkStateConsistency checks that all data of a state root is present.
 func checkStateConsistency(db ethdb.Database, root common.Hash) error {
-	state, err := New(root, NewDatabaseWithConfig(db, &trie.Config{Preimages: true}), nil)
+	state, err := New(root, NewDatabaseWithConfig(db, &trie.Config{Preimages: true}), nil, 0)
 	if err != nil {
 		return err
 	}
