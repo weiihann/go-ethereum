@@ -476,7 +476,7 @@ func dump(ctx *cli.Context) error {
 	triedb := utils.MakeTrieDatabase(ctx, db, true, false) // always enable preimage lookup
 	defer triedb.Close()
 
-	state, err := state.New(root, state.NewDatabaseWithNodeDB(db, triedb), nil)
+	state, err := state.New(root, state.NewDatabaseWithNodeDB(db, triedb), nil, 0)
 	if err != nil {
 		return err
 	}
