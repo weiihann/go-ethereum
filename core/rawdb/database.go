@@ -457,24 +457,24 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		logged = time.Now()
 
 		// Key-value store statistics
-		headers         stat
-		bodies          stat
-		receipts        stat
-		tds             stat
-		numHashPairings stat
-		hashNumPairings stat
-		legacyTries     stat
-		stateLookups    stat
-		accountTries    stat
-		storageTries    stat
-		codes           stat
-		txLookups       stat
-		accountSnaps    stat
-		storageSnaps    stat
-		preimages       stat
-		bloomBits       stat
-		beaconHeaders   stat
-		cliqueSnaps     stat
+		headers          stat
+		bodies           stat
+		receipts         stat
+		tds              stat
+		numHashPairings  stat
+		hashNumPairings  stat
+		legacyTries      stat
+		stateLookups     stat
+		accountTries     stat
+		storageTries     stat
+		codes            stat
+		txLookups        stat
+		accountSnaps     stat
+		storageSnaps     stat
+		preimages        stat
+		bloomBits        stat
+		beaconHeaders    stat
+		cliqueSnaps      stat
 		accountSnapsMeta stat
 		storageSnapsMeta stat
 
@@ -525,6 +525,7 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 			accountSnaps.Add(size)
 		case bytes.HasPrefix(key, SnapshotStoragePrefix) && len(key) == (len(SnapshotStoragePrefix)+2*common.HashLength):
 			storageSnaps.Add(size)
+		case bytes.HasPrefix(key, SnapshotAccountMetaPrefix) && len(key) == (len(SnapshotAccountMetaPrefix)+common.HashLength):
 			accountSnapsMeta.Add(size)
 		case bytes.HasPrefix(key, SnapshotStorageMetaPrefix) && len(key) == (len(SnapshotStorageMetaPrefix)+2*common.HashLength):
 			storageSnapsMeta.Add(size)
