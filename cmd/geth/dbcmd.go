@@ -326,7 +326,7 @@ func inspectKV(ctx *cli.Context) error {
 	}
 
 	if bucketRange > (toBlock - fromBlock + 1) {
-		return fmt.Errorf("bucketRange is larger than block range")
+		return fmt.Errorf("bucketRange is larger than block range, bucketRange: %d, blockRange: %d", bucketRange, toBlock-fromBlock+1)
 	}
 
 	inspector, err := rawdb.NewMetaInspector(db, fromBlock, toBlock, bucketRange)
