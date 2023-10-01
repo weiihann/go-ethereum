@@ -283,6 +283,8 @@ type ChainConfig struct {
 	ArrowGlacierBlock   *big.Int `json:"arrowGlacierBlock,omitempty"`   // Eip-4345 (bomb delay) switch block (nil = no fork, 0 = already activated)
 	GrayGlacierBlock    *big.Int `json:"grayGlacierBlock,omitempty"`    // Eip-5133 (bomb delay) switch block (nil = no fork, 0 = already activated)
 	MergeNetsplitBlock  *big.Int `json:"mergeNetsplitBlock,omitempty"`  // Virtual fork after The Merge to use as a network splitter
+	StateExpiryBlock1   *big.Int `json:"stateExpiryFork1,omitempty"`    // State expiry fork 1 (nil = no fork, 0 = already activated)
+	StateExpiryBlock2   *big.Int `json:"stateExpiryFork2,omitempty"`    // State expiry fork 2 (nil = no fork, 0 = already activated)
 
 	// Fork scheduling was switched from blocks to timestamps here
 
@@ -316,8 +318,9 @@ func (c *EthashConfig) String() string {
 
 // CliqueConfig is the consensus engine configs for proof-of-authority based sealing.
 type CliqueConfig struct {
-	Period uint64 `json:"period"` // Number of seconds between blocks to enforce
-	Epoch  uint64 `json:"epoch"`  // Epoch length to reset votes and checkpoint
+	Period           uint64 `json:"period"` // Number of seconds between blocks to enforce
+	Epoch            uint64 `json:"epoch"`  // Epoch length to reset votes and checkpoint
+	StateEpochPeriod uint64 `json:"stateEpochPeriod"`
 }
 
 // String implements the stringer interface, returning the consensus engine details.
@@ -517,6 +520,14 @@ func (c *ChainConfig) IsVerkle(num *big.Int, time uint64) bool {
 	return c.IsLondon(num) && isTimestampForked(c.VerkleTime, time)
 }
 
+func (c *ChainConfig) IsStateExpiryFork1(num *big.Int) bool {
+	return isBlockForked(c.StateExpiryBlock1, num)
+}
+
+func (c *ChainConfig) IsStateExpiryFork2(num *big.Int) bool {
+	return isBlockForked(c.StateExpiryBlock2, num)
+}
+
 // CheckCompatible checks whether scheduled fork transitions have been imported
 // with a mismatching chain configuration.
 func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64, time uint64) *ConfigCompatError {
@@ -568,6 +579,8 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "arrowGlacierBlock", block: c.ArrowGlacierBlock, optional: true},
 		{name: "grayGlacierBlock", block: c.GrayGlacierBlock, optional: true},
 		{name: "mergeNetsplitBlock", block: c.MergeNetsplitBlock, optional: true},
+		{name: "stateExpiryBlock1", block: c.StateExpiryBlock1, optional: true},
+		{name: "stateExpiryBlock2", block: c.StateExpiryBlock2, optional: true},
 		{name: "shanghaiTime", timestamp: c.ShanghaiTime},
 		{name: "cancunTime", timestamp: c.CancunTime, optional: true},
 		{name: "pragueTime", timestamp: c.PragueTime, optional: true},
@@ -605,6 +618,24 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		// If it was optional and not set, then ignore it
 		if !cur.optional || (cur.block != nil || cur.timestamp != nil) {
 			lastFork = cur
+		}
+
+		// check state expiry's hard forks
+		if c.StateExpiryBlock1 != nil || c.StateExpiryBlock2 != nil {
+			if c.StateExpiryBlock1 == nil {
+				return fmt.Errorf("unsupported state expiry fork number StateExpiryBlock1: %v StateExpiryBlock2 %v",
+					c.StateExpiryBlock1, c.StateExpiryBlock2)
+			}
+
+			if c.StateExpiryBlock1.Cmp(common.Big0) <= 0 {
+				return fmt.Errorf("unsupported state expiry fork number StateExpiryBlock1: %v",
+					c.StateExpiryBlock1)
+			}
+
+			if c.StateExpiryBlock2 != nil && c.StateExpiryBlock1.Cmp(c.StateExpiryBlock2) >= 0 {
+				return fmt.Errorf("unsupported state expiry fork number StateExpiryBlock1: %v StateExpiryBlock2 %v",
+					c.StateExpiryBlock1, c.StateExpiryBlock2)
+			}
 		}
 	}
 	return nil
@@ -665,6 +696,12 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, headNumber *big.Int, 
 	}
 	if isForkBlockIncompatible(c.MergeNetsplitBlock, newcfg.MergeNetsplitBlock, headNumber) {
 		return newBlockCompatError("Merge netsplit fork block", c.MergeNetsplitBlock, newcfg.MergeNetsplitBlock)
+	}
+	if isForkBlockIncompatible(c.StateExpiryBlock1, newcfg.StateExpiryBlock1, headNumber) {
+		return newBlockCompatError("State expiry fork block 1", c.StateExpiryBlock1, newcfg.StateExpiryBlock1)
+	}
+	if isForkBlockIncompatible(c.StateExpiryBlock2, newcfg.StateExpiryBlock2, headNumber) {
+		return newBlockCompatError("State expiry fork block 2", c.StateExpiryBlock2, newcfg.StateExpiryBlock2)
 	}
 	if isForkTimestampIncompatible(c.ShanghaiTime, newcfg.ShanghaiTime, headTimestamp) {
 		return newTimestampCompatError("Shanghai fork timestamp", c.ShanghaiTime, newcfg.ShanghaiTime)
