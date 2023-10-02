@@ -451,3 +451,74 @@ func TestTransactionSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestReviveStateTx(t *testing.T) {
+	signer := NewStateExpirySigner(big.NewInt(123))
+	key, _ := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	to := common.HexToAddress("0x01")
+	reviveList := make(ReviveList, 1)
+	reviveList[0] = ReviveKeyValues{
+		key:    []byte("key"),
+		values: make([][]byte, 1),
+	}
+	reviveList[0].values[0] = []byte("value")
+
+	for i := uint64(0); i < 500; i++ {
+		var txdata TxData
+		switch i % 3 {
+		case 0: // Revive with KV
+			txdata = &ReviveStateTx{
+				ChainID:    big.NewInt(123),
+				Nonce:      i,
+				To:         &to,
+				Value:      big.NewInt(1),
+				Gas:        1000000,
+				GasPrice:   big.NewInt(500),
+				ReviveList: reviveList,
+			}
+		case 1: // Revive with empty KV
+			txdata = &ReviveStateTx{
+				ChainID:    big.NewInt(123),
+				Nonce:      i,
+				To:         &to,
+				Value:      big.NewInt(1),
+				Gas:        1000000,
+				GasPrice:   big.NewInt(500),
+				ReviveList: ReviveList{},
+			}
+		case 2: // Revive with KV but contract creation
+			txdata = &ReviveStateTx{
+				ChainID:    big.NewInt(123),
+				Nonce:      i,
+				Value:      big.NewInt(1),
+				Gas:        1000000,
+				GasPrice:   big.NewInt(500),
+				ReviveList: reviveList,
+				Data:       []byte("abcdef"),
+			}
+		}
+		tx, err := SignNewTx(key, signer, txdata)
+		if err != nil {
+			t.Fatalf("could not sign transaction: %v", err)
+		}
+
+		// RLP
+		parsedTx, err := encodeDecodeBinary(tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := assertEqual(parsedTx, tx); err != nil {
+			t.Fatal(err)
+		}
+
+		// JSON
+		parsedTx, err = encodeDecodeJSON(tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := assertEqual(parsedTx, tx); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

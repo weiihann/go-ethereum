@@ -41,10 +41,11 @@ var (
 
 // Transaction types.
 const (
-	LegacyTxType     = 0x00
-	AccessListTxType = 0x01
-	DynamicFeeTxType = 0x02
-	BlobTxType       = 0x03
+	LegacyTxType      = 0x00
+	AccessListTxType  = 0x01
+	DynamicFeeTxType  = 0x02
+	BlobTxType        = 0x03
+	ReviveStateTxType = 0x04
 )
 
 // Transaction is an Ethereum transaction.
@@ -74,6 +75,7 @@ type TxData interface {
 
 	chainID() *big.Int
 	accessList() AccessList
+	reviveList() ReviveList
 	data() []byte
 	gas() uint64
 	gasPrice() *big.Int
@@ -199,6 +201,10 @@ func (tx *Transaction) decodeTyped(b []byte) (TxData, error) {
 		var inner BlobTx
 		err := rlp.DecodeBytes(b[1:], &inner)
 		return &inner, err
+	case ReviveStateTxType:
+		var inner ReviveStateTx
+		err := rlp.DecodeBytes(b[1:], &inner)
+		return &inner, err
 	default:
 		return nil, ErrTxTypeNotSupported
 	}
@@ -275,6 +281,8 @@ func (tx *Transaction) Data() []byte { return tx.inner.data() }
 
 // AccessList returns the access list of the transaction.
 func (tx *Transaction) AccessList() AccessList { return tx.inner.accessList() }
+
+func (tx *Transaction) ReviveList() ReviveList { return tx.inner.reviveList() }
 
 // Gas returns the gas limit of the transaction.
 func (tx *Transaction) Gas() uint64 { return tx.inner.gas() }
