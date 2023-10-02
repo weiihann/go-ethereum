@@ -594,3 +594,87 @@ func deriveChainId(v *big.Int) *big.Int {
 	v = new(big.Int).Sub(v, big.NewInt(35))
 	return v.Div(v, big.NewInt(2))
 }
+
+type stateExpirySigner struct {
+	londonSigner
+}
+
+func NewStateExpirySigner(chainId *big.Int) Signer {
+	return stateExpirySigner{NewLondonSigner(chainId).(londonSigner)}
+}
+
+func (s stateExpirySigner) Sender(tx *Transaction) (common.Address, error) {
+	if tx.Type() != DynamicFeeTxType && tx.Type() != ReviveStateTxType {
+		return s.eip2930Signer.Sender(tx)
+	}
+	V, R, S := tx.RawSignatureValues()
+	// DynamicFee txs are defined to use 0 and 1 as their recovery
+	// id, add 27 to become equivalent to unprotected Homestead signatures.
+	V = new(big.Int).Add(V, big.NewInt(27))
+	if tx.ChainId().Cmp(s.chainId) != 0 {
+		return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
+	}
+	return recoverPlain(s.Hash(tx), R, S, V, true)
+}
+
+func (s stateExpirySigner) Equal(s2 Signer) bool {
+	x, ok := s2.(stateExpirySigner)
+	return ok && x.chainId.Cmp(s.chainId) == 0
+}
+
+func (s stateExpirySigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
+	txdata, ok := tx.inner.(*ReviveStateTx)
+	_, ok2 := tx.inner.(*DynamicFeeTx)
+	if !ok && !ok2 {
+		return s.eip2930Signer.SignatureValues(tx, sig)
+	}
+	// Check that chain ID of tx matches the signer. We also accept ID zero here,
+	// because it indicates that the chain ID was not specified in the tx.
+	if txdata.ChainID.Sign() != 0 && txdata.ChainID.Cmp(s.chainId) != 0 {
+		return nil, nil, nil, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, txdata.ChainID, s.chainId)
+	}
+	R, S, _ = decodeSignature(sig)
+	V = big.NewInt(int64(sig[64]))
+	return R, S, V, nil
+}
+
+// Hash returns the hash to be signed by the sender.
+// It does not uniquely identify the transaction.
+func (s stateExpirySigner) Hash(tx *Transaction) common.Hash {
+	if tx.Type() != DynamicFeeTxType && tx.Type() != ReviveStateTxType {
+		return s.eip2930Signer.Hash(tx)
+	}
+	switch tx.Type() {
+	case DynamicFeeTxType:
+		return prefixedRlpHash(
+			tx.Type(),
+			[]interface{}{
+				s.chainId,
+				tx.Nonce(),
+				tx.GasTipCap(),
+				tx.GasFeeCap(),
+				tx.Gas(),
+				tx.To(),
+				tx.Value(),
+				tx.Data(),
+				tx.AccessList(),
+			})
+	case ReviveStateTxType:
+		return prefixedRlpHash(
+			tx.Type(),
+			[]interface{}{
+				s.chainId,
+				tx.Nonce(),
+				tx.GasTipCap(),
+				tx.GasFeeCap(),
+				tx.Gas(),
+				tx.To(),
+				tx.Value(),
+				tx.Data(),
+				tx.AccessList(),
+				tx.ReviveList(),
+			})
+	default:
+		return common.Hash{}
+	}
+}
