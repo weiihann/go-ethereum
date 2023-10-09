@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/gballet/go-verkle"
 )
 
 type Code []byte
@@ -731,6 +732,37 @@ func (s *stateObject) accessState(key common.Hash) {
 	})
 	count := s.dirtyAccessedState[key]
 	s.dirtyAccessedState[key] = count + 1
+}
+
+func (s *stateObject) ReviveState(reviveKeyValues []types.ReviveKeyValues) error {
+	dr := s.getDirtyReviveTrie(s.db.db)
+	s.db.journal.append(reviveStorageTrieNodeChange{
+		address: &s.address,
+	})
+
+	if !dr.IsVerkle() {
+		return fmt.Errorf("revive trie is not verkle trie")
+	}
+
+	for _, reviveKV := range reviveKeyValues {
+		err := dr.Revive(reviveKV)
+		if err != nil {
+			return err
+		}
+		stem := reviveKV.Key[:verkle.StemSize]
+		for i := 0; i < verkle.NodeWidth; i++ {
+			var value common.Hash
+			val := reviveKV.Values[i]
+			if val == nil {
+				continue
+			}
+			value.SetBytes(val)
+			tempKey := append(stem, byte(i))
+			s.dirtyReviveState[string(tempKey)] = value
+		}
+	}
+
+	return nil
 }
 
 func (ch reviveStorageTrieNodeChange) revert(s *StateDB) {

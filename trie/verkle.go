@@ -41,7 +41,18 @@ type VerkleTrie struct {
 	ended      bool
 }
 
-// TODO(w)
+func (t *VerkleTrie) Revive(reviveKV types.ReviveKeyValues) error {
+	var err error
+	switch root := t.root.(type) {
+	case *verkle.InternalNode:
+		err = root.Revive(reviveKV.Key, reviveKV.Values, t.flatdbNodeResolver)
+	default:
+		return errInvalidRootType
+	}
+
+	return err
+}
+
 func (t *VerkleTrie) HashKey(key []byte) []byte {
 	return key
 }

@@ -150,25 +150,25 @@ func (r *ReviveData) Copy() ReviveData {
 }
 
 type ReviveKeyValues struct {
-	key    []byte
-	values [][]byte
+	Key    []byte
+	Values [][]byte
 }
 
 func (r *ReviveKeyValues) Size() uint64 {
 	size := uint64(0)
-	for i := range r.values {
-		size += uint64(len(r.values[i]))
+	for i := range r.Values {
+		size += uint64(len(r.Values[i]))
 	}
-	return size + uint64(len(r.key))
+	return size + uint64(len(r.Key))
 }
 
 func (r *ReviveKeyValues) Copy() ReviveKeyValues {
 	copy := ReviveKeyValues{
-		key:    common.CopyBytes(r.key),
-		values: make([][]byte, len(r.values)),
+		Key:    common.CopyBytes(r.Key),
+		Values: make([][]byte, len(r.Values)),
 	}
-	for i := range r.values {
-		copy.values[i] = common.CopyBytes(r.values[i])
+	for i := range r.Values {
+		copy.Values[i] = common.CopyBytes(r.Values[i])
 	}
 	return copy
 }

@@ -169,6 +169,8 @@ type Trie interface {
 	IsVerkle() bool
 
 	HashKey(key []byte) []byte
+
+	Revive(types.ReviveKeyValues) error
 }
 
 // NewDatabase creates a backing store for state. The returned database is safe for
