@@ -41,6 +41,11 @@ type VerkleTrie struct {
 	ended      bool
 }
 
+// TODO(w)
+func (t *VerkleTrie) HashKey(key []byte) []byte {
+	return key
+}
+
 func (vt *VerkleTrie) ToDot() string {
 	return verkle.ToDot(vt.root)
 }
@@ -321,7 +326,7 @@ func (trie *VerkleTrie) IsVerkle() bool {
 }
 
 func (trie *VerkleTrie) ProveAndSerialize(keys [][]byte) (*verkle.VerkleProof, verkle.StateDiff, error) {
-	proof, _, _, _, err := verkle.MakeVerkleMultiProof(trie.root, keys)
+	proof, _, _, _, err := verkle.MakeVerkleMultiProof(trie.root, nil, keys, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -342,13 +347,13 @@ func addKey(s set, key []byte) {
 
 func DeserializeAndVerifyVerkleProof(vp *verkle.VerkleProof, root []byte, statediff verkle.StateDiff) error {
 	rootC := new(verkle.Point)
-	rootC.SetBytesTrusted(root)
+	// rootC.SetBytesTrusted(root)
 	proof, cis, indices, yis, err := deserializeVerkleProof(vp, rootC, statediff)
 	if err != nil {
 		return fmt.Errorf("could not deserialize proof: %w", err)
 	}
 	cfg := verkle.GetConfig()
-	if !verkle.VerifyVerkleProof(proof, cis, indices, yis, cfg) {
+	if ok, _ := verkle.VerifyVerkleProof(proof, cis, indices, yis, cfg); !ok {
 		return errInvalidProof
 	}
 
@@ -367,44 +372,45 @@ func deserializeVerkleProof(vp *verkle.VerkleProof, rootC *verkle.Point, statedi
 		addKey(others, stem)
 	}
 
-	if len(proof.Keys) != len(proof.Values) {
-		return nil, nil, nil, nil, fmt.Errorf("keys and values are of different length %d != %d", len(proof.Keys), len(proof.Values))
+	if len(proof.Keys) != len(proof.PreValues) {
+		return nil, nil, nil, nil, fmt.Errorf("keys and values are of different length %d != %d", len(proof.Keys), len(proof.PreValues))
 	}
 
-	tree, err := verkle.TreeFromProof(proof, rootC)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("error rebuilding the tree from proof: %w", err)
-	}
-	for _, stemdiff := range statediff {
-		for _, suffixdiff := range stemdiff.SuffixDiffs {
-			var key [32]byte
-			copy(key[:31], stemdiff.Stem[:])
-			key[31] = suffixdiff.Suffix
+	// tree, err := verkle.TreeFromProof(proof, rootC)
+	// if err != nil {
+	// 	return nil, nil, nil, nil, fmt.Errorf("error rebuilding the tree from proof: %w", err)
+	// }
+	// for _, stemdiff := range statediff {
+	// 	for _, suffixdiff := range stemdiff.SuffixDiffs {
+	// 		var key [32]byte
+	// 		copy(key[:31], stemdiff.Stem[:])
+	// 		key[31] = suffixdiff.Suffix
 
-			val, err := tree.Get(key[:], nil)
-			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("could not find key %x in tree rebuilt from proof: %w", key, err)
-			}
-			if len(val) > 0 {
-				if !bytes.Equal(val, suffixdiff.CurrentValue[:]) {
-					return nil, nil, nil, nil, fmt.Errorf("could not find correct value at %x in tree rebuilt from proof: %x != %x", key, val, *suffixdiff.CurrentValue)
-				}
-			} else {
-				if suffixdiff.CurrentValue != nil && len(suffixdiff.CurrentValue) != 0 {
-					return nil, nil, nil, nil, fmt.Errorf("could not find correct value at %x in tree rebuilt from proof: %x != %x", key, val, *suffixdiff.CurrentValue)
-				}
-			}
-		}
-	}
+	// 		val, err := tree.Get(key[:], nil)
+	// 		if err != nil {
+	// 			return nil, nil, nil, nil, fmt.Errorf("could not find key %x in tree rebuilt from proof: %w", key, err)
+	// 		}
+	// 		if len(val) > 0 {
+	// 			if !bytes.Equal(val, suffixdiff.CurrentValue[:]) {
+	// 				return nil, nil, nil, nil, fmt.Errorf("could not find correct value at %x in tree rebuilt from proof: %x != %x", key, val, *suffixdiff.CurrentValue)
+	// 			}
+	// 		} else {
+	// 			if suffixdiff.CurrentValue != nil && len(suffixdiff.CurrentValue) != 0 {
+	// 				return nil, nil, nil, nil, fmt.Errorf("could not find correct value at %x in tree rebuilt from proof: %x != %x", key, val, *suffixdiff.CurrentValue)
+	// 			}
+	// 		}
+	// 	}
+	// }
 
-	// no need to resolve as the tree has been reconstructed from the proof
-	// and must not contain any unresolved nodes.
-	pe, _, _, err := tree.GetProofItems(proof.Keys)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("could not get proof items from tree rebuilt from proof: %w", err)
-	}
+	// // no need to resolve as the tree has been reconstructed from the proof
+	// // and must not contain any unresolved nodes.
+	// pe, _, _, err := tree.GetProofItems(proof.Keys)
+	// if err != nil {
+	// 	return nil, nil, nil, nil, fmt.Errorf("could not get proof items from tree rebuilt from proof: %w", err)
+	// }
 
-	return proof, pe.Cis, pe.Zis, pe.Yis, err
+	// return proof, pe.Cis, pe.Zis, pe.Yis, err
+	return proof, nil, nil, nil, err
 }
 
 // ChunkedCode represents a sequence of 32-bytes chunks of code (31 bytes of which

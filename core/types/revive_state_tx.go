@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-type ReviveList []ReviveKeyValues
+type ReviveList []ReviveData
 
 // ReviveStateTx is the transaction for revive state.
 type ReviveStateTx struct {
@@ -123,6 +123,30 @@ func ReviveIntrinsicGas(revives ReviveList) (uint64, error) {
 		totalGas += revives[i].Size() * params.TxReviveKeyValueGas
 	}
 	return totalGas, nil
+}
+
+type ReviveData struct {
+	Address common.Address
+	KV      []ReviveKeyValues
+}
+
+func (r *ReviveData) Size() uint64 {
+	size := uint64(0)
+	for i := range r.KV {
+		size += r.KV[i].Size()
+	}
+	return size + uint64(len(r.Address.Bytes()))
+}
+
+func (r *ReviveData) Copy() ReviveData {
+	copy := ReviveData{
+		Address: r.Address,
+		KV:      make([]ReviveKeyValues, len(r.KV)),
+	}
+	for i := range r.KV {
+		copy.KV[i] = r.KV[i].Copy()
+	}
+	return copy
 }
 
 type ReviveKeyValues struct {

@@ -45,9 +45,9 @@ type StateDB interface {
 	SubRefund(uint64)
 	GetRefund() uint64
 
-	GetCommittedState(common.Address, common.Hash) common.Hash
-	GetState(common.Address, common.Hash) common.Hash
-	SetState(common.Address, common.Hash, common.Hash)
+	GetCommittedState(common.Address, common.Hash) (common.Hash, error)
+	GetState(common.Address, common.Hash) (common.Hash, error)
+	SetState(common.Address, common.Hash, common.Hash) error
 
 	GetTransientState(addr common.Address, key common.Hash) common.Hash
 	SetTransientState(addr common.Address, key, value common.Hash)
@@ -82,6 +82,8 @@ type StateDB interface {
 
 	Witness() *state.AccessWitness
 	SetWitness(*state.AccessWitness)
+
+	Revive(reviveList types.ReviveList) error
 }
 
 // CallContext provides a basic interface for the EVM calling conventions. The EVM

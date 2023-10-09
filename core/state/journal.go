@@ -150,6 +150,13 @@ type (
 		account       *common.Address
 		key, prevalue common.Hash
 	}
+	reviveStorageTrieNodeChange struct {
+		address *common.Address
+	}
+	accessedStorageStateChange struct {
+		address *common.Address
+		slot    *common.Hash
+	}
 )
 
 func (ch createObjectChange) revert(s *StateDB) {

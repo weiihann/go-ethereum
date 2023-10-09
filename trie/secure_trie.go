@@ -78,7 +78,7 @@ func NewStateTrie(id *ID, db *Database) (*StateTrie, error) {
 // This function will omit any encountered error but just
 // print out an error message.
 func (t *StateTrie) MustGet(key []byte) []byte {
-	return t.trie.MustGet(t.hashKey(key))
+	return t.trie.MustGet(t.HashKey(key))
 }
 
 // GetStorage attempts to retrieve a storage slot with provided account address
@@ -86,7 +86,7 @@ func (t *StateTrie) MustGet(key []byte) []byte {
 // If the specified storage slot is not in the trie, nil will be returned.
 // If a trie node is not found in the database, a MissingNodeError is returned.
 func (t *StateTrie) GetStorage(_ common.Address, key []byte) ([]byte, error) {
-	enc, err := t.trie.Get(t.hashKey(key))
+	enc, err := t.trie.Get(t.HashKey(key))
 	if err != nil || len(enc) == 0 {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func (t *StateTrie) GetStorage(_ common.Address, key []byte) ([]byte, error) {
 // If the specified account is not in the trie, nil will be returned.
 // If a trie node is not found in the database, a MissingNodeError is returned.
 func (t *StateTrie) GetAccount(address common.Address) (*types.StateAccount, error) {
-	res, err := t.trie.Get(t.hashKey(address.Bytes()))
+	res, err := t.trie.Get(t.HashKey(address.Bytes()))
 	if res == nil || err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func (t *StateTrie) GetNode(path []byte) ([]byte, int, error) {
 // This function will omit any encountered error but just print out an
 // error message.
 func (t *StateTrie) MustUpdate(key, value []byte) {
-	hk := t.hashKey(key)
+	hk := t.HashKey(key)
 	t.trie.MustUpdate(hk, value)
 	t.getSecKeyCache()[string(hk)] = common.CopyBytes(key)
 }
@@ -152,7 +152,7 @@ func (t *StateTrie) MustUpdate(key, value []byte) {
 //
 // If a node is not found in the database, a MissingNodeError is returned.
 func (t *StateTrie) UpdateStorage(_ common.Address, key, value []byte) error {
-	hk := t.hashKey(key)
+	hk := t.HashKey(key)
 	v, _ := rlp.EncodeToBytes(value)
 	err := t.trie.Update(hk, v)
 	if err != nil {
@@ -164,7 +164,7 @@ func (t *StateTrie) UpdateStorage(_ common.Address, key, value []byte) error {
 
 // UpdateAccount will abstract the write of an account to the secure trie.
 func (t *StateTrie) UpdateAccount(address common.Address, acc *types.StateAccount) error {
-	hk := t.hashKey(address.Bytes())
+	hk := t.HashKey(address.Bytes())
 	data, err := rlp.EncodeToBytes(acc)
 	if err != nil {
 		return err
@@ -183,7 +183,7 @@ func (t *StateTrie) UpdateContractCode(_ common.Address, _ common.Hash, _ []byte
 // MustDelete removes any existing value for key from the trie. This function
 // will omit any encountered error but just print out an error message.
 func (t *StateTrie) MustDelete(key []byte) {
-	hk := t.hashKey(key)
+	hk := t.HashKey(key)
 	delete(t.getSecKeyCache(), string(hk))
 	t.trie.MustDelete(hk)
 }
@@ -192,14 +192,14 @@ func (t *StateTrie) MustDelete(key []byte) {
 // If the specified trie node is not in the trie, nothing will be changed.
 // If a node is not found in the database, a MissingNodeError is returned.
 func (t *StateTrie) DeleteStorage(_ common.Address, key []byte) error {
-	hk := t.hashKey(key)
+	hk := t.HashKey(key)
 	delete(t.getSecKeyCache(), string(hk))
 	return t.trie.Delete(hk)
 }
 
 // DeleteAccount abstracts an account deletion from the trie.
 func (t *StateTrie) DeleteAccount(address common.Address) error {
-	hk := t.hashKey(address.Bytes())
+	hk := t.HashKey(address.Bytes())
 	delete(t.getSecKeyCache(), string(hk))
 	return t.trie.Delete(hk)
 }
@@ -266,10 +266,10 @@ func (t *StateTrie) MustNodeIterator(start []byte) NodeIterator {
 	return t.trie.MustNodeIterator(start)
 }
 
-// hashKey returns the hash of key as an ephemeral buffer.
+// HashKey returns the hash of key as an ephemeral buffer.
 // The caller must not hold onto the return value because it will become
-// invalid on the next call to hashKey or secKey.
-func (t *StateTrie) hashKey(key []byte) []byte {
+// invalid on the next call to HashKey or secKey.
+func (t *StateTrie) HashKey(key []byte) []byte {
 	h := newHasher(false)
 	h.sha.Reset()
 	h.sha.Write(key)

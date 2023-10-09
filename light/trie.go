@@ -167,6 +167,10 @@ type odrTrie struct {
 	trie *trie.Trie
 }
 
+func (t *odrTrie) HashKey(key []byte) []byte {
+	return key
+}
+
 func (t *odrTrie) GetStorage(_ common.Address, key []byte) ([]byte, error) {
 	key = crypto.Keccak256(key)
 	var enc []byte

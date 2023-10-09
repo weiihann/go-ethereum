@@ -239,7 +239,10 @@ func (b *SimulatedBackend) StorageAt(ctx context.Context, contract common.Addres
 		return nil, err
 	}
 
-	val := stateDB.GetState(contract, key)
+	val, err := stateDB.GetState(contract, key)
+	if err != nil {
+		return nil, err
+	}
 	return val[:], nil
 }
 

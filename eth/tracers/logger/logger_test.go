@@ -24,6 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 )
@@ -48,9 +49,12 @@ type dummyStatedb struct {
 	state.StateDB
 }
 
-func (*dummyStatedb) GetRefund() uint64                                       { return 1337 }
-func (*dummyStatedb) GetState(_ common.Address, _ common.Hash) common.Hash    { return common.Hash{} }
-func (*dummyStatedb) SetState(_ common.Address, _ common.Hash, _ common.Hash) {}
+func (*dummyStatedb) GetRefund() uint64 { return 1337 }
+func (*dummyStatedb) GetState(_ common.Address, _ common.Hash) (common.Hash, error) {
+	return common.Hash{}, nil
+}
+func (*dummyStatedb) SetState(_ common.Address, _ common.Hash, _ common.Hash) error { return nil }
+func (*dummyStatedb) Revive(reviveList types.ReviveList) error                      { return nil }
 
 func TestStoreCapture(t *testing.T) {
 	var (
