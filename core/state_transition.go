@@ -140,6 +140,7 @@ type Message struct {
 	AccessList    types.AccessList
 	BlobGasFeeCap *big.Int
 	BlobHashes    []common.Hash
+	ReviveList    types.ReviveList
 
 	// When SkipAccountChecks is true, the message nonce is not checked against the
 	// account nonce in state. It also disables checking that the sender is an EOA.
@@ -159,6 +160,7 @@ func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.In
 		Value:             tx.Value(),
 		Data:              tx.Data(),
 		AccessList:        tx.AccessList(),
+		ReviveList:        tx.ReviveList(),
 		SkipAccountChecks: false,
 		BlobHashes:        tx.BlobHashes(),
 		BlobGasFeeCap:     tx.BlobGasFeeCap(),
@@ -437,6 +439,13 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// Check whether the init code size has been exceeded.
 	if rules.IsShanghai && contractCreation && len(msg.Data) > params.MaxInitCodeSize {
 		return nil, fmt.Errorf("%w: code size %v limit %v", ErrMaxInitCodeSizeExceeded, len(msg.Data), params.MaxInitCodeSize)
+	}
+
+	if rules.IsStateExpiryFork2 {
+		err := st.state.Revive(msg.ReviveList)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Execute the preparatory steps for state transition which includes:
