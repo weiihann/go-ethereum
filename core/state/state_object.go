@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
@@ -246,12 +247,24 @@ func (s *stateObject) GetCommittedState(key common.Hash) (common.Hash, error) {
 		if metrics.EnabledExpensive {
 			s.db.SnapshotStorageReads += time.Since(start)
 		}
-		if len(enc) > 0 {
-			_, content, _, err := rlp.Split(enc)
-			if err != nil {
-				s.db.setError(err)
+		if err == nil {
+			var value common.Hash
+			if len(enc) > 0 {
+				sv, err := snapshot.ParseSnapValFromBytes(enc)
+				if err != nil {
+					s.db.setError(err)
+				}
+				if err == nil && s.db.enableStateEpoch(true) && types.EpochExpired(sv.Epoch, s.targetEpoch) {
+					_, err = s.getDirtyReviveTrie(s.db.db).GetStorage(s.address, key.Bytes())
+					if enErr, ok := err.(*trie.ExpiredNodeError); ok {
+						return common.Hash{}, NewExpiredStateError(s.address, key, enErr).Reason("snap query")
+					}
+					return common.Hash{}, NewSnapExpiredStateError(s.address, key, sv.Epoch)
+				}
+				value.SetBytes(sv.Val.Bytes())
 			}
-			value.SetBytes(content)
+			s.originStorage[key] = value
+			return value, nil
 		}
 	}
 	// If the snapshot is unavailable or reading from it fails, load from the database.
@@ -404,7 +417,11 @@ func (s *stateObject) updateTrie() (Trie, error) {
 		} else {
 			trimmedVal := common.TrimLeftZeroes(value[:])
 			// Encoding []byte cannot fail, ok to ignore the error.
-			snapshotVal, _ = rlp.EncodeToBytes(trimmedVal)
+			if s.db.enableStateEpoch(true) {
+				snapshotVal, _ = snapshot.NewSnapValBytes(s.targetEpoch, value)
+			} else {
+				snapshotVal, _ = rlp.EncodeToBytes(trimmedVal)
+			}
 			if err := tr.UpdateStorage(s.address, key[:], trimmedVal); err != nil {
 				s.db.setError(err)
 				return nil, err
@@ -450,7 +467,7 @@ func (s *stateObject) updateTrie() (Trie, error) {
 			}
 			// TODO(w): handle snapshot
 			trimmedVal := common.TrimLeftZeroes(value[:])
-			snapshotVal, _ := snapshot.EncodeValueToRLPBytes(snapshot.NewValueWithEpoch(s.db.targetEpoch, trimmedVal))
+			snapshotVal, _ := snapshot.NewSnapValBytes(s.targetEpoch, value)
 			if err := tr.UpdateStorage(s.address, key[:], trimmedVal); err != nil {
 				s.db.setError(err)
 				return nil, err
@@ -703,8 +720,7 @@ func (s *stateObject) queryFromReviveState(db Database, reviveState map[string]c
 		s.db.setError(err)
 		return common.Hash{}, false
 	}
-	hashKey := string(tr.HashKey(key.Bytes()))
-	val, ok := reviveState[hashKey]
+	val, ok := reviveState[string(tr.HashKey(key.Bytes()))]
 	return val, ok
 }
 
@@ -716,7 +732,6 @@ func (s *stateObject) accessState(key common.Hash) {
 	count := s.dirtyAccessedState[key]
 	s.dirtyAccessedState[key] = count + 1
 }
-
 
 func (ch reviveStorageTrieNodeChange) revert(s *StateDB) {
 	s.getStateObject(*ch.address).dirtyReviveState = make(map[string]common.Hash)
