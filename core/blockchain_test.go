@@ -3037,17 +3037,24 @@ func TestDeleteRecreateSlots(t *testing.T) {
 	statedb, _ := chain.State()
 
 	// If all is correct, then slot 1 and 2 are zero
-	if got, exp := statedb.GetState(aa, common.HexToHash("01")), (common.Hash{}); got != exp {
+	got, _ := statedb.GetState(aa, common.HexToHash("01"))
+	exp := common.Hash{}
+	if got != exp {
 		t.Errorf("got %x exp %x", got, exp)
 	}
-	if got, exp := statedb.GetState(aa, common.HexToHash("02")), (common.Hash{}); got != exp {
+	got, _ = statedb.GetState(aa, common.HexToHash("02"))
+	if got != exp {
 		t.Errorf("got %x exp %x", got, exp)
 	}
 	// Also, 3 and 4 should be set
-	if got, exp := statedb.GetState(aa, common.HexToHash("03")), common.HexToHash("03"); got != exp {
+	got, _ = statedb.GetState(aa, common.HexToHash("03"))
+	exp = common.HexToHash("03")
+	if got != exp {
 		t.Fatalf("got %x exp %x", got, exp)
 	}
-	if got, exp := statedb.GetState(aa, common.HexToHash("04")), common.HexToHash("04"); got != exp {
+	got, _ = statedb.GetState(aa, common.HexToHash("04"))
+	exp = common.HexToHash("04")
+	if got != exp {
 		t.Fatalf("got %x exp %x", got, exp)
 	}
 }
@@ -3114,10 +3121,13 @@ func TestDeleteRecreateAccount(t *testing.T) {
 	statedb, _ := chain.State()
 
 	// If all is correct, then both slots are zero
-	if got, exp := statedb.GetState(aa, common.HexToHash("01")), (common.Hash{}); got != exp {
+	got, _ := statedb.GetState(aa, common.HexToHash("01"))
+	exp := common.Hash{}
+	if got != exp {
 		t.Errorf("got %x exp %x", got, exp)
 	}
-	if got, exp := statedb.GetState(aa, common.HexToHash("02")), (common.Hash{}); got != exp {
+	got, _ = statedb.GetState(aa, common.HexToHash("02"))
+	if got != exp {
 		t.Errorf("got %x exp %x", got, exp)
 	}
 }
@@ -3289,19 +3299,24 @@ func TestDeleteRecreateSlotsAcrossManyBlocks(t *testing.T) {
 		}
 		statedb, _ := chain.State()
 		// If all is correct, then slot 1 and 2 are zero
-		if got, exp := statedb.GetState(aa, common.HexToHash("01")), (common.Hash{}); got != exp {
+		got, _ := statedb.GetState(aa, common.HexToHash("01"))
+		exp := common.Hash{}
+		if got != exp {
 			t.Errorf("block %d, got %x exp %x", blockNum, got, exp)
 		}
-		if got, exp := statedb.GetState(aa, common.HexToHash("02")), (common.Hash{}); got != exp {
+		got, _ = statedb.GetState(aa, common.HexToHash("02"))
+		if got != exp {
 			t.Errorf("block %d, got %x exp %x", blockNum, got, exp)
 		}
-		exp := expectations[i]
-		if exp.exist {
+		expected := expectations[i]
+		if expected.exist {
 			if !statedb.Exist(aa) {
 				t.Fatalf("block %d, expected %v to exist, it did not", blockNum, aa)
 			}
-			for slot, val := range exp.values {
-				if gotValue, expValue := statedb.GetState(aa, asHash(slot)), asHash(val); gotValue != expValue {
+			for slot, val := range expected.values {
+				gotValue, _ := statedb.GetState(aa, asHash(slot))
+				expValue := asHash(val)
+				if gotValue != expValue {
 					t.Fatalf("block %d, slot %d, got %x exp %x", blockNum, slot, gotValue, expValue)
 				}
 			}
@@ -4227,7 +4242,7 @@ func TestTransientStorageReset(t *testing.T) {
 		t.Fatalf("Failed to load state %v", err)
 	}
 	loc := common.BytesToHash([]byte{1})
-	slot := state.GetState(destAddress, loc)
+	slot, _ := state.GetState(destAddress, loc)
 	if slot != (common.Hash{}) {
 		t.Fatalf("Unexpected dirty storage slot")
 	}

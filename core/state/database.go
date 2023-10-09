@@ -167,6 +167,8 @@ type Trie interface {
 
 	// IsVerkle returns true if the trie is verkle-tree based
 	IsVerkle() bool
+
+	HashKey(key []byte) []byte
 }
 
 // NewDatabase creates a backing store for state. The returned database is safe for

@@ -456,12 +456,15 @@ func TestReviveStateTx(t *testing.T) {
 	signer := NewStateExpirySigner(big.NewInt(123))
 	key, _ := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
 	to := common.HexToAddress("0x01")
-	reviveList := make(ReviveList, 1)
-	reviveList[0] = ReviveKeyValues{
+	kv := ReviveKeyValues{
 		key:    []byte("key"),
 		values: make([][]byte, 1),
 	}
-	reviveList[0].values[0] = []byte("value")
+	kv.values[0] = []byte("value")
+
+	reviveList := make(ReviveList, 1)
+	reviveList[0].Address = to
+	reviveList[0].KV = append(reviveList[0].KV, kv)
 
 	for i := uint64(0); i < 500; i++ {
 		var txdata TxData

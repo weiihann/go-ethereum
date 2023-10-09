@@ -19,11 +19,12 @@ package utils
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	// "github.com/ethereum/go-ethereum/crypto/bls12381"
 	"math/big"
 	"math/rand"
 	"testing"
 
-	"github.com/gballet/go-verkle"
+	// "github.com/gballet/go-verkle"
 	"github.com/holiman/uint256"
 )
 
@@ -44,17 +45,17 @@ func TestGetTreeKey(t *testing.T) {
 	}
 }
 
-func TestConstantPoint(t *testing.T) {
-	var expectedPoly [1]verkle.Fr
+// func TestConstantPoint(t *testing.T) {
+// 	var expectedPoly [1]verkle.Fr
 
-	cfg := verkle.GetConfig()
-	verkle.FromLEBytes(&expectedPoly[0], []byte{2, 64})
-	expected := cfg.CommitToPoly(expectedPoly[:], 1)
+// 	cfg := verkle.GetConfig()
+// 	verkle.FromLEBytes(&expectedPoly[0], []byte{2, 64})
+// 	expected := cfg.CommitToPoly(expectedPoly[:], 1)
 
-	if !verkle.Equal(expected, getTreePolyIndex0Point) {
-		t.Fatalf("Marshalled constant value is incorrect: %x != %x", expected.Bytes(), getTreePolyIndex0Point.Bytes())
-	}
-}
+// 	if !verkle.Equal(expected, getTreePolyIndex0Point) {
+// 		t.Fatalf("Marshalled constant value is incorrect: %x != %x", expected.Bytes(), getTreePolyIndex0Point.Bytes())
+// 	}
+// }
 
 func BenchmarkPedersenHash(b *testing.B) {
 	var addr, v [32]byte

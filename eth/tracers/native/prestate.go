@@ -218,7 +218,11 @@ func (t *prestateTracer) CaptureTxEnd(restGas uint64) {
 				delete(t.pre[addr].Storage, key)
 			}
 
-			newVal := t.env.StateDB.GetState(addr, key)
+			newVal, err := t.env.StateDB.GetState(addr, key)
+			if err != nil {
+				log.Warn("failed to get storage slot", "err", err, "tracer", "prestateTracer", "address", addr, "slot", key)
+				continue
+			}
 			if val == newVal {
 				// Omit unchanged slots
 				delete(t.pre[addr].Storage, key)
@@ -293,5 +297,5 @@ func (t *prestateTracer) lookupStorage(addr common.Address, key common.Hash) {
 	if _, ok := t.pre[addr].Storage[key]; ok {
 		return
 	}
-	t.pre[addr].Storage[key] = t.env.StateDB.GetState(addr, key)
+	t.pre[addr].Storage[key], _ = t.env.StateDB.GetState(addr, key)
 }

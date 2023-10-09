@@ -38,6 +38,10 @@ func NewTransitionTree(base *SecureTrie, overlay *VerkleTrie, st bool) *Transiti
 	}
 }
 
+func (t *TransitionTrie) HashKey(key []byte) []byte {
+	return key
+}
+
 func (t *TransitionTrie) Base() *SecureTrie {
 	return t.base
 }

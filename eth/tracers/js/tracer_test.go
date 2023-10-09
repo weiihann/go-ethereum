@@ -26,6 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/params"
@@ -48,8 +49,9 @@ type dummyStatedb struct {
 	state.StateDB
 }
 
-func (*dummyStatedb) GetRefund() uint64                       { return 1337 }
-func (*dummyStatedb) GetBalance(addr common.Address) *big.Int { return new(big.Int) }
+func (*dummyStatedb) GetRefund() uint64                        { return 1337 }
+func (*dummyStatedb) GetBalance(addr common.Address) *big.Int  { return new(big.Int) }
+func (*dummyStatedb) Revive(reviveList types.ReviveList) error { return nil }
 
 type vmContext struct {
 	blockCtx vm.BlockContext

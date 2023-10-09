@@ -127,6 +127,10 @@ type StateDB struct {
 	validRevisions []revision
 	nextRevisionId int
 
+	// State expiry
+	targetEpoch types.StateEpoch
+	targetBlock *big.Int
+
 	// Measurements gathered during execution for debugging purposes
 	AccountReads         time.Duration
 	AccountHashes        time.Duration
@@ -149,6 +153,27 @@ type StateDB struct {
 
 // New creates a new state from a given trie.
 func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
+	return newStateDB(root, db, snaps, types.StateEpoch0)
+}
+
+// NewWithStateEpoch creates a new state from a given trie.
+func NewWithStateEpoch(config *params.ChainConfig, targetBlock *big.Int, root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
+	targetEpoch := types.GetStateEpoch(config, targetBlock)
+	stateDB, err := newStateDB(root, db, snaps, targetEpoch)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Debug("NewWithStateEpoch", "targetBlock", targetBlock, "targetEpoch", targetEpoch, "root", root)
+	// init target block and shadowNodeRW
+	stateDB.targetBlock = targetBlock
+	if err != nil {
+		return nil, err
+	}
+	return stateDB, nil
+}
+
+func newStateDB(root common.Hash, db Database, snaps *snapshot.Tree, targetEpoch types.StateEpoch) (*StateDB, error) {
 	tr, err := db.OpenTrie(root)
 	if err != nil {
 		return nil, err
@@ -172,22 +197,10 @@ func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) 
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
 		hasher:               crypto.NewKeccakState(),
+		targetEpoch:          targetEpoch,
 	}
 	if tr.IsVerkle() {
 		sdb.witness = sdb.NewAccessWitness()
-		// if sdb.snaps == nil {
-		// snapconfig := snapshot.Config{
-		// 	CacheSize:  256,
-		// 	Recovery:   false,
-		// 	NoBuild:    false,
-		// 	AsyncBuild: false,
-		// 	Verkle:     true,
-		// }
-		// sdb.snaps, err = snapshot.New(snapconfig, db.DiskDB(), db.TrieDB(), root)
-		// if err != nil {
-		// 	return nil, err
-		// }
-		// }
 	}
 	if sdb.snaps != nil {
 		if sdb.snap = sdb.snaps.Snapshot(root); sdb.snap == nil {
@@ -376,12 +389,12 @@ func (s *StateDB) GetCodeHash(addr common.Address) common.Hash {
 }
 
 // GetState retrieves a value from the given account's storage trie.
-func (s *StateDB) GetState(addr common.Address, hash common.Hash) common.Hash {
+func (s *StateDB) GetState(addr common.Address, hash common.Hash) (common.Hash, error) {
 	stateObject := s.getStateObject(addr)
 	if stateObject != nil {
 		return stateObject.GetState(hash)
 	}
-	return common.Hash{}
+	return common.Hash{}, nil
 }
 
 // GetProof returns the Merkle proof for a given account.
@@ -414,12 +427,12 @@ func (s *StateDB) GetStorageProof(a common.Address, key common.Hash) ([][]byte, 
 }
 
 // GetCommittedState retrieves a value from the given account's committed storage trie.
-func (s *StateDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
+func (s *StateDB) GetCommittedState(addr common.Address, hash common.Hash) (common.Hash, error) {
 	stateObject := s.getStateObject(addr)
 	if stateObject != nil {
 		return stateObject.GetCommittedState(hash)
 	}
-	return common.Hash{}
+	return common.Hash{}, nil
 }
 
 // Database retrieves the low level database supporting the lower level trie ops.
@@ -491,11 +504,12 @@ func (s *StateDB) SetCode(addr common.Address, code []byte) {
 	}
 }
 
-func (s *StateDB) SetState(addr common.Address, key, value common.Hash) {
+func (s *StateDB) SetState(addr common.Address, key, value common.Hash) error {
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
-		stateObject.SetState(key, value)
+		return stateObject.SetState(key, value)
 	}
+	return nil
 }
 
 // SetStorage replaces the entire storage for the specified account with given
@@ -826,6 +840,8 @@ func (s *StateDB) Copy() *StateDB {
 		preimages:            make(map[common.Hash][]byte, len(s.preimages)),
 		journal:              newJournal(),
 		hasher:               crypto.NewKeccakState(),
+		targetEpoch:          s.targetEpoch,
+		targetBlock:          big.NewInt(s.targetBlock.Int64()),
 
 		// In order for the block producer to be able to use and make additions
 		// to the snapshot tree, we need to copy that as well. Otherwise, any
@@ -1457,6 +1473,15 @@ func (s *StateDB) convertAccountSet(set map[common.Address]*types.StateAccount) 
 		}
 	}
 	return ret
+}
+
+// enableStateEpoch return if enable state expiry hard fork, if inExpired, return if after epoch1
+func (s *StateDB) enableStateEpoch(inExpired bool) bool {
+	if !inExpired {
+		return s.targetEpoch > types.StateEpoch0
+	}
+
+	return s.targetEpoch > types.StateEpoch1
 }
 
 // copySet returns a deep-copied set.
