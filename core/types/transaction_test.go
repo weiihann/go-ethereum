@@ -457,10 +457,10 @@ func TestReviveStateTx(t *testing.T) {
 	key, _ := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
 	to := common.HexToAddress("0x01")
 	kv := ReviveKeyValues{
-		key:    []byte("key"),
-		values: make([][]byte, 1),
+		Key:    []byte("key"),
+		Values: make([][]byte, 1),
 	}
-	kv.values[0] = []byte("value")
+	kv.Values[0] = []byte("value")
 
 	reviveList := make(ReviveList, 1)
 	reviveList[0].Address = to

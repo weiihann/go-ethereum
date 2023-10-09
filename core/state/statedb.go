@@ -1475,6 +1475,26 @@ func (s *StateDB) convertAccountSet(set map[common.Address]*types.StateAccount) 
 	return ret
 }
 
+// TODO(w)
+func (s *StateDB) Revive(reviveList types.ReviveList) error {
+	if !s.enableStateEpoch(true) {
+		return errors.New("cannot revive state before epoch2")
+	}
+
+	for _, rv := range reviveList {
+		stateObject := s.getStateObject(rv.Address)
+		if stateObject == nil {
+			return errors.New("cannot revive non-existent state object")
+		}
+
+		if err := stateObject.ReviveState(rv.KV); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // enableStateEpoch return if enable state expiry hard fork, if inExpired, return if after epoch1
 func (s *StateDB) enableStateEpoch(inExpired bool) bool {
 	if !inExpired {

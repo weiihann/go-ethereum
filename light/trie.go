@@ -167,6 +167,10 @@ type odrTrie struct {
 	trie *trie.Trie
 }
 
+func (t *odrTrie) Revive(types.ReviveKeyValues) error {
+	panic("not implemented")
+}
+
 func (t *odrTrie) HashKey(key []byte) []byte {
 	return key
 }

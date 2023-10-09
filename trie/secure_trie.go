@@ -72,6 +72,10 @@ func NewStateTrie(id *ID, db *Database) (*StateTrie, error) {
 	return &StateTrie{trie: *trie, preimages: db.preimages}, nil
 }
 
+func (t *StateTrie) Revive(types.ReviveKeyValues) error {
+	panic("not implemented")
+}
+
 // MustGet returns the value for key stored in the trie.
 // The value bytes must not be modified by the caller.
 //
