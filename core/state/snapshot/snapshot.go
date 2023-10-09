@@ -177,6 +177,44 @@ type Tree struct {
 	onFlatten func() // Hook invoked when the bottom most diff layers are flattened
 }
 
+// SnapValue store snap with Epoch after BEP-216
+type SnapValue struct {
+	Epoch types.StateEpoch
+	Val   common.Hash
+}
+
+func ParseSnapValFromBytes(enc []byte) (*SnapValue, error) {
+	k, content, _, err := rlp.Split(enc)
+	if err != nil {
+		return nil, err
+	}
+	if k != rlp.List {
+		val := common.Hash{}
+		val.SetBytes(content)
+		return &SnapValue{
+			Epoch: 0,
+			Val:   val,
+		}, nil
+	}
+	var val SnapValue
+	if err = rlp.DecodeBytes(enc, &val); err != nil {
+		return nil, err
+	}
+	return &val, nil
+}
+
+func NewSnapValBytes(epoch types.StateEpoch, val common.Hash) ([]byte, error) {
+	snapVal := SnapValue{
+		Epoch: epoch,
+		Val:   val,
+	}
+	enc, err := rlp.EncodeToBytes(&snapVal)
+	if err != nil {
+		return nil, err
+	}
+	return enc, nil
+}
+
 // New attempts to load an already existing snapshot from a persistent key-value
 // store (with a number of memory layers from a journal), ensuring that the head
 // of the snapshot matches the expected one.
