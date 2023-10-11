@@ -587,7 +587,7 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "mergeNetsplitBlock", block: c.MergeNetsplitBlock, optional: true},
 		{name: "stateExpiryBlock1", block: c.StateExpiryBlock1, optional: true},
 		{name: "stateExpiryBlock2", block: c.StateExpiryBlock2, optional: true},
-		{name: "shanghaiTime", timestamp: c.ShanghaiTime},
+		{name: "shanghaiTime", timestamp: c.ShanghaiTime, optional: true},
 		{name: "cancunTime", timestamp: c.CancunTime, optional: true},
 		{name: "pragueTime", timestamp: c.PragueTime, optional: true},
 		{name: "verkleTime", timestamp: c.VerkleTime, optional: true},

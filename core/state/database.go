@@ -27,7 +27,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
@@ -324,7 +323,6 @@ func (db *cachingDB) OpenTrie(root common.Hash) (Trie, error) {
 
 	// TODO separate both cases when I can be certain that it won't
 	// find a Verkle trie where is expects a Transitoion trie.
-	log.Info("cachingDB.OpenTrie", "root", root, "db.started", db.started, "db.ended", db.ended)
 	if db.started || db.ended {
 		var r common.Hash
 		if db.ended {
