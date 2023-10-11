@@ -841,7 +841,7 @@ func (s *StateDB) Copy() *StateDB {
 		journal:              newJournal(),
 		hasher:               crypto.NewKeccakState(),
 		targetEpoch:          s.targetEpoch,
-		targetBlock:          big.NewInt(s.targetBlock.Int64()),
+		targetBlock:          s.targetBlock,
 
 		// In order for the block producer to be able to use and make additions
 		// to the snapshot tree, we need to copy that as well. Otherwise, any
@@ -1308,6 +1308,7 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		start = time.Now()
 	}
 	root, set, err := s.trie.Commit(true)
+	log.Info("StateDB.Commit", "root", root, "isVerkle", s.trie.IsVerkle())
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -1475,7 +1476,6 @@ func (s *StateDB) convertAccountSet(set map[common.Address]*types.StateAccount) 
 	return ret
 }
 
-// TODO(w)
 func (s *StateDB) Revive(reviveList types.ReviveList) error {
 	if !s.enableStateEpoch(true) {
 		return errors.New("cannot revive state before epoch2")

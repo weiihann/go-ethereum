@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"runtime"
 	"strconv"
@@ -197,6 +198,7 @@ func initGenesis(ctx *cli.Context) error {
 	if err := json.NewDecoder(file).Decode(genesis); err != nil {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
+
 	// Open and initialise both full and light databases
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
@@ -208,6 +210,7 @@ func initGenesis(ctx *cli.Context) error {
 		}
 		triedb := trie.NewDatabaseWithConfig(chaindb, &trie.Config{
 			Preimages: ctx.Bool(utils.CachePreimagesFlag.Name),
+			Verkle:    genesis.Config.IsVerkle(big.NewInt(int64(0)), genesis.Timestamp),
 		})
 		_, hash, err := core.SetupGenesisBlock(chaindb, triedb, genesis)
 		if err != nil {

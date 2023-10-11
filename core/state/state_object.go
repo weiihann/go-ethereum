@@ -466,7 +466,6 @@ func (s *stateObject) updateTrie() (Trie, error) {
 			if err != nil {
 				return nil, err
 			}
-			// TODO(w): handle snapshot
 			trimmedVal := common.TrimLeftZeroes(value[:])
 			snapshotVal, _ := snapshot.NewSnapValBytes(s.targetEpoch, value)
 			if err := tr.UpdateStorage(s.address, key[:], trimmedVal); err != nil {

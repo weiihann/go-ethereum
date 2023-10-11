@@ -1829,6 +1829,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 			// that if so. Otherwise we need to generate a new genesis spec.
 			chaindb := MakeChainDatabase(ctx, stack, readonly)
 			if rawdb.ReadCanonicalHash(chaindb, 0) != (common.Hash{}) {
+				log.Info("SetEthConfig nil genesis")
 				cfg.Genesis = nil // fallback to db content
 			}
 			chaindb.Close()
@@ -1879,6 +1880,7 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 		stack.RegisterAPIs(tracers.APIs(backend.ApiBackend))
 		return backend.ApiBackend, nil
 	}
+	log.Info("RegisterEthService", "genesis", cfg.Genesis)
 	backend, err := eth.New(stack, cfg)
 	if err != nil {
 		Fatalf("Failed to register the Ethereum service: %v", err)
