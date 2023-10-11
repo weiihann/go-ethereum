@@ -166,7 +166,6 @@ func (ga *GenesisAlloc) flush(db ethdb.Database, triedb *trie.Database, blockhas
 		}
 	}
 	root, err := statedb.Commit(0, false)
-	log.Info("GenesisAlloc flush", "root", root, "triedb.isVerkle", triedb.IsVerkle())
 	if err != nil {
 		return err
 	}
@@ -311,7 +310,6 @@ func SetupGenesisBlock(db ethdb.Database, triedb *trie.Database, genesis *Genesi
 }
 
 func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *trie.Database, genesis *Genesis, overrides *ChainOverrides) (*params.ChainConfig, common.Hash, error) {
-	log.Info("SetupGenesisBlockWithOverride", "triedb.Verkle", triedb.IsVerkle())
 	if genesis != nil && genesis.Config == nil {
 		return params.AllEthashProtocolChanges, common.Hash{}, errGenesisNoConfig
 	}
@@ -345,25 +343,25 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *trie.Database, gen
 	}
 	// We have the genesis block in database(perhaps in ancient database)
 	// but the corresponding state is missing.
-	header := rawdb.ReadHeader(db, stored, 0)
-	if header.Root != types.EmptyRootHash && !rawdb.HasLegacyTrieNode(db, header.Root) {
-		if genesis == nil {
-			log.Info("Genesis is nil")
-			genesis = DefaultGenesisBlock()
-		}
-		// Ensure the stored genesis matches with the given one.
-		hash := genesis.ToBlock().Hash()
-		if hash != stored {
-			log.Info("Genesis block mismatch 1")
-			return genesis.Config, hash, &GenesisMismatchError{stored, hash}
-		}
-		block, err := genesis.Commit(db, triedb)
-		if err != nil {
-			return genesis.Config, hash, err
-		}
-		applyOverrides(genesis.Config)
-		return genesis.Config, block.Hash(), nil
-	}
+	// header := rawdb.ReadHeader(db, stored, 0)
+	// if header.Root != types.EmptyRootHash && !rawdb.HasLegacyTrieNode(db, header.Root) {
+	// 	if genesis == nil {
+	// 		log.Info("Genesis is nil")
+	// 		genesis = DefaultGenesisBlock()
+	// 	}
+	// 	// Ensure the stored genesis matches with the given one.
+	// 	hash := genesis.ToBlock().Hash()
+	// 	if hash != stored {
+	// 		log.Info("Genesis block mismatch 1")
+	// 		return genesis.Config, hash, &GenesisMismatchError{stored, hash}
+	// 	}
+	// 	block, err := genesis.Commit(db, triedb)
+	// 	if err != nil {
+	// 		return genesis.Config, hash, err
+	// 	}
+	// 	applyOverrides(genesis.Config)
+	// 	return genesis.Config, block.Hash(), nil
+	// }
 	// Check whether the genesis block is already written.
 	if genesis != nil {
 		hash := genesis.ToBlock().Hash()
@@ -462,7 +460,6 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 // ToBlock returns the genesis block according to genesis specification.
 func (g *Genesis) ToBlock() *types.Block {
 	root, err := g.Alloc.deriveHash(g.Config, g.Timestamp)
-	log.Info("Genesis.ToBlock", "root", root)
 	if err != nil {
 		panic(err)
 	}
@@ -546,7 +543,6 @@ func (g *Genesis) Commit(db ethdb.Database, triedb *trie.Database) (*types.Block
 	rawdb.WriteHeadHeaderHash(db, block.Hash())
 	rawdb.WriteChainConfig(db, block.Hash(), config)
 
-	log.Info("Genesis.Commit", "blockHash", block.Hash(), "blockRoot", block.Root(), "hasNode", rawdb.HasLegacyTrieNode(db, block.Root()))
 	return block, nil
 }
 

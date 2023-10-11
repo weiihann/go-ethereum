@@ -1308,7 +1308,6 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, er
 		start = time.Now()
 	}
 	root, set, err := s.trie.Commit(true)
-	log.Info("StateDB.Commit", "root", root, "isVerkle", s.trie.IsVerkle())
 	if err != nil {
 		return common.Hash{}, err
 	}
