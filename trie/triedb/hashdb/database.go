@@ -410,6 +410,7 @@ func (db *Database) Commit(node common.Hash, report bool) error {
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
 	// by only uncaching existing data when the database write finalizes.
+	log.Info("db.Commit", "node", node)
 	start := time.Now()
 	batch := db.diskdb.NewBatch()
 
@@ -455,9 +456,11 @@ func (db *Database) Commit(node common.Hash, report bool) error {
 
 // commit is the private locked version of Commit.
 func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleaner) error {
+	log.Info("db.commit", "hash", hash)
 	// If the node does not exist, it's a previously committed node
 	node, ok := db.dirties[hash]
 	if !ok {
+		log.Info("db.commit doesn't exist in dirties")
 		return nil
 	}
 	var err error
@@ -473,6 +476,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleane
 	}
 	// If we've reached an optimal batch size, commit and start over
 	rawdb.WriteLegacyTrieNode(batch, hash, node.node)
+	log.Info("after writeLegacyTrieNode", "hash", hash, "node.node", node.node)
 	if batch.ValueSize() >= ethdb.IdealBatchSize {
 		if err := batch.Write(); err != nil {
 			return err
@@ -550,6 +554,7 @@ func (db *Database) Initialized(genesisRoot common.Hash) bool {
 // Update inserts the dirty nodes in provided nodeset into database and link the
 // account trie with multiple storage tries if necessary.
 func (db *Database) Update(root common.Hash, parent common.Hash, nodes *trienode.MergedNodeSet) error {
+	log.Info("db.Update", "root", root, "parent", parent, "nodes", nodes)
 	// Ensure the parent state is present and signal a warning if not.
 	if parent != types.EmptyRootHash {
 		if blob, _ := db.Node(parent); len(blob) == 0 {

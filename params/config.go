@@ -417,6 +417,12 @@ func (c *ChainConfig) Description() string {
 	if c.VerkleTime != nil {
 		banner += fmt.Sprintf(" - Verkle:                      @%-10v\n", *c.VerkleTime)
 	}
+	if c.StateExpiryBlock1 != nil {
+		banner += fmt.Sprintf(" - State expiry fork 1:         #%-8v\n", c.StateExpiryBlock1)
+	}
+	if c.StateExpiryBlock2 != nil {
+		banner += fmt.Sprintf(" - State expiry fork 2:         #%-8v\n", c.StateExpiryBlock2)
+	}
 	return banner
 }
 

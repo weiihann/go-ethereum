@@ -166,6 +166,7 @@ func (ga *GenesisAlloc) flush(db ethdb.Database, triedb *trie.Database, blockhas
 		}
 	}
 	root, err := statedb.Commit(0, false)
+	log.Info("GenesisAlloc flush", "root", root, "triedb.isVerkle", triedb.IsVerkle())
 	if err != nil {
 		return err
 	}
@@ -310,9 +311,11 @@ func SetupGenesisBlock(db ethdb.Database, triedb *trie.Database, genesis *Genesi
 }
 
 func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *trie.Database, genesis *Genesis, overrides *ChainOverrides) (*params.ChainConfig, common.Hash, error) {
+	log.Info("SetupGenesisBlockWithOverride", "triedb.Verkle", triedb.IsVerkle())
 	if genesis != nil && genesis.Config == nil {
 		return params.AllEthashProtocolChanges, common.Hash{}, errGenesisNoConfig
 	}
+
 	applyOverrides := func(config *params.ChainConfig) {
 		if config != nil {
 			if overrides != nil && overrides.OverrideCancun != nil {
@@ -337,6 +340,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *trie.Database, gen
 			return genesis.Config, common.Hash{}, err
 		}
 		applyOverrides(genesis.Config)
+
 		return genesis.Config, block.Hash(), nil
 	}
 	// We have the genesis block in database(perhaps in ancient database)
@@ -344,11 +348,13 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *trie.Database, gen
 	header := rawdb.ReadHeader(db, stored, 0)
 	if header.Root != types.EmptyRootHash && !rawdb.HasLegacyTrieNode(db, header.Root) {
 		if genesis == nil {
+			log.Info("Genesis is nil")
 			genesis = DefaultGenesisBlock()
 		}
 		// Ensure the stored genesis matches with the given one.
 		hash := genesis.ToBlock().Hash()
 		if hash != stored {
+			log.Info("Genesis block mismatch 1")
 			return genesis.Config, hash, &GenesisMismatchError{stored, hash}
 		}
 		block, err := genesis.Commit(db, triedb)
@@ -414,6 +420,7 @@ func LoadChainConfig(db ethdb.Database, genesis *Genesis) (*params.ChainConfig, 
 	if stored != (common.Hash{}) {
 		storedcfg := rawdb.ReadChainConfig(db, stored)
 		if storedcfg != nil {
+			log.Info("LoadChainConfig using stored config", "hash", stored)
 			return storedcfg, nil
 		}
 	}
@@ -455,6 +462,7 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 // ToBlock returns the genesis block according to genesis specification.
 func (g *Genesis) ToBlock() *types.Block {
 	root, err := g.Alloc.deriveHash(g.Config, g.Timestamp)
+	log.Info("Genesis.ToBlock", "root", root)
 	if err != nil {
 		panic(err)
 	}
@@ -537,6 +545,8 @@ func (g *Genesis) Commit(db ethdb.Database, triedb *trie.Database) (*types.Block
 	rawdb.WriteHeadFastBlockHash(db, block.Hash())
 	rawdb.WriteHeadHeaderHash(db, block.Hash())
 	rawdb.WriteChainConfig(db, block.Hash(), config)
+
+	log.Info("Genesis.Commit", "blockHash", block.Hash(), "blockRoot", block.Root(), "hasNode", rawdb.HasLegacyTrieNode(db, block.Root()))
 	return block, nil
 }
 

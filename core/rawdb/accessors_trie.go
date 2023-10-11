@@ -151,7 +151,8 @@ func ReadLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) []byte {
 
 // HasLegacyTrieNode checks if the trie node with the provided hash is present in db.
 func HasLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) bool {
-	ok, _ := db.Has(hash.Bytes())
+	ok, err := db.Has(hash.Bytes())
+	log.Info("HasLegacyTrieNode", "hash", hash, "ok", ok, "err", err)
 	return ok
 }
 
