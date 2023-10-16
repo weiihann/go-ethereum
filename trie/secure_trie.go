@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/gballet/go-verkle"
 )
 
 // SecureTrie is the old name of StateTrie.
@@ -70,6 +71,10 @@ func NewStateTrie(id *ID, db *Database) (*StateTrie, error) {
 		return nil, err
 	}
 	return &StateTrie{trie: *trie, preimages: db.preimages}, nil
+}
+
+func (t *StateTrie) SetCurrEpoch(epoch verkle.StateEpoch) {
+	panic("not implemented")
 }
 
 func (t *StateTrie) Revive(types.ReviveKeyValues) error {

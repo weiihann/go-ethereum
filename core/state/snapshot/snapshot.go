@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/gballet/go-verkle"
 )
 
 var (
@@ -179,7 +180,7 @@ type Tree struct {
 
 // SnapValue store snap with Epoch after BEP-216
 type SnapValue struct {
-	Epoch types.StateEpoch
+	Epoch verkle.StateEpoch
 	Val   common.Hash
 }
 
@@ -203,7 +204,7 @@ func ParseSnapValFromBytes(enc []byte) (*SnapValue, error) {
 	return &val, nil
 }
 
-func NewSnapValBytes(epoch types.StateEpoch, val common.Hash) ([]byte, error) {
+func NewSnapValBytes(epoch verkle.StateEpoch, val common.Hash) ([]byte, error) {
 	snapVal := SnapValue{
 		Epoch: epoch,
 		Val:   val,

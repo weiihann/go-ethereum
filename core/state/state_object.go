@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -83,7 +84,7 @@ type stateObject struct {
 	dirtyReviveTrie    Trie
 	pendingReviveState map[string]common.Hash
 	dirtyReviveState   map[string]common.Hash
-	targetEpoch        types.StateEpoch
+	TargetEpoch        verkle.StateEpoch
 
 	pendingAccessedState map[common.Hash]int
 	dirtyAccessedState   map[common.Hash]int
@@ -117,16 +118,18 @@ func newObject(db *StateDB, address common.Address, acct *types.StateAccount) *s
 	}
 
 	return &stateObject{
-		db:                 db,
-		address:            address,
-		addrHash:           crypto.Keccak256Hash(address[:]),
-		origin:             origin,
-		data:               *acct,
-		originStorage:      make(Storage),
-		pendingStorage:     make(Storage),
-		dirtyStorage:       make(Storage),
-		pendingReviveState: make(map[string]common.Hash),
-		dirtyReviveState:   make(map[string]common.Hash),
+		db:                   db,
+		address:              address,
+		addrHash:             crypto.Keccak256Hash(address[:]),
+		origin:               origin,
+		data:                 *acct,
+		originStorage:        make(Storage),
+		pendingStorage:       make(Storage),
+		dirtyStorage:         make(Storage),
+		pendingReviveState:   make(map[string]common.Hash),
+		dirtyReviveState:     make(map[string]common.Hash),
+		pendingAccessedState: make(map[common.Hash]int),
+		dirtyAccessedState:   make(map[common.Hash]int),
 	}
 }
 
@@ -195,11 +198,13 @@ func (s *stateObject) GetState(key common.Hash) (common.Hash, error) {
 	// If we have a dirty value for this state entry, return it
 	value, dirty := s.dirtyStorage[key]
 	if dirty {
+		log.Info("stateObject.GetState dirty", "key", key, "value", value)
 		s.accessState(key)
 		return value, nil
 	}
 	if s.db.enableStateEpoch(true) {
 		if reviveVal, revive := s.queryFromReviveState(s.db.db, s.dirtyReviveState, key); revive {
+			log.Info("stateObject.GetState queryFromReviveState", "key", key, "value", value)
 			s.accessState(key)
 			return reviveVal, nil
 		}
@@ -210,6 +215,7 @@ func (s *stateObject) GetState(key common.Hash) (common.Hash, error) {
 		return common.Hash{}, err
 	}
 	if val != (common.Hash{}) {
+		log.Info("stateObject.GetState val != common.Hash", "key", key, "value", value)
 		s.accessState(key)
 	}
 	return val, nil
@@ -255,7 +261,7 @@ func (s *stateObject) GetCommittedState(key common.Hash) (common.Hash, error) {
 				if err != nil {
 					s.db.setError(err)
 				}
-				if err == nil && s.db.enableStateEpoch(true) && types.EpochExpired(sv.Epoch, s.targetEpoch) {
+				if err == nil && s.db.enableStateEpoch(true) && types.EpochExpired(sv.Epoch, s.TargetEpoch) {
 					_, err = s.getDirtyReviveTrie(s.db.db).GetStorage(s.address, key.Bytes())
 					if enErr, ok := err.(*trie.ExpiredNodeError); ok {
 						return common.Hash{}, NewExpiredStateError(s.address, key, enErr).Reason("snap query")
@@ -325,6 +331,7 @@ func (s *stateObject) SetState(key, value common.Hash) error {
 			return nil
 		}
 	}
+	log.Info("stateObject.SetState", "key", key, "value", value)
 	s.accessState(key)
 	// New value is different, update and journal the change
 	s.db.journal.append(storageChange{
@@ -419,7 +426,7 @@ func (s *stateObject) updateTrie() (Trie, error) {
 			trimmedVal := common.TrimLeftZeroes(value[:])
 			// Encoding []byte cannot fail, ok to ignore the error.
 			if s.db.enableStateEpoch(true) {
-				snapshotVal, _ = snapshot.NewSnapValBytes(s.targetEpoch, value)
+				snapshotVal, _ = snapshot.NewSnapValBytes(s.TargetEpoch, value)
 			} else {
 				snapshotVal, _ = rlp.EncodeToBytes(trimmedVal)
 			}
@@ -467,7 +474,7 @@ func (s *stateObject) updateTrie() (Trie, error) {
 				return nil, err
 			}
 			trimmedVal := common.TrimLeftZeroes(value[:])
-			snapshotVal, _ := snapshot.NewSnapValBytes(s.targetEpoch, value)
+			snapshotVal, _ := snapshot.NewSnapValBytes(s.TargetEpoch, value)
 			if err := tr.UpdateStorage(s.address, key[:], trimmedVal); err != nil {
 				s.db.setError(err)
 				return nil, err
@@ -605,7 +612,7 @@ func (s *stateObject) deepCopy(db *StateDB) *stateObject {
 	obj.selfDestructed = s.selfDestructed
 	obj.dirtyCode = s.dirtyCode
 	obj.deleted = s.deleted
-	obj.targetEpoch = s.targetEpoch
+	obj.TargetEpoch = s.TargetEpoch
 
 	if s.dirtyReviveTrie != nil {
 		obj.dirtyReviveTrie = db.db.CopyTrie(s.dirtyReviveTrie)
@@ -730,7 +737,7 @@ func (s *stateObject) accessState(key common.Hash) {
 		slot:    &key,
 	})
 	count := s.dirtyAccessedState[key]
-	s.dirtyAccessedState[key] = count + 1
+	s.dirtyAccessedState[key] = count + 1 // TODO(w): dirtyAccessedState is empty?
 }
 
 func (s *stateObject) ReviveState(reviveKeyValues []types.ReviveKeyValues) error {

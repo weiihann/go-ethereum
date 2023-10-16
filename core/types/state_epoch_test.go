@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/gballet/go-verkle"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -143,12 +144,12 @@ func TestSimpleStateEpoch(t *testing.T) {
 	assert.NoError(t, temp.CheckConfigForkOrder())
 
 	assert.Equal(t, StateEpoch0, GetStateEpoch(temp, big.NewInt(0)))
-	assert.Equal(t, StateEpoch(0), GetStateEpoch(temp, big.NewInt(1000)))
-	assert.Equal(t, StateEpoch(1), GetStateEpoch(temp, big.NewInt(10000)))
-	assert.Equal(t, StateEpoch(1), GetStateEpoch(temp, big.NewInt(19999)))
-	assert.Equal(t, StateEpoch(2), GetStateEpoch(temp, big.NewInt(20000)))
-	assert.Equal(t, StateEpoch(3), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(20000), epochPeriod)))
-	assert.Equal(t, StateEpoch(102), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(20000), new(big.Int).Mul(big.NewInt(100), epochPeriod))))
+	assert.Equal(t, verkle.StateEpoch(0), GetStateEpoch(temp, big.NewInt(1000)))
+	assert.Equal(t, verkle.StateEpoch(1), GetStateEpoch(temp, big.NewInt(10000)))
+	assert.Equal(t, verkle.StateEpoch(1), GetStateEpoch(temp, big.NewInt(19999)))
+	assert.Equal(t, verkle.StateEpoch(2), GetStateEpoch(temp, big.NewInt(20000)))
+	assert.Equal(t, verkle.StateEpoch(3), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(20000), epochPeriod)))
+	assert.Equal(t, verkle.StateEpoch(102), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(20000), new(big.Int).Mul(big.NewInt(100), epochPeriod))))
 }
 
 func TestNoZeroStateEpoch(t *testing.T) {
@@ -168,12 +169,12 @@ func TestNoZeroStateEpoch(t *testing.T) {
 	}
 	assert.NoError(t, temp.CheckConfigForkOrder())
 
-	assert.Equal(t, StateEpoch(0), GetStateEpoch(temp, big.NewInt(0)))
-	assert.Equal(t, StateEpoch(1), GetStateEpoch(temp, big.NewInt(1)))
-	assert.Equal(t, StateEpoch(2), GetStateEpoch(temp, big.NewInt(2)))
-	assert.Equal(t, StateEpoch(2), GetStateEpoch(temp, big.NewInt(10000)))
-	assert.Equal(t, StateEpoch(3), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(2), epochPeriod)))
-	assert.Equal(t, StateEpoch(102), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(2), new(big.Int).Mul(big.NewInt(100), epochPeriod))))
+	assert.Equal(t, verkle.StateEpoch(0), GetStateEpoch(temp, big.NewInt(0)))
+	assert.Equal(t, verkle.StateEpoch(1), GetStateEpoch(temp, big.NewInt(1)))
+	assert.Equal(t, verkle.StateEpoch(2), GetStateEpoch(temp, big.NewInt(2)))
+	assert.Equal(t, verkle.StateEpoch(2), GetStateEpoch(temp, big.NewInt(10000)))
+	assert.Equal(t, verkle.StateEpoch(3), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(2), epochPeriod)))
+	assert.Equal(t, verkle.StateEpoch(102), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(2), new(big.Int).Mul(big.NewInt(100), epochPeriod))))
 }
 
 func TestNearestStateEpoch(t *testing.T) {
@@ -193,9 +194,9 @@ func TestNearestStateEpoch(t *testing.T) {
 	}
 	assert.NoError(t, temp.CheckConfigForkOrder())
 
-	assert.Equal(t, StateEpoch(0), GetStateEpoch(temp, big.NewInt(0)))
-	assert.Equal(t, StateEpoch(1), GetStateEpoch(temp, big.NewInt(10000)))
-	assert.Equal(t, StateEpoch(2), GetStateEpoch(temp, big.NewInt(10001)))
-	assert.Equal(t, StateEpoch(3), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(10001), epochPeriod)))
-	assert.Equal(t, StateEpoch(102), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(10001), new(big.Int).Mul(big.NewInt(100), epochPeriod))))
+	assert.Equal(t, verkle.StateEpoch(0), GetStateEpoch(temp, big.NewInt(0)))
+	assert.Equal(t, verkle.StateEpoch(1), GetStateEpoch(temp, big.NewInt(10000)))
+	assert.Equal(t, verkle.StateEpoch(2), GetStateEpoch(temp, big.NewInt(10001)))
+	assert.Equal(t, verkle.StateEpoch(3), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(10001), epochPeriod)))
+	assert.Equal(t, verkle.StateEpoch(102), GetStateEpoch(temp, new(big.Int).Add(big.NewInt(10001), new(big.Int).Mul(big.NewInt(100), epochPeriod))))
 }

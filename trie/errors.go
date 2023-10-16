@@ -21,7 +21,7 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/gballet/go-verkle"
 )
 
 // ErrCommitted is returned when a already committed trie is requested for usage.
@@ -54,10 +54,10 @@ func (err *MissingNodeError) Error() string {
 
 type ExpiredNodeError struct {
 	Path  []byte // hex-encoded path to the expired node
-	Epoch types.StateEpoch
+	Epoch verkle.StateEpoch
 }
 
-func NewExpiredNodeError(path []byte, epoch types.StateEpoch) error {
+func NewExpiredNodeError(path []byte, epoch verkle.StateEpoch) error {
 	return &ExpiredNodeError{
 		Path:  path,
 		Epoch: epoch,

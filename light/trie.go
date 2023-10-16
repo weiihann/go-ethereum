@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/gballet/go-verkle"
 )
 
 var (
@@ -50,6 +51,14 @@ type odrDatabase struct {
 	ctx     context.Context
 	id      *TrieID
 	backend OdrBackend
+}
+
+func (db *odrDatabase) SetCurrEpoch(epoch verkle.StateEpoch) {
+	panic("not implemented")
+}
+
+func (db *odrDatabase) EnableStateExpiry(enabled bool) {
+	panic("not implemented")
 }
 
 func (db *odrDatabase) OpenTrie(root common.Hash) (state.Trie, error) {
@@ -165,6 +174,10 @@ type odrTrie struct {
 	db   *odrDatabase
 	id   *TrieID
 	trie *trie.Trie
+}
+
+func (t *odrTrie) SetCurrEpoch(epoch verkle.StateEpoch) {
+	panic("not implemented")
 }
 
 func (t *odrTrie) Revive(types.ReviveKeyValues) error {
