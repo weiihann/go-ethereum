@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/trie/triestate"
+	"github.com/gballet/go-verkle"
 )
 
 type revision struct {
@@ -128,8 +129,8 @@ type StateDB struct {
 	nextRevisionId int
 
 	// State expiry
-	targetEpoch types.StateEpoch
-	targetBlock *big.Int
+	TargetEpoch verkle.StateEpoch
+	TargetBlock *big.Int
 
 	// Measurements gathered during execution for debugging purposes
 	AccountReads         time.Duration
@@ -153,27 +154,25 @@ type StateDB struct {
 
 // New creates a new state from a given trie.
 func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
-	return newStateDB(root, db, snaps, types.StateEpoch0)
+	return newStateDB(root, db, snaps, verkle.StateEpoch0)
 }
 
 // NewWithStateEpoch creates a new state from a given trie.
-func NewWithStateEpoch(config *params.ChainConfig, targetBlock *big.Int, root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
-	targetEpoch := types.GetStateEpoch(config, targetBlock)
-	stateDB, err := newStateDB(root, db, snaps, targetEpoch)
+func NewWithStateEpoch(config *params.ChainConfig, TargetBlock *big.Int, root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
+	TargetEpoch := types.GetStateEpoch(config, TargetBlock)
+	stateDB, err := newStateDB(root, db, snaps, TargetEpoch)
 	if err != nil {
 		return nil, err
 	}
 
-	log.Debug("NewWithStateEpoch", "targetBlock", targetBlock, "targetEpoch", targetEpoch, "root", root)
-	// init target block and shadowNodeRW
-	stateDB.targetBlock = targetBlock
+	stateDB.TargetBlock = TargetBlock
 	if err != nil {
 		return nil, err
 	}
 	return stateDB, nil
 }
 
-func newStateDB(root common.Hash, db Database, snaps *snapshot.Tree, targetEpoch types.StateEpoch) (*StateDB, error) {
+func newStateDB(root common.Hash, db Database, snaps *snapshot.Tree, TargetEpoch verkle.StateEpoch) (*StateDB, error) {
 	tr, err := db.OpenTrie(root)
 	if err != nil {
 		return nil, err
@@ -197,7 +196,7 @@ func newStateDB(root common.Hash, db Database, snaps *snapshot.Tree, targetEpoch
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
 		hasher:               crypto.NewKeccakState(),
-		targetEpoch:          targetEpoch,
+		TargetEpoch:          TargetEpoch,
 	}
 	if tr.IsVerkle() {
 		sdb.witness = sdb.NewAccessWitness()
@@ -654,6 +653,7 @@ func (s *StateDB) getStateObject(addr common.Address) *stateObject {
 // flag set. This is needed by the state journal to revert to the correct s-
 // destructed object instead of wiping all knowledge about the state object.
 func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
+	s.trie.SetCurrEpoch(s.TargetEpoch)
 	// Prefer live objects if any is available
 	if obj := s.stateObjects[addr]; obj != nil {
 		return obj
@@ -840,8 +840,8 @@ func (s *StateDB) Copy() *StateDB {
 		preimages:            make(map[common.Hash][]byte, len(s.preimages)),
 		journal:              newJournal(),
 		hasher:               crypto.NewKeccakState(),
-		targetEpoch:          s.targetEpoch,
-		targetBlock:          s.targetBlock,
+		TargetEpoch:          s.TargetEpoch,
+		TargetBlock:          s.TargetBlock,
 
 		// In order for the block producer to be able to use and make additions
 		// to the snapshot tree, we need to copy that as well. Otherwise, any
@@ -1497,10 +1497,10 @@ func (s *StateDB) Revive(reviveList types.ReviveList) error {
 // enableStateEpoch return if enable state expiry hard fork, if inExpired, return if after epoch1
 func (s *StateDB) enableStateEpoch(inExpired bool) bool {
 	if !inExpired {
-		return s.targetEpoch > types.StateEpoch0
+		return s.TargetEpoch > verkle.StateEpoch0
 	}
 
-	return s.targetEpoch > types.StateEpoch1
+	return s.TargetEpoch > verkle.StateEpoch1
 }
 
 // copySet returns a deep-copied set.

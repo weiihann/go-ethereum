@@ -94,6 +94,9 @@ type Database interface {
 	AddRootTranslation(originalRoot, translatedRoot common.Hash)
 
 	SetLastMerkleRoot(root common.Hash)
+
+	// SetCurrEpoch(epoch verkle.StateEpoch)
+	// EnableStateExpiry(enabled bool)
 }
 
 // Trie is a Ethereum Merkle Patricia trie.
@@ -170,6 +173,7 @@ type Trie interface {
 
 	HashKey(key []byte) []byte
 
+	SetCurrEpoch(epoch verkle.StateEpoch)
 	Revive(types.ReviveKeyValues) error
 }
 
@@ -291,6 +295,17 @@ type cachingDB struct {
 	// maximum number of leaves of the conversion is reached before the whole storage is
 	// processed.
 	StorageProcessed bool
+
+	enableStateExpiry bool
+	currEpoch         verkle.StateEpoch
+}
+
+func (db *cachingDB) SetCurrEpoch(epoch verkle.StateEpoch) {
+	db.currEpoch = epoch
+}
+
+func (db *cachingDB) EnableStateExpiry(enabled bool) {
+	db.enableStateExpiry = enabled
 }
 
 func (db *cachingDB) openMPTTrie(root common.Hash) (Trie, error) {

@@ -38,6 +38,10 @@ func NewTransitionTree(base *SecureTrie, overlay *VerkleTrie, st bool) *Transiti
 	}
 }
 
+func (t *TransitionTrie) SetCurrEpoch(epoch verkle.StateEpoch) {
+	panic("not implemented")
+}
+
 func (t *TransitionTrie) Revive(types.ReviveKeyValues) error {
 	panic("not implemented")
 }

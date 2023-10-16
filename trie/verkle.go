@@ -39,12 +39,20 @@ type VerkleTrie struct {
 	db         *Database
 	pointCache *utils.PointCache
 	ended      bool
+	currEpoch  verkle.StateEpoch
+}
+
+func (t *VerkleTrie) SetCurrEpoch(epoch verkle.StateEpoch) {
+	if epoch > t.currEpoch {
+		t.currEpoch = epoch
+	}
 }
 
 func (t *VerkleTrie) Revive(reviveKV types.ReviveKeyValues) error {
 	var err error
 	switch root := t.root.(type) {
 	case *verkle.InternalNode:
+		root.UpdateCurrEpoch(t.currEpoch)
 		err = root.Revive(reviveKV.Key, reviveKV.Values, t.flatdbNodeResolver)
 	default:
 		return errInvalidRootType
@@ -106,12 +114,14 @@ func (trie *VerkleTrie) GetKey(key []byte) []byte {
 func (trie *VerkleTrie) GetStorage(addr common.Address, key []byte) ([]byte, error) {
 	pointEval := trie.pointCache.GetTreeKeyHeader(addr[:])
 	k := utils.GetTreeKeyStorageSlotWithEvaluatedAddress(pointEval, key)
+	trie.root.UpdateCurrEpoch(trie.currEpoch)
 	return trie.root.Get(k, trie.flatdbNodeResolver)
 }
 
 // GetWithHashedKey returns the value, assuming that the key has already
 // been hashed.
 func (trie *VerkleTrie) GetWithHashedKey(key []byte) ([]byte, error) {
+	trie.root.UpdateCurrEpoch(trie.currEpoch)
 	return trie.root.Get(key, trie.flatdbNodeResolver)
 }
 
@@ -122,9 +132,14 @@ func (t *VerkleTrie) GetAccount(addr common.Address) (*types.StateAccount, error
 		values [][]byte
 		err    error
 	)
+	t.root.UpdateCurrEpoch(t.currEpoch)
 	switch t.root.(type) {
 	case *verkle.InternalNode:
-		values, err = t.root.(*verkle.InternalNode).GetStem(versionkey[:31], t.flatdbNodeResolver)
+		if t.currEpoch == 0 {
+			values, err = t.root.(*verkle.InternalNode).GetStem(versionkey[:31], t.flatdbNodeResolver)
+		} else {
+			values, err = t.root.(*verkle.InternalNode).GetStemWithEpoch(versionkey[:31], versionkey[31], t.flatdbNodeResolver, t.currEpoch)
+		}
 	default:
 		return nil, errInvalidRootType
 	}
@@ -174,7 +189,7 @@ func (t *VerkleTrie) UpdateAccount(addr common.Address, acc *types.StateAccount)
 		err            error
 		nonce, balance [32]byte
 		values         = make([][]byte, verkle.NodeWidth)
-		stem           = t.pointCache.GetTreeKeyVersionCached(addr[:])
+		versionKey     = t.pointCache.GetTreeKeyVersionCached(addr[:])
 	)
 
 	// Only evaluate the polynomial once
@@ -191,9 +206,14 @@ func (t *VerkleTrie) UpdateAccount(addr common.Address, acc *types.StateAccount)
 		}
 	}
 
+	t.root.UpdateCurrEpoch(t.currEpoch)
 	switch root := t.root.(type) {
 	case *verkle.InternalNode:
-		err = root.InsertStem(stem, values, t.flatdbNodeResolver)
+		if t.currEpoch == 0 {
+			err = root.InsertStem(versionKey[:31], values, t.flatdbNodeResolver)
+		} else {
+			err = root.InsertStemWithEpoch(versionKey[:31], versionKey[31], values, t.flatdbNodeResolver, t.currEpoch)
+		}
 	default:
 		return errInvalidRootType
 	}
@@ -226,6 +246,7 @@ func (trie *VerkleTrie) UpdateStorage(address common.Address, key, value []byte)
 	} else {
 		copy(v[32-len(value):], value[:])
 	}
+	trie.root.UpdateCurrEpoch(trie.currEpoch)
 	return trie.root.Insert(k, v[:], trie.flatdbNodeResolver)
 }
 
@@ -235,6 +256,7 @@ func (t *VerkleTrie) DeleteAccount(addr common.Address) error {
 		values = make([][]byte, verkle.NodeWidth)
 		stem   = t.pointCache.GetTreeKeyVersionCached(addr[:])
 	)
+	t.root.UpdateCurrEpoch(t.currEpoch)
 
 	for i := 0; i < verkle.NodeWidth; i++ {
 		values[i] = zero[:]
@@ -260,6 +282,8 @@ func (trie *VerkleTrie) DeleteStorage(addr common.Address, key []byte) error {
 	pointEval := trie.pointCache.GetTreeKeyHeader(addr[:])
 	k := utils.GetTreeKeyStorageSlotWithEvaluatedAddress(pointEval, key)
 	var zero [32]byte
+	trie.root.UpdateCurrEpoch(trie.currEpoch)
+
 	return trie.root.Insert(k, zero[:], trie.flatdbNodeResolver)
 }
 
@@ -327,8 +351,10 @@ func (trie *VerkleTrie) Prove(key []byte, proofDb ethdb.KeyValueWriter) error {
 
 func (trie *VerkleTrie) Copy() *VerkleTrie {
 	return &VerkleTrie{
-		root: trie.root.Copy(),
-		db:   trie.db,
+		root:       trie.root.Copy(),
+		db:         trie.db,
+		pointCache: utils.NewPointCache(),
+		currEpoch:  trie.currEpoch,
 	}
 }
 

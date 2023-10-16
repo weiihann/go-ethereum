@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/gballet/go-verkle"
 )
 
 // ExpiredStateError Access State error, must revert the execution
@@ -13,11 +13,11 @@ type ExpiredStateError struct {
 	Addr   common.Address
 	Key    common.Hash
 	Path   []byte
-	Epoch  types.StateEpoch
+	Epoch  verkle.StateEpoch
 	reason string
 }
 
-func NewSnapExpiredStateError(addr common.Address, key common.Hash, epoch types.StateEpoch) *ExpiredStateError {
+func NewSnapExpiredStateError(addr common.Address, key common.Hash, epoch verkle.StateEpoch) *ExpiredStateError {
 	return &ExpiredStateError{
 		Addr:   addr,
 		Key:    key,
