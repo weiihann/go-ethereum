@@ -105,6 +105,12 @@ var (
 	trieNodeAccountPrefix = []byte("A") // trieNodeAccountPrefix + hexPath -> trie node
 	trieNodeStoragePrefix = []byte("O") // trieNodeStoragePrefix + accountHash + hexPath -> trie node
 
+	SnapshotAccountMetaPrefix = []byte("m") // SnapshotAccountMetaPrefix + account hash -> account meta trie value
+	SnapshotStorageMetaPrefix = []byte("y") // SnapshotStorageMetaPrefix + account hash + storage hash -> storage meta trie value
+
+	// Path-based storage scheme of VKT
+	VktNodePrefix = []byte("V") // vktNodeAccountPrefix + hexPath -> vkt node
+
 	PreimagePrefix = []byte("secure-key-")       // PreimagePrefix + hash -> preimage
 	configPrefix   = []byte("ethereum-config-")  // config prefix for the db
 	genesisPrefix  = []byte("ethereum-genesis-") // genesis state prefix for the db
@@ -250,6 +256,18 @@ func storageTrieNodeKey(accountHash common.Hash, path []byte) []byte {
 	return append(append(trieNodeStoragePrefix, accountHash.Bytes()...), path...)
 }
 
+func AccountSnapshotKeyMeta(hash common.Hash) []byte {
+	return append(SnapshotAccountMetaPrefix, hash.Bytes()...)
+}
+
+func StorageSnapshotKeyMeta(accountHash, storageHash common.Hash) []byte {
+	return append(append(SnapshotStorageMetaPrefix, accountHash.Bytes()...), storageHash.Bytes()...)
+}
+
+func VktTrieNodeKey(path []byte) []byte {
+	return append(VktNodePrefix, path...)
+}
+
 // IsLegacyTrieNode reports whether a provided database entry is a legacy trie
 // node. The characteristics of legacy trie node are:
 // - the key length is 32 bytes
@@ -293,4 +311,12 @@ func IsStorageTrieNode(key []byte) (bool, common.Hash, []byte) {
 	}
 	accountHash := common.BytesToHash(key[len(trieNodeStoragePrefix) : len(trieNodeStoragePrefix)+common.HashLength])
 	return true, accountHash, key[len(trieNodeStoragePrefix)+common.HashLength:]
+}
+
+func IsStorageMeta(key []byte) bool {
+	return bytes.HasPrefix(key, SnapshotStorageMetaPrefix)
+}
+
+func IsAccountMeta(key []byte) bool {
+	return bytes.HasPrefix(key, SnapshotAccountMetaPrefix)
 }
