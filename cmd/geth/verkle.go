@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -125,6 +126,7 @@ func convertToVerkle(ctx *cli.Context) error {
 
 	var (
 		accounts   int
+		slots      int
 		lastReport time.Time
 		start      = time.Now()
 		vRoot      = verkle.New().(*verkle.InternalNode)
@@ -136,9 +138,18 @@ func convertToVerkle(ctx *cli.Context) error {
 		if err != nil {
 			panic(err)
 		}
-		if err := chaindb.Put(path, s); err != nil {
+		if err := chaindb.Put(rawdb.VktTrieNodeKey(path), s); err != nil {
 			panic(err)
 		}
+	}
+
+	nodeResolver := func(path []byte) ([]byte, error) {
+		return chaindb.Get(rawdb.VktTrieNodeKey(path))
+	}
+
+	err = deleteVerkleNodes(chaindb)
+	if err != nil {
+		return err
 	}
 
 	snaptree, err := snapshot.New(snapshot.Config{CacheSize: 256}, chaindb, trie.NewDatabase(chaindb), root)
@@ -166,6 +177,7 @@ func convertToVerkle(ctx *cli.Context) error {
 		var (
 			nonce, balance, version, size [32]byte
 			newValues                     = make([][]byte, 256)
+			accEpoch                      verkle.StateEpoch
 		)
 		newValues[0] = version[:]
 		newValues[1] = balance[:]
@@ -175,12 +187,19 @@ func convertToVerkle(ctx *cli.Context) error {
 		for i, b := range acc.Balance.Bytes() {
 			balance[len(acc.Balance.Bytes())-1-i] = b
 		}
+
 		addr := rawdb.ReadPreimage(chaindb, accIt.Hash())
 		if addr == nil {
 			return fmt.Errorf("could not find preimage for address %x %v %v", accIt.Hash(), acc, accIt.Error())
 		}
 		addrPoint := tutils.EvaluateAddressPoint(addr)
 		stem := tutils.GetTreeKeyVersionWithEvaluatedAddress(addrPoint)
+
+		// TODO(w): read epoch from the database
+		accEpoch, err = readAccountEpochFromDb(chaindb, accIt.Hash())
+		if err != nil {
+			log.Error("Failed to read account epoch from database", "error", err)
+		}
 
 		// Store the account code if present
 		if !bytes.Equal(acc.CodeHash, types.EmptyRootHash[:]) {
@@ -202,7 +221,8 @@ func convertToVerkle(ctx *cli.Context) error {
 
 				// Otherwise, store the previous group in the tree with a
 				// stem insertion.
-				vRoot.InsertStem(chunkkey[:31], values, chaindb.Get)
+				// TODO(w): insert with epoch
+				vRoot.InsertStemWithEpoch(chunkkey[:31], chunkkey[31], values, nodeResolver, accEpoch)
 			}
 
 			// Write the code size in the account header group
@@ -214,6 +234,7 @@ func convertToVerkle(ctx *cli.Context) error {
 		// Save every slot into the tree
 		if acc.Root != types.EmptyRootHash {
 			var translatedStorage = map[string][][]byte{}
+			var translatedEpoch = map[string]verkle.StateEpoch{}
 
 			storageIt, err := snaptree.StorageIterator(root, accIt.Hash(), common.Hash{})
 			if err != nil {
@@ -221,15 +242,23 @@ func convertToVerkle(ctx *cli.Context) error {
 				return err
 			}
 			for storageIt.Next() {
+				slots += 1
 				// The value is RLP-encoded, decode it
 				var (
-					value     []byte   // slot value after RLP decoding
-					safeValue [32]byte // 32-byte aligned value
+					value        []byte   // slot value after RLP decoding
+					safeValue    [32]byte // 32-byte aligned value
+					storageEpoch verkle.StateEpoch
 				)
 				if err := rlp.DecodeBytes(storageIt.Slot(), &value); err != nil {
 					return fmt.Errorf("error decoding bytes %x: %w", storageIt.Slot(), err)
 				}
 				copy(safeValue[32-len(value):], value)
+
+				// TODO(w): read epoch from the database
+				storageEpoch, err = readStorageEpochFromDb(chaindb, accIt.Hash(), storageIt.Hash())
+				if err != nil {
+					log.Error("Failed to read storage epoch from database", "error", err)
+				}
 
 				slotnr := rawdb.ReadPreimage(chaindb, storageIt.Hash())
 				if slotnr == nil {
@@ -256,6 +285,7 @@ func convertToVerkle(ctx *cli.Context) error {
 				// Store value in group
 				values[slotkey[31]] = safeValue[:]
 				translatedStorage[string(slotkey[:31])] = values
+				translatedEpoch[string(slotkey[:31])] = storageEpoch
 
 				// Dump the stuff to disk if we ran out of space
 				var mem runtime.MemStats
@@ -267,7 +297,12 @@ func convertToVerkle(ctx *cli.Context) error {
 						copy(k[:], []byte(s))
 						// reminder that InsertStem will merge leaves
 						// if they exist.
-						vRoot.InsertStem(k[:31], vs, chaindb.Get)
+						// TODO(w): insert with epoch
+						epoch, ok := translatedEpoch[s]
+						if !ok {
+							log.Error("Failed to find epoch for storage slot", "slot", s)
+						}
+						vRoot.InsertStemWithEpoch(k[:31], s[31], vs, nodeResolver, epoch)
 					}
 					translatedStorage = make(map[string][][]byte)
 					vRoot.FlushAtDepth(2, saveverkle)
@@ -276,7 +311,12 @@ func convertToVerkle(ctx *cli.Context) error {
 			for s, vs := range translatedStorage {
 				var k [31]byte
 				copy(k[:], []byte(s))
-				vRoot.InsertStem(k[:31], vs, chaindb.Get)
+				// TODO(w): insert with epoch
+				epoch, ok := translatedEpoch[s]
+				if !ok {
+					log.Error("Failed to find epoch for storage slot", "slot", s)
+				}
+				vRoot.InsertStemWithEpoch(k[:31], s[31], vs, nodeResolver, epoch)
 			}
 			storageIt.Release()
 			if storageIt.Error() != nil {
@@ -285,10 +325,11 @@ func convertToVerkle(ctx *cli.Context) error {
 			}
 		}
 		// Finish with storing the complete account header group inside the tree.
-		vRoot.InsertStem(stem[:31], newValues, chaindb.Get)
+		// TODO(w): insert with epoch
+		vRoot.InsertStemWithEpoch(stem[:31], stem[31], newValues, nodeResolver, accEpoch)
 
 		if time.Since(lastReport) > time.Second*8 {
-			log.Info("Traversing state", "accounts", accounts, "elapsed", common.PrettyDuration(time.Since(start)))
+			log.Info("Traversing state", "accounts", accounts, "slots", slots, "elapsed", common.PrettyDuration(time.Since(start)))
 			lastReport = time.Now()
 		}
 
@@ -303,13 +344,66 @@ func convertToVerkle(ctx *cli.Context) error {
 		log.Error("Failed to compute commitment", "root", root, "error", accIt.Error())
 		return accIt.Error()
 	}
-	log.Info("Wrote all leaves", "accounts", accounts, "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Info("Wrote all leaves", "accounts", accounts, "slots", slots, "elapsed", common.PrettyDuration(time.Since(start)))
 
 	vRoot.Commit()
 	vRoot.Flush(saveverkle)
 
 	log.Info("Conversion complete", "root commitment", fmt.Sprintf("%x", vRoot.Commit().Bytes()), "accounts", accounts, "elapsed", common.PrettyDuration(time.Since(start)))
 	return nil
+}
+
+// Create a function to iterate through the database with vkt prefix
+func deleteVerkleNodes(chaindb ethdb.Database) error {
+	it := chaindb.NewIterator(rawdb.VktNodePrefix, nil)
+	if it.Error() != nil {
+		log.Error("Failed to initialize iterator", "err", it.Error())
+		return it.Error()
+	}
+	defer it.Release()
+
+	var (
+		count  int64
+		start  = time.Now()
+		logged = time.Now()
+		batch  = chaindb.NewBatch()
+	)
+
+	for it.Next() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Deleting verkle trie nodes from database", "count", count, "elapsed", common.PrettyDuration(time.Since(start)))
+			logged = time.Now()
+		}
+
+		batch.Delete(it.Key())
+		if batch.ValueSize() > ethdb.IdealBatchSize {
+			if err := batch.Write(); err != nil {
+				log.Error("Failed to write batch", "err", err)
+				return err
+			}
+			batch.Reset()
+		}
+	}
+
+	log.Info("Complete deleting verkle trie nodes from database", "count", count, "elapsed", common.PrettyDuration(time.Since(start)))
+	return nil
+}
+
+func readAccountEpochFromDb(chaindb ethdb.Database, addr common.Hash) (verkle.StateEpoch, error) {
+	epoch, err := chaindb.Get(rawdb.AccountSnapshotKeyMeta(addr))
+	if err != nil {
+		return 0, err
+	}
+	return verkle.BytesToEpoch(epoch), nil
+}
+
+func readStorageEpochFromDb(chaindb ethdb.Database, addr common.Hash, slot common.Hash) (verkle.StateEpoch, error) {
+	epoch, err := chaindb.Get(rawdb.StorageSnapshotKeyMeta(addr, slot))
+	if err != nil {
+		return 0, err
+	}
+	return verkle.BytesToEpoch(epoch), nil
 }
 
 // recurse into each child to ensure they can be loaded from the db. The tree isn't rebuilt
