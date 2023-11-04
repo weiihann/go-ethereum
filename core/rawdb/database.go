@@ -473,6 +473,7 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		beaconHeaders    stat
 		cliqueSnaps      stat
 		vktNodes         stat
+		vktNodesNoExpiry stat
 		accountSnapsMeta stat
 		storageSnapsMeta stat
 
@@ -543,8 +544,10 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 			bytes.HasPrefix(key, BloomTrieIndexPrefix) ||
 			bytes.HasPrefix(key, BloomTriePrefix): // Bloomtrie sub
 			bloomTrieNodes.Add(size)
-		case bytes.HasPrefix(key, VktNodePrefix) && len(key) == (len(VktNodePrefix)+common.HashLength):
+		case bytes.HasPrefix(key, VktNodePrefix):
 			vktNodes.Add(size)
+		case bytes.HasPrefix(key, VktNodeNoExpiryPrefix):
+			vktNodesNoExpiry.Add(size)
 		default:
 			var accounted bool
 			for _, meta := range [][]byte{
@@ -587,7 +590,8 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		{"Key-Value store", "Storage snapshot", storageSnaps.Size(), storageSnaps.Count()},
 		{"Key-Value store", "Account snapshot meta", accountSnapsMeta.Size(), accountSnapsMeta.Count()},
 		{"Key-Value store", "Storage snapshot meta", storageSnapsMeta.Size(), storageSnapsMeta.Count()},
-		{"Key-Value store", "Verkle trie nodes", vktNodes.Size(), vktNodes.Count()},
+		{"Key-Value store", "Verkle trie nodes (no expiry)", vktNodesNoExpiry.Size(), vktNodesNoExpiry.Count()},
+		{"Key-Value store", "Verkle trie nodes (with expiry)", vktNodes.Size(), vktNodes.Count()},
 		{"Key-Value store", "Beacon sync headers", beaconHeaders.Size(), beaconHeaders.Count()},
 		{"Key-Value store", "Clique snapshots", cliqueSnaps.Size(), cliqueSnaps.Count()},
 		{"Key-Value store", "Singleton metadata", metadata.Size(), metadata.Count()},

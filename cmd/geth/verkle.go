@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"runtime"
 	"time"
@@ -55,7 +56,7 @@ var (
 				Usage:     "use the snapshot to compute a translation of a MPT into a verkle tree",
 				ArgsUsage: "<root>",
 				Action:    convertToVerkle,
-				Flags:     flags.Merge([]cli.Flag{}, utils.NetworkFlags, utils.DatabasePathFlags),
+				Flags:     flags.Merge([]cli.Flag{}, utils.NetworkFlags, utils.DatabasePathFlags, []cli.Flag{utils.StateExpiryFlag}),
 				Description: `
 geth verkle to-verkle <state-root>
 This command takes a snapshot and inserts its values in a fresh verkle tree.
@@ -93,7 +94,12 @@ in which key1, key2, ... are expanded.
 
 func convertToVerkle(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
+	enableStateExpiry := false
 	defer stack.Close()
+
+	if ctx.IsSet(utils.StateExpiryFlag.Name) {
+		enableStateExpiry = ctx.Bool(utils.StateExpiryFlag.Name)
+	}
 
 	chaindb := utils.MakeChainDatabase(ctx, stack, false)
 	if chaindb == nil {
@@ -112,6 +118,7 @@ func convertToVerkle(ctx *cli.Context) error {
 		root common.Hash
 		err  error
 	)
+
 	if ctx.NArg() == 1 {
 		root, err = parseRoot(ctx.Args().First())
 		if err != nil {
@@ -132,22 +139,48 @@ func convertToVerkle(ctx *cli.Context) error {
 		vRoot      = verkle.New().(*verkle.InternalNode)
 	)
 
+	latestBlockNum := rawdb.ReadHeadBlock(chaindb).Number()
+	epochPeriod := big.NewInt(1_051_200)
+
+	if epochPeriod.Cmp(latestBlockNum) == 1 {
+		log.Error("Epoch period is larger than the latest block number", "period", epochPeriod, "blockNum", latestBlockNum)
+	}
+	epoch := verkle.StateEpoch(latestBlockNum.Div(latestBlockNum, epochPeriod).Uint64())
+	log.Info("Epoch", "epoch", epoch)
+
 	saveverkle := func(path []byte, node verkle.VerkleNode) {
+		var key []byte
+		if ln, ok := node.(*verkle.ExpiryLeafNode); ok {
+			ln.UpdateCurrEpoch(epoch)
+		}
 		node.Commit()
 		s, err := node.Serialize()
 		if err != nil {
 			panic(err)
 		}
-		if err := chaindb.Put(rawdb.VktTrieNodeKey(path), s); err != nil {
+		if enableStateExpiry {
+			key = rawdb.VktTrieNodeKey(path)
+		} else {
+			key = rawdb.VktTrieNoExpiryNodeKey(path)
+		}
+		if err := chaindb.Put(key, s); err != nil {
 			panic(err)
 		}
 	}
 
 	nodeResolver := func(path []byte) ([]byte, error) {
-		return chaindb.Get(rawdb.VktTrieNodeKey(path))
+		if enableStateExpiry {
+			return chaindb.Get(rawdb.VktTrieNodeKey(path))
+		} else {
+			return chaindb.Get(rawdb.VktTrieNoExpiryNodeKey(path))
+		}
 	}
 
-	err = deleteVerkleNodes(chaindb)
+	if enableStateExpiry {
+		err = deleteVerkleNodes(rawdb.VktNodePrefix, chaindb)
+	} else {
+		err = deleteVerkleNodes(rawdb.VktNodeNoExpiryPrefix, chaindb)
+	}
 	if err != nil {
 		return err
 	}
@@ -195,10 +228,11 @@ func convertToVerkle(ctx *cli.Context) error {
 		addrPoint := tutils.EvaluateAddressPoint(addr)
 		stem := tutils.GetTreeKeyVersionWithEvaluatedAddress(addrPoint)
 
-		// TODO(w): read epoch from the database
-		accEpoch, err = readAccountEpochFromDb(chaindb, accIt.Hash())
-		if err != nil {
-			log.Error("Failed to read account epoch from database", "error", err)
+		if enableStateExpiry {
+			accEpoch, err = readAccountEpochFromDb(chaindb, accIt.Hash())
+			if err != nil {
+				log.Error("Failed to read account epoch from database", "error", err)
+			}
 		}
 
 		// Store the account code if present
@@ -221,8 +255,11 @@ func convertToVerkle(ctx *cli.Context) error {
 
 				// Otherwise, store the previous group in the tree with a
 				// stem insertion.
-				// TODO(w): insert with epoch
-				vRoot.InsertStemWithEpoch(chunkkey[:31], chunkkey[31], values, nodeResolver, accEpoch)
+				if enableStateExpiry {
+					vRoot.InsertStemWithEpoch(chunkkey[:31], chunkkey[31], values, nodeResolver, accEpoch)
+				} else {
+					vRoot.InsertStem(chunkkey[:31], values, nodeResolver)
+				}
 			}
 
 			// Write the code size in the account header group
@@ -254,12 +291,14 @@ func convertToVerkle(ctx *cli.Context) error {
 				}
 				copy(safeValue[32-len(value):], value)
 
-				// TODO(w): read epoch from the database
-				storageEpoch, err = readStorageEpochFromDb(chaindb, accIt.Hash(), storageIt.Hash())
-				if err != nil {
-					log.Error("Failed to read storage epoch from database", "error", err)
+				if enableStateExpiry {
+					storageEpoch, err = readStorageEpochFromDb(chaindb, accIt.Hash(), storageIt.Hash())
+					if err != nil {
+						log.Error("Failed to read storage epoch from database", "error", err)
+					}
 				}
 
+				// TODO: read from preimage file
 				slotnr := rawdb.ReadPreimage(chaindb, storageIt.Hash())
 				if slotnr == nil {
 					return fmt.Errorf("could not find preimage for slot %x", storageIt.Hash())
@@ -285,7 +324,9 @@ func convertToVerkle(ctx *cli.Context) error {
 				// Store value in group
 				values[slotkey[31]] = safeValue[:]
 				translatedStorage[string(slotkey[:31])] = values
-				translatedEpoch[string(slotkey[:31])] = storageEpoch
+				if enableStateExpiry {
+					translatedEpoch[string(slotkey[:31])] = storageEpoch
+				}
 
 				// Dump the stuff to disk if we ran out of space
 				var mem runtime.MemStats
@@ -297,12 +338,15 @@ func convertToVerkle(ctx *cli.Context) error {
 						copy(k[:], []byte(s))
 						// reminder that InsertStem will merge leaves
 						// if they exist.
-						// TODO(w): insert with epoch
-						epoch, ok := translatedEpoch[s]
-						if !ok {
-							log.Error("Failed to find epoch for storage slot", "slot", s)
+						if enableStateExpiry {
+							epoch, ok := translatedEpoch[s]
+							if !ok {
+								log.Error("Failed to find epoch for storage slot", "slot", s)
+							}
+							vRoot.InsertStemWithEpoch(k[:31], s[31], vs, nodeResolver, epoch)
+						} else {
+							vRoot.InsertStem(k[:31], vs, nodeResolver)
 						}
-						vRoot.InsertStemWithEpoch(k[:31], s[31], vs, nodeResolver, epoch)
 					}
 					translatedStorage = make(map[string][][]byte)
 					vRoot.FlushAtDepth(2, saveverkle)
@@ -311,12 +355,15 @@ func convertToVerkle(ctx *cli.Context) error {
 			for s, vs := range translatedStorage {
 				var k [31]byte
 				copy(k[:], []byte(s))
-				// TODO(w): insert with epoch
 				epoch, ok := translatedEpoch[s]
 				if !ok {
 					log.Error("Failed to find epoch for storage slot", "slot", s)
 				}
-				vRoot.InsertStemWithEpoch(k[:31], s[31], vs, nodeResolver, epoch)
+				if enableStateExpiry {
+					vRoot.InsertStemWithEpoch(k[:31], s[31], vs, nodeResolver, epoch)
+				} else {
+					vRoot.InsertStem(k[:31], vs, nodeResolver)
+				}
 			}
 			storageIt.Release()
 			if storageIt.Error() != nil {
@@ -325,8 +372,11 @@ func convertToVerkle(ctx *cli.Context) error {
 			}
 		}
 		// Finish with storing the complete account header group inside the tree.
-		// TODO(w): insert with epoch
-		vRoot.InsertStemWithEpoch(stem[:31], stem[31], newValues, nodeResolver, accEpoch)
+		if enableStateExpiry {
+			vRoot.InsertStemWithEpoch(stem[:31], stem[31], newValues, nodeResolver, accEpoch)
+		} else {
+			vRoot.InsertStem(stem[:31], newValues, nodeResolver)
+		}
 
 		if time.Since(lastReport) > time.Second*8 {
 			log.Info("Traversing state", "accounts", accounts, "slots", slots, "elapsed", common.PrettyDuration(time.Since(start)))
@@ -354,8 +404,8 @@ func convertToVerkle(ctx *cli.Context) error {
 }
 
 // Create a function to iterate through the database with vkt prefix
-func deleteVerkleNodes(chaindb ethdb.Database) error {
-	it := chaindb.NewIterator(rawdb.VktNodePrefix, nil)
+func deleteVerkleNodes(prefix []byte, chaindb ethdb.Database) error {
+	it := chaindb.NewIterator(prefix, nil)
 	if it.Error() != nil {
 		log.Error("Failed to initialize iterator", "err", it.Error())
 		return it.Error()
