@@ -227,9 +227,13 @@ func convertToVerkle(ctx *cli.Context) error {
 		stem := tutils.GetTreeKeyVersionWithEvaluatedAddress(addrPoint)
 
 		if enableStateExpiry {
-			accEpoch, err = readAccountEpochFromDb(chaindb, accIt.Hash())
+			accBlockNum, err := readAccountBlockNumFromDb(chaindb, accIt.Hash())
 			if err != nil {
 				log.Error("Failed to read account epoch from database", "error", err)
+				accEpoch = epoch
+			} else {
+				// Divide the block number with the epoch period to get the epoch number
+				accEpoch = verkle.StateEpoch(accBlockNum / epochPeriod.Uint64())
 			}
 		}
 
@@ -290,10 +294,12 @@ func convertToVerkle(ctx *cli.Context) error {
 				copy(safeValue[32-len(value):], value)
 
 				if enableStateExpiry {
-					storageEpoch, err = readStorageEpochFromDb(chaindb, accIt.Hash(), storageIt.Hash())
+					storageBlockNum, err := readStorageBlockNumFromDb(chaindb, accIt.Hash(), storageIt.Hash())
 					if err != nil {
 						log.Error("Failed to read storage epoch from database", "error", err)
 					}
+					// Divide the block number with the epoch period to get the epoch number
+					storageEpoch = verkle.StateEpoch(storageBlockNum / epochPeriod.Uint64())
 				}
 
 				slotnr := rawdb.ReadPreimage(chaindb, storageIt.Hash())
@@ -473,7 +479,7 @@ func convertToVerkle2(ctx *cli.Context) error {
 		return err
 	}
 
-	err = convertSnapshotAcc(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
+	err = convertSnapshotAcc(chaindb, vRoot, epoch, epochPeriod.Uint64(), enableStateExpiry, nodeResolver, saveverkle)
 	// err = convertSnapshotStorage(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
 	if err != nil {
 		return err
@@ -486,7 +492,7 @@ func convertToVerkle2(ctx *cli.Context) error {
 	return nil
 }
 
-func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoch verkle.StateEpoch, enableStateExpiry bool, nodeResolver func(path []byte) ([]byte, error), saveverkle func(path []byte, node verkle.VerkleNode)) error {
+func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoch verkle.StateEpoch, epochPeriod uint64, enableStateExpiry bool, nodeResolver func(path []byte) ([]byte, error), saveverkle func(path []byte, node verkle.VerkleNode)) error {
 	it := chaindb.NewIterator(rawdb.SnapshotAccountPrefix, nil)
 	defer it.Release()
 
@@ -534,10 +540,13 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 		stem := tutils.GetTreeKeyVersionWithEvaluatedAddress(addrPoint)
 
 		if enableStateExpiry {
-			accEpoch, err = readAccountEpochFromDb(chaindb, addrHash)
+			accBlockNum, err := readAccountBlockNumFromDb(chaindb, addrHash)
 			if err != nil {
 				log.Error("Failed to read account epoch from database", "addrHash", addrHash, "error", err)
 				accEpoch = epoch
+			} else {
+				// Divide the block number with the epoch period to get the epoch number
+				accEpoch = verkle.StateEpoch(accBlockNum / epochPeriod)
 			}
 		}
 
@@ -598,7 +607,7 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 	return nil
 }
 
-func convertSnapshotStorage(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoch verkle.StateEpoch, enableStateExpiry bool, nodeResolver func(path []byte) ([]byte, error), saveverkle func(path []byte, node verkle.VerkleNode)) error {
+func convertSnapshotStorage(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoch verkle.StateEpoch, epochPeriod uint64, enableStateExpiry bool, nodeResolver func(path []byte) ([]byte, error), saveverkle func(path []byte, node verkle.VerkleNode)) error {
 	it := chaindb.NewIterator(rawdb.SnapshotStoragePrefix, nil)
 	defer it.Release()
 
@@ -615,7 +624,6 @@ func convertSnapshotStorage(chaindb ethdb.Database, vRoot *verkle.InternalNode, 
 			storageEpoch verkle.StateEpoch
 			value        []byte
 			safeValue    [32]byte
-			err          error
 		)
 		count++
 		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
@@ -634,11 +642,13 @@ func convertSnapshotStorage(chaindb ethdb.Database, vRoot *verkle.InternalNode, 
 
 		addr := rawdb.ReadPreimage(chaindb, addrHash)
 		if enableStateExpiry {
-			storageEpoch, err = readStorageEpochFromDb(chaindb, addrHash, slotHash)
+			storageBlockNum, err := readStorageBlockNumFromDb(chaindb, addrHash, slotHash)
 			if err != nil {
 				log.Error("Failed to read storage epoch from database", "error", err)
 				storageEpoch = epoch
 			}
+			// Divide the block number with the epoch period to get the epoch number
+			storageEpoch = verkle.StateEpoch(storageBlockNum / epochPeriod)
 		}
 
 		slotnr := rawdb.ReadPreimage(chaindb, common.BytesToHash(it.Key()))
@@ -751,20 +761,20 @@ func deleteVerkleNodes(prefix []byte, chaindb ethdb.Database) error {
 	return nil
 }
 
-func readAccountEpochFromDb(chaindb ethdb.Database, addr common.Hash) (verkle.StateEpoch, error) {
-	epoch, err := chaindb.Get(rawdb.AccountSnapshotKeyMeta(addr))
+func readAccountBlockNumFromDb(chaindb ethdb.Database, addr common.Hash) (uint64, error) {
+	bytes, err := chaindb.Get(rawdb.AccountSnapshotKeyMeta(addr))
 	if err != nil {
 		return 0, err
 	}
-	return verkle.BytesToEpoch(epoch), nil
+	return binary.LittleEndian.Uint64(bytes), nil
 }
 
-func readStorageEpochFromDb(chaindb ethdb.Database, addr common.Hash, slot common.Hash) (verkle.StateEpoch, error) {
-	epoch, err := chaindb.Get(rawdb.StorageSnapshotKeyMeta(addr, slot))
+func readStorageBlockNumFromDb(chaindb ethdb.Database, addr common.Hash, slot common.Hash) (uint64, error) {
+	bytes, err := chaindb.Get(rawdb.StorageSnapshotKeyMeta(addr, slot))
 	if err != nil {
 		return 0, err
 	}
-	return verkle.BytesToEpoch(epoch), nil
+	return binary.LittleEndian.Uint64(bytes), nil
 }
 
 // recurse into each child to ensure they can be loaded from the db. The tree isn't rebuilt
