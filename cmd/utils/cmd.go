@@ -333,6 +333,7 @@ func ImportPreimages(db ethdb.Database, fn string) error {
 			if err == io.EOF {
 				break
 			}
+			log.Error("Here")
 			return err
 		}
 		// Accumulate the preimages and flush when enough ws gathered
