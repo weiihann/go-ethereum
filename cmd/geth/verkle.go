@@ -624,8 +624,8 @@ func convertSnapshotStorage(chaindb ethdb.Database, vRoot *verkle.InternalNode, 
 		}
 
 		key := it.Key()
-		addrHash := common.BytesToHash(key[1:21])
-		slotHash := common.BytesToHash(key[21:])
+		addrHash := common.BytesToHash(key[1:33])
+		slotHash := common.BytesToHash(key[33:55])
 
 		if err := rlp.DecodeBytes(it.Value(), &value); err != nil {
 			return fmt.Errorf("error decoding bytes %x: %w", it.Value(), err)
@@ -637,6 +637,7 @@ func convertSnapshotStorage(chaindb ethdb.Database, vRoot *verkle.InternalNode, 
 			storageEpoch, err = readStorageEpochFromDb(chaindb, addrHash, slotHash)
 			if err != nil {
 				log.Error("Failed to read storage epoch from database", "error", err)
+				storageEpoch = epoch
 			}
 		}
 
