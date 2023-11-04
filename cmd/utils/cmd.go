@@ -305,7 +305,12 @@ func ImportPreimages(db ethdb.Database, fn string) error {
 	// Open the file handle and potentially unwrap the gzip stream
 	fh, err := os.Open(fn)
 	if err != nil {
-		return err
+		return fmt.Errorf("opened file failed, err %v", err)
+	} else {
+		log.Info("opened file success")
+		if _, err := fh.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek file failed, err %v", err)
+		}
 	}
 	defer fh.Close()
 
