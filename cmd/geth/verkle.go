@@ -535,7 +535,9 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 		if enableStateExpiry {
 			accEpoch, err = readAccountEpochFromDb(chaindb, addrHash)
 			if err != nil {
-				log.Error("Failed to read account epoch from database", "error", err)
+				log.Error("Failed to read account epoch from database", "addrHash", addrHash, "error", err)
+			} else {
+				log.Info("read ok")
 			}
 		}
 
@@ -582,7 +584,7 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
 		if mem.Alloc > 25*1024*1024*1024 {
-			fmt.Println("Memory usage exceeded threshold, calling mitigation function")
+			log.Info("Memory usage exceeded threshold, calling mitigation function")
 			vRoot.FlushAtDepth(2, saveverkle)
 		}
 	}
