@@ -120,8 +120,17 @@ func convertToVerkle(ctx *cli.Context) error {
 		err  error
 	)
 
-	root = headBlock.Root()
-	log.Info("Start traversing the state", "root", root, "number", headBlock.NumberU64())
+	if ctx.NArg() == 1 {
+		root, err = parseRoot(ctx.Args().First())
+		if err != nil {
+			log.Error("Failed to resolve state root", "error", err)
+			return err
+		}
+		log.Info("Start traversing the state", "root", root)
+	} else {
+		root = headBlock.Root()
+		log.Info("Start traversing the state", "root", root, "number", headBlock.NumberU64())
+	}
 
 	var (
 		accounts   int
