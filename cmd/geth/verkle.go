@@ -107,7 +107,7 @@ func convertToVerkle(ctx *cli.Context) error {
 		return errors.New("nil chaindb")
 	}
 	// headBlock := rawdb.ReadHeadBlock(chaindb)
-	headBlock := rawdb.ReadBlock(chaindb, common.HexToHash("0x36f111a077a4cf63d3f525ea0ae3f5411e7a1b26a50f2aa9d0942f32a609d3c8"), 14907811)
+	headBlock := rawdb.ReadBlock(chaindb, common.HexToHash("0xc7f3a110f8bacdf2688b4489110d76598dc94240ac6afc11cfec044bdb685535"), 14907810)
 	if headBlock == nil {
 		log.Error("Failed to load head block")
 		return errors.New("no head block")
