@@ -536,8 +536,7 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 			accEpoch, err = readAccountEpochFromDb(chaindb, addrHash)
 			if err != nil {
 				log.Error("Failed to read account epoch from database", "addrHash", addrHash, "error", err)
-			} else {
-				log.Info("read ok")
+				accEpoch = epoch
 			}
 		}
 
