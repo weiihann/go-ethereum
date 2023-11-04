@@ -109,7 +109,8 @@ var (
 	SnapshotStorageMetaPrefix = []byte("y") // SnapshotStorageMetaPrefix + account hash + storage hash -> storage meta trie value
 
 	// Path-based storage scheme of VKT
-	VktNodePrefix = []byte("V") // vktNodeAccountPrefix + hexPath -> vkt node
+	VktNodePrefix         = []byte("V") // vktNodeAccountPrefix + hexPath -> vkt node
+	VktNodeNoExpiryPrefix = []byte("W")
 
 	PreimagePrefix = []byte("secure-key-")       // PreimagePrefix + hash -> preimage
 	configPrefix   = []byte("ethereum-config-")  // config prefix for the db
@@ -266,6 +267,10 @@ func StorageSnapshotKeyMeta(accountHash, storageHash common.Hash) []byte {
 
 func VktTrieNodeKey(path []byte) []byte {
 	return append(VktNodePrefix, path...)
+}
+
+func VktTrieNoExpiryNodeKey(path []byte) []byte {
+	return append(VktNodeNoExpiryPrefix, path...)
 }
 
 // IsLegacyTrieNode reports whether a provided database entry is a legacy trie

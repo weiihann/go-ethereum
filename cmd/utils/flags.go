@@ -94,6 +94,12 @@ var (
 		Value:    flags.DirectoryString(node.DefaultDataDir()),
 		Category: flags.EthCategory,
 	}
+	StateExpiryFlag = &cli.BoolFlag{
+		Name:     "stateexpiry",
+		Usage:    "Data directory for the databases and keystore",
+		Value:    false,
+		Category: flags.EthCategory,
+	}
 	RemoteDBFlag = &cli.StringFlag{
 		Name:     "remotedb",
 		Usage:    "URL for remote database",
