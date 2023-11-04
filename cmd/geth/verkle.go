@@ -296,7 +296,6 @@ func convertToVerkle(ctx *cli.Context) error {
 					}
 				}
 
-				// TODO: read from preimage file
 				slotnr := rawdb.ReadPreimage(chaindb, storageIt.Hash())
 				if slotnr == nil {
 					return fmt.Errorf("could not find preimage for slot %x", storageIt.Hash())
@@ -329,7 +328,7 @@ func convertToVerkle(ctx *cli.Context) error {
 				// Dump the stuff to disk if we ran out of space
 				var mem runtime.MemStats
 				runtime.ReadMemStats(&mem)
-				if mem.Alloc > 25*1024*1024*1024 {
+				if mem.Alloc > 5*1024*1024*1024 {
 					fmt.Println("Memory usage exceeded threshold, calling mitigation function")
 					for s, vs := range translatedStorage {
 						var k [31]byte
@@ -383,7 +382,7 @@ func convertToVerkle(ctx *cli.Context) error {
 
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
-		if mem.Alloc > 25*1024*1024*1024 {
+		if mem.Alloc > 5*1024*1024*1024 {
 			fmt.Println("Memory usage exceeded threshold, calling mitigation function")
 			vRoot.FlushAtDepth(2, saveverkle)
 		}
@@ -474,7 +473,8 @@ func convertToVerkle2(ctx *cli.Context) error {
 		return err
 	}
 
-	err = convertSnapshotAcc(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
+	// err = convertSnapshotAcc(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
+	err = convertSnapshotStorage(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
 	if err != nil {
 		return err
 	}
@@ -490,6 +490,7 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 	it := chaindb.NewIterator(rawdb.SnapshotAccountPrefix, nil)
 	defer it.Release()
 
+	log.Info("Start traversing the accounts")
 	var (
 		count  int64
 		start  = time.Now()
@@ -582,7 +583,7 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
-		if mem.Alloc > 25*1024*1024*1024 {
+		if mem.Alloc > 5*1024*1024*1024 {
 			log.Info("Memory usage exceeded threshold, calling mitigation function")
 			vRoot.FlushAtDepth(2, saveverkle)
 		}
@@ -600,17 +601,113 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 func convertSnapshotStorage(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoch verkle.StateEpoch, enableStateExpiry bool, nodeResolver func(path []byte) ([]byte, error), saveverkle func(path []byte, node verkle.VerkleNode)) error {
 	it := chaindb.NewIterator(rawdb.SnapshotStoragePrefix, nil)
 	defer it.Release()
+
+	log.Info("Start traversing the storage")
 	var (
-		count  int64
-		start  = time.Now()
-		logged = time.Now()
+		count             int64
+		start             = time.Now()
+		logged            = time.Now()
+		translatedStorage = map[string][][]byte{}
+		translatedEpoch   = map[string]verkle.StateEpoch{}
 	)
 	for it.Next() {
+		var (
+			storageEpoch verkle.StateEpoch
+			value        []byte
+			safeValue    [32]byte
+			err          error
+		)
 		count++
 		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
 			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(start)))
 			logged = time.Now()
 		}
+
+		key := it.Key()
+		addrHash := common.BytesToHash(key[1:21])
+		slotHash := common.BytesToHash(key[21:])
+
+		if err := rlp.DecodeBytes(it.Value(), &value); err != nil {
+			return fmt.Errorf("error decoding bytes %x: %w", it.Value(), err)
+		}
+		copy(safeValue[32-len(value):], value)
+
+		addr := rawdb.ReadPreimage(chaindb, addrHash)
+		if enableStateExpiry {
+			storageEpoch, err = readStorageEpochFromDb(chaindb, addrHash, slotHash)
+			if err != nil {
+				log.Error("Failed to read storage epoch from database", "error", err)
+			}
+		}
+
+		slotnr := rawdb.ReadPreimage(chaindb, slotHash)
+		if slotnr == nil {
+			return fmt.Errorf("could not find preimage for slot %x", slotHash)
+		}
+
+		// if the slot belongs to the header group, store it there - and skip
+		// calculating the slot key.
+		slotnrbig := uint256.NewInt(0).SetBytes(slotnr)
+		if slotnrbig.Cmp(uint256.NewInt(64)) < 0 {
+			continue
+		}
+
+		// Slot not in the header group, get its tree key
+		addrPoint := tutils.EvaluateAddressPoint(addr)
+		slotkey := tutils.GetTreeKeyStorageSlotWithEvaluatedAddress(addrPoint, slotnr)
+
+		// Create the group if need be
+		values := translatedStorage[string(slotkey[:31])]
+		if values == nil {
+			values = make([][]byte, 256)
+		}
+
+		// Store value in group
+		values[slotkey[31]] = safeValue[:]
+		translatedStorage[string(slotkey[:31])] = values
+		if enableStateExpiry {
+			translatedEpoch[string(slotkey[:31])] = storageEpoch
+		}
+
+		// Dump the stuff to disk if we ran out of space
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		if mem.Alloc > 5*1024*1024*1024 {
+			fmt.Println("Memory usage exceeded threshold, calling mitigation function")
+			for s, vs := range translatedStorage {
+				var k [31]byte
+				copy(k[:], []byte(s))
+				// reminder that InsertStem will merge leaves
+				// if they exist.
+				if enableStateExpiry {
+					epoch, ok := translatedEpoch[s]
+					if !ok {
+						log.Error("Failed to find epoch for storage slot", "slot", s)
+					}
+					vRoot.InsertStemWithEpoch(k[:31], s[31], vs, nodeResolver, epoch)
+				} else {
+					vRoot.InsertStem(k[:31], vs, nodeResolver)
+				}
+			}
+			translatedStorage = make(map[string][][]byte)
+			vRoot.FlushAtDepth(2, saveverkle)
+		}
+	}
+	for s, vs := range translatedStorage {
+		var k [31]byte
+		copy(k[:], []byte(s))
+		epoch, ok := translatedEpoch[s]
+		if !ok {
+			log.Error("Failed to find epoch for storage slot", "slot", s)
+		}
+		if enableStateExpiry {
+			vRoot.InsertStemWithEpoch(k[:31], s[31], vs, nodeResolver, epoch)
+		} else {
+			vRoot.InsertStem(k[:31], vs, nodeResolver)
+		}
+	}
+	if it.Error() != nil {
+		return it.Error()
 	}
 
 	return nil
