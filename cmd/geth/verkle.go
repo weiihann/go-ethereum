@@ -473,8 +473,8 @@ func convertToVerkle2(ctx *cli.Context) error {
 		return err
 	}
 
-	// err = convertSnapshotAcc(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
-	err = convertSnapshotStorage(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
+	err = convertSnapshotAcc(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
+	// err = convertSnapshotStorage(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
 	if err != nil {
 		return err
 	}
@@ -641,7 +641,7 @@ func convertSnapshotStorage(chaindb ethdb.Database, vRoot *verkle.InternalNode, 
 			}
 		}
 
-		slotnr := rawdb.ReadPreimage(chaindb, slotHash)
+		slotnr := rawdb.ReadPreimage(chaindb, common.BytesToHash(it.Key()))
 		if slotnr == nil {
 			return fmt.Errorf("could not find preimage for slot %x", slotHash)
 		}
