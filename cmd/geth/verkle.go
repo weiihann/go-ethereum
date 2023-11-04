@@ -55,7 +55,7 @@ var (
 				Name:      "to-verkle",
 				Usage:     "use the snapshot to compute a translation of a MPT into a verkle tree",
 				ArgsUsage: "<root>",
-				Action:    convertToVerkle,
+				Action:    convertToVerkle2,
 				Flags:     flags.Merge([]cli.Flag{}, utils.NetworkFlags, utils.DatabasePathFlags, []cli.Flag{utils.StateExpiryFlag}),
 				Description: `
 geth verkle to-verkle <state-root>
@@ -401,6 +401,91 @@ func convertToVerkle(ctx *cli.Context) error {
 	return nil
 }
 
+func convertToVerkle2(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	enableStateExpiry := false
+	defer stack.Close()
+
+	if ctx.IsSet(utils.StateExpiryFlag.Name) {
+		enableStateExpiry = ctx.Bool(utils.StateExpiryFlag.Name)
+	}
+	log.Info("State expiry", "enabled", enableStateExpiry)
+
+	chaindb := utils.MakeChainDatabase(ctx, stack, false)
+	if chaindb == nil {
+		return errors.New("nil chaindb")
+	}
+
+	var (
+		err error
+	)
+
+	var (
+		accounts int
+		// slots      int
+		// lastReport time.Time
+		start = time.Now()
+		vRoot = verkle.New().(*verkle.InternalNode)
+	)
+
+	latestBlockNum := rawdb.ReadHeadBlock(chaindb).Number()
+	epochPeriod := big.NewInt(1_051_200)
+
+	if epochPeriod.Cmp(latestBlockNum) == 1 {
+		log.Error("Epoch period is larger than the latest block number", "period", epochPeriod, "blockNum", latestBlockNum)
+	}
+	epoch := verkle.StateEpoch(latestBlockNum.Div(latestBlockNum, epochPeriod).Uint64())
+	log.Info("Epoch", "epoch", epoch)
+
+	saveverkle := func(path []byte, node verkle.VerkleNode) {
+		var key []byte
+		if ln, ok := node.(*verkle.ExpiryLeafNode); ok {
+			ln.UpdateCurrEpoch(epoch)
+		}
+		node.Commit()
+		s, err := node.Serialize()
+		if err != nil {
+			panic(err)
+		}
+		if enableStateExpiry {
+			key = rawdb.VktTrieNodeKey(path)
+		} else {
+			key = rawdb.VktTrieNoExpiryNodeKey(path)
+		}
+		if err := chaindb.Put(key, s); err != nil {
+			panic(err)
+		}
+	}
+
+	nodeResolver := func(path []byte) ([]byte, error) {
+		if enableStateExpiry {
+			return chaindb.Get(rawdb.VktTrieNodeKey(path))
+		} else {
+			return chaindb.Get(rawdb.VktTrieNoExpiryNodeKey(path))
+		}
+	}
+
+	if enableStateExpiry {
+		err = deleteVerkleNodes(rawdb.VktNodePrefix, chaindb)
+	} else {
+		err = deleteVerkleNodes(rawdb.VktNodeNoExpiryPrefix, chaindb)
+	}
+	if err != nil {
+		return err
+	}
+
+	err = convertSnapshotAcc(chaindb, vRoot, epoch, enableStateExpiry, nodeResolver, saveverkle)
+	if err != nil {
+		return err
+	}
+
+	vRoot.Commit()
+	vRoot.Flush(saveverkle)
+
+	log.Info("Conversion complete", "root commitment", fmt.Sprintf("%x", vRoot.Commit().Bytes()), "accounts", accounts, "elapsed", common.PrettyDuration(time.Since(start)))
+	return nil
+}
+
 func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoch verkle.StateEpoch, enableStateExpiry bool, nodeResolver func(path []byte) ([]byte, error), saveverkle func(path []byte, node verkle.VerkleNode)) error {
 	it := chaindb.NewIterator(rawdb.SnapshotAccountPrefix, nil)
 	defer it.Release()
@@ -439,7 +524,8 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 			balance[len(acc.Balance.Bytes())-1-i] = b
 		}
 
-		addr := rawdb.ReadPreimage(chaindb, common.BytesToHash(it.Key()))
+		addrHash := common.BytesToHash(it.Key()[1:])
+		addr := rawdb.ReadPreimage(chaindb, addrHash)
 		if addr == nil {
 			return fmt.Errorf("could not find preimage for address %x %v %v", common.BytesToHash(it.Key()), acc, it.Error())
 		}
@@ -447,7 +533,7 @@ func convertSnapshotAcc(chaindb ethdb.Database, vRoot *verkle.InternalNode, epoc
 		stem := tutils.GetTreeKeyVersionWithEvaluatedAddress(addrPoint)
 
 		if enableStateExpiry {
-			accEpoch, err = readAccountEpochFromDb(chaindb, common.BytesToHash(it.Key()))
+			accEpoch, err = readAccountEpochFromDb(chaindb, addrHash)
 			if err != nil {
 				log.Error("Failed to read account epoch from database", "error", err)
 			}
