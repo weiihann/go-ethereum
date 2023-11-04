@@ -99,6 +99,7 @@ func convertToVerkle(ctx *cli.Context) error {
 
 	if ctx.IsSet(utils.StateExpiryFlag.Name) {
 		enableStateExpiry = ctx.Bool(utils.StateExpiryFlag.Name)
+		log.Info("State expiry", "enabled", enableStateExpiry)
 	}
 
 	chaindb := utils.MakeChainDatabase(ctx, stack, false)
