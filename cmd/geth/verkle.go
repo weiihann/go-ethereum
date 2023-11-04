@@ -111,16 +111,12 @@ func convertToVerkle(ctx *cli.Context) error {
 		log.Error("Failed to load head block")
 		return errors.New("no head block")
 	}
-	if ctx.NArg() > 1 {
-		log.Error("Too many arguments given")
-		return errors.New("too many arguments")
-	}
 	var (
 		root common.Hash
 		err  error
 	)
 
-	if ctx.NArg() == 1 {
+	if ctx.NArg() >= 1 {
 		root, err = parseRoot(ctx.Args().First())
 		if err != nil {
 			log.Error("Failed to resolve state root", "error", err)
