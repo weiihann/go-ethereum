@@ -99,8 +99,8 @@ func convertToVerkle(ctx *cli.Context) error {
 
 	if ctx.IsSet(utils.StateExpiryFlag.Name) {
 		enableStateExpiry = ctx.Bool(utils.StateExpiryFlag.Name)
-		log.Info("State expiry", "enabled", enableStateExpiry)
 	}
+	log.Info("State expiry", "enabled", enableStateExpiry)
 
 	chaindb := utils.MakeChainDatabase(ctx, stack, false)
 	if chaindb == nil {
@@ -120,17 +120,8 @@ func convertToVerkle(ctx *cli.Context) error {
 		err  error
 	)
 
-	if ctx.NArg() == 1 {
-		root, err = parseRoot(ctx.Args().First())
-		if err != nil {
-			log.Error("Failed to resolve state root", "error", err)
-			return err
-		}
-		log.Info("Start traversing the state", "root", root)
-	} else {
-		root = headBlock.Root()
-		log.Info("Start traversing the state", "root", root, "number", headBlock.NumberU64())
-	}
+	root = headBlock.Root()
+	log.Info("Start traversing the state", "root", root, "number", headBlock.NumberU64())
 
 	var (
 		accounts   int
