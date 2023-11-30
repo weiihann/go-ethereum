@@ -551,11 +551,12 @@ func (db *Database) Initialized(genesisRoot common.Hash) bool {
 // account trie with multiple storage tries if necessary.
 func (db *Database) Update(root common.Hash, parent common.Hash, nodes *trienode.MergedNodeSet) error {
 	// Ensure the parent state is present and signal a warning if not.
-	if parent != types.EmptyRootHash {
-		if blob, _ := db.Node(parent); len(blob) == 0 {
-			log.Error("parent state is not present")
-		}
-	}
+	// TODO(weiihann): not used for VKT
+	// if parent != types.EmptyRootHash {
+	// 	if blob, _ := db.Node(parent); len(blob) == 0 {
+	// 		log.Error("parent state is not present", "parent", parent)
+	// 	}
+	// }
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
