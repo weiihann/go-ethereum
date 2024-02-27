@@ -497,7 +497,6 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 			key  = it.Key()
 			size = common.StorageSize(len(key) + len(it.Value()))
 		)
-		log.Info("temp", "key", key, "size", size, "value", it.Value(), "convertValueToHex", common.Bytes2Hex(it.Value()))
 		total += size
 		switch {
 		case bytes.HasPrefix(key, headerPrefix) && len(key) == (len(headerPrefix)+8+common.HashLength):
