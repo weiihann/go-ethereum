@@ -638,6 +638,7 @@ func printChainMetadata(db ethdb.KeyValueStore) {
 // ReadChainMetadata returns a set of key/value pairs that contains information
 // about the database chain status. This can be used for diagnostic purposes
 // when investigating the state of the node.
+// TODO(w): read snapshotroot here
 func ReadChainMetadata(db ethdb.KeyValueStore) [][]string {
 	pp := func(val *uint64) string {
 		if val == nil {
