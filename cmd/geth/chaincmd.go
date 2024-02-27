@@ -518,7 +518,6 @@ func importPreimages(ctx *cli.Context) error {
 
 func parseDumpConfig(ctx *cli.Context, stack *node.Node) (*state.DumpConfig, ethdb.Database, common.Hash, error) {
 	db := utils.MakeChainDatabase(ctx, stack, true)
-	defer db.Close()
 
 	var header *types.Header
 	if ctx.NArg() > 1 {
