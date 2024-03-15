@@ -73,6 +73,7 @@ var DefaultConfig = Config{
 		NAT:        nat.Any(),
 	},
 	DBEngine: "", // Use whatever exists, will default to Pebble if non-existent and supported
+	Instance: 1,
 }
 
 // DefaultDataDir is the default data directory to use for the databases and other
