@@ -2242,6 +2242,6 @@ func setInstance(ctx *cli.Context, cfg *node.Config) {
 	cfg.AuthPort = node.DefaultConfig.AuthPort + cfg.Instance*100 - 100
 	cfg.HTTPPort = node.DefaultHTTPPort - cfg.Instance + 1
 	cfg.WSPort = node.DefaultWSPort + cfg.Instance*2 - 2
-	cfg.P2P.ListenAddr = fmt.Sprintf(":%d", 30303+cfg.Instance-1)
-	cfg.P2P.DiscAddr = fmt.Sprintf(":%d", 30303+cfg.Instance-1)
+	cfg.P2P.ListenAddr = fmt.Sprintf(":%d", node.DefaultListenPort+cfg.Instance-1)
+	cfg.P2P.DiscAddr = fmt.Sprintf(":%d", node.DefaultDiscPort+cfg.Instance-1)
 }
