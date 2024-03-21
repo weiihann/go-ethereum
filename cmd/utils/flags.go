@@ -116,7 +116,7 @@ var (
 	}
 	InstanceFlag = &cli.IntFlag{
 		Name:     "instance",
-		Usage:    "Configures the ports to avoid conflicts when running multiple nodes on the same machine. Maximum is 200. Only applicable for: port, authrpc.port, discovery,port, http.port, ws.port",
+		Usage:    "Configures the ports to avoid conflicts when running multiple nodes on the same machine. Maximum is 200. Changes to the following port numbers: - port = default + `instance` - 1 - discovery.port = default + `instance` - 1 - authrpc.port = default + `instance`*100 - 100 - http.port = default - `instance` + 1 - ws.port = default + `instance`*2 - 2",
 		Value:    1,
 		Category: flags.EthCategory,
 	}
