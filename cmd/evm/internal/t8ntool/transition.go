@@ -314,7 +314,7 @@ func Transition(ctx *cli.Context) error {
 	// Dump the excution result
 	collector := make(Alloc)
 	var vktleaves map[common.Hash]hexutil.Bytes
-	if !chainConfig.IsPrague(big.NewInt(int64(prestate.Env.Number)), prestate.Env.Timestamp) {
+	if !chainConfig.IsVerkle(big.NewInt(int64(prestate.Env.Number)), prestate.Env.Timestamp) {
 		// Only dump accounts in MPT mode, verkle does not have the
 		// concept of an alloc.
 		s.DumpToCollector(collector, nil)

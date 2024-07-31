@@ -163,7 +163,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 		return h
 	}
 	var (
-		statedb     = MakePreState(rawdb.NewMemoryDatabase(), chainConfig, pre, chainConfig.IsPrague(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp))
+		statedb     = MakePreState(rawdb.NewMemoryDatabase(), chainConfig, pre, chainConfig.IsVerkle(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp))
 		vtrpre      *trie.VerkleTrie
 		signer      = types.MakeSigner(chainConfig, new(big.Int).SetUint64(pre.Env.Number), pre.Env.Timestamp)
 		gaspool     = new(core.GasPool)
@@ -225,7 +225,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 		chainConfig.DAOForkBlock.Cmp(new(big.Int).SetUint64(pre.Env.Number)) == 0 {
 		misc.ApplyDAOHardFork(statedb)
 	}
-	if chainConfig.IsPrague(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp) {
+	if chainConfig.IsVerkle(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp) {
 		// insert the parent hash in the contract
 		parentNum := pre.Env.Number - 1
 		core.ProcessParentBlockHash(statedb, parentNum, pre.Env.BlockHashes[math.HexOrDecimal64(parentNum)])
@@ -345,7 +345,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 		amount := new(big.Int).Mul(new(big.Int).SetUint64(w.Amount), big.NewInt(params.GWei))
 		statedb.AddBalance(w.Address, amount)
 	}
-	if chainConfig.IsPrague(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp) {
+	if chainConfig.IsVerkle(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp) {
 		if err := overlay.OverlayVerkleTransition(statedb, common.Hash{}, chainConfig.OverlayStride); err != nil {
 			return nil, nil, fmt.Errorf("error performing the transition, err=%w", err)
 		}
@@ -359,7 +359,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 	// Add the witness to the execution result
 	var vktProof *verkle.VerkleProof
 	var vktStateDiff verkle.StateDiff
-	if chainConfig.IsPrague(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp) {
+	if chainConfig.IsVerkle(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp) {
 		keys := statedb.Witness().Keys()
 		if len(keys) > 0 && vtrpre != nil {
 			var proofTrie *trie.VerkleTrie
@@ -400,7 +400,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 		execRs.CurrentExcessBlobGas = (*math.HexOrDecimal64)(vmContext.ExcessBlobGas)
 		execRs.CurrentBlobGasUsed = (*math.HexOrDecimal64)(&blobGasUsed)
 	}
-	if chainConfig.IsPrague(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp) {
+	if chainConfig.IsVerkle(big.NewInt(int64(pre.Env.Number)), pre.Env.Timestamp) {
 		sdb := statedb.Database()
 		ended := sdb.Transitioned()
 		if !ended {
@@ -482,7 +482,7 @@ func MakePreState(db ethdb.Database, chainConfig *params.ChainConfig, pre *Prest
 		// start the conversion on the first block
 		log.Info("starting verkle transition?", "in transition", sdb.InTransition(), "transitioned", sdb.Transitioned(), "mpt root", mptRoot)
 		if !sdb.InTransition() && !sdb.Transitioned() {
-			sdb.StartVerkleTransition(mptRoot, mptRoot, chainConfig, chainConfig.PragueTime, mptRoot)
+			sdb.StartVerkleTransition(mptRoot, mptRoot, chainConfig, chainConfig.VerkleTime, mptRoot)
 		}
 
 		// create the state database without the snapshot, so that it's not overwritten

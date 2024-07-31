@@ -74,7 +74,7 @@ type Database interface {
 	// TrieDB retrieves the low level trie database used for data storage.
 	TrieDB() *trie.Database
 
-	StartVerkleTransition(originalRoot, translatedRoot common.Hash, chainConfig *params.ChainConfig, pragueTime *uint64, root common.Hash)
+	StartVerkleTransition(originalRoot, translatedRoot common.Hash, chainConfig *params.ChainConfig, verkleTime *uint64, root common.Hash)
 
 	ReorgThroughVerkleTransition()
 
@@ -232,7 +232,7 @@ func (db *cachingDB) Transitioned() bool {
 }
 
 // Fork implements the fork
-func (db *cachingDB) StartVerkleTransition(originalRoot, translatedRoot common.Hash, chainConfig *params.ChainConfig, pragueTime *uint64, root common.Hash) {
+func (db *cachingDB) StartVerkleTransition(originalRoot, translatedRoot common.Hash, chainConfig *params.ChainConfig, verkleTime *uint64, root common.Hash) {
 	if useBanner {
 		fmt.Println(`
 	__________.__                       .__                .__                   __       .__                               .__          ____         
@@ -251,8 +251,8 @@ func (db *cachingDB) StartVerkleTransition(originalRoot, translatedRoot common.H
 	db.baseRoot = originalRoot
 
 	// Reinitialize values in case of a reorg
-	if pragueTime != nil {
-		chainConfig.PragueTime = pragueTime
+	if verkleTime != nil {
+		chainConfig.VerkleTime = verkleTime
 	}
 }
 

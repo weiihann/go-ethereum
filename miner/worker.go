@@ -891,10 +891,10 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	}
 
 	// Trigger the start of the verkle conversion if we're at the right block
-	if w.chain.Config().IsPrague(header.Number, header.Time) {
+	if w.chain.Config().IsVerkle(header.Number, header.Time) {
 		parent := w.chain.GetHeaderByNumber(header.Number.Uint64() - 1)
-		if !w.chain.Config().IsPrague(parent.Number, parent.Time) {
-			w.chain.StartVerkleTransition(parent.Root, common.Hash{}, w.chain.Config(), w.chain.Config().PragueTime, parent.Root)
+		if !w.chain.Config().IsVerkle(parent.Number, parent.Time) {
+			w.chain.StartVerkleTransition(parent.Root, common.Hash{}, w.chain.Config(), w.chain.Config().VerkleTime, parent.Root)
 		}
 	}
 
@@ -917,7 +917,7 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 		log.Error("Failed to create sealing context", "err", err)
 		return nil, err
 	}
-	if w.chainConfig.IsPrague(header.Number, header.Time) {
+	if w.chainConfig.IsVerkle(header.Number, header.Time) {
 		core.ProcessParentBlockHash(env.state, header.Number.Uint64()-1, header.ParentHash)
 	}
 	return env, nil

@@ -320,7 +320,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 	head := bc.CurrentBlock()
 
 	// Declare the end of the verkle transition if need be
-	if bc.chainConfig.IsPrague(head.Number, head.Time) {
+	if bc.chainConfig.IsVerkle(head.Number, head.Time) {
 		// TODO this only works when resuming a chain that has already gone
 		// through the conversion. All pointers should be saved to the DB
 		// for it to be able to recover if interrupted during the transition
@@ -426,7 +426,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 			Recovery:   recover,
 			NoBuild:    bc.cacheConfig.SnapshotNoBuild,
 			AsyncBuild: !bc.cacheConfig.SnapshotWait,
-			Verkle:     chainConfig.IsPrague(head.Number, head.Time),
+			Verkle:     chainConfig.IsVerkle(head.Number, head.Time),
 		}
 		bc.snaps, _ = snapshot.New(snapconfig, bc.db, bc.triedb, head.Root)
 	}
@@ -1760,13 +1760,13 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			parent = bc.GetHeader(block.ParentHash(), block.NumberU64()-1)
 		}
 
-		if bc.Config().IsPrague(block.Number(), block.Time()) {
+		if bc.Config().IsVerkle(block.Number(), block.Time()) {
 			bc.stateCache.LoadTransitionState(parent.Root)
 
-			// pragueTime has been reached. If the transition isn't active, it means this
+			// verkleTime has been reached. If the transition isn't active, it means this
 			// is the fork block and that the conversion needs to be marked at started.
 			if !bc.stateCache.InTransition() && !bc.stateCache.Transitioned() {
-				bc.stateCache.StartVerkleTransition(parent.Root, emptyVerkleRoot, bc.Config(), bc.Config().PragueTime, parent.Root)
+				bc.stateCache.StartVerkleTransition(parent.Root, emptyVerkleRoot, bc.Config(), bc.Config().VerkleTime, parent.Root)
 			}
 		} else {
 			// If the verkle activation time hasn't started, declare it as "not started".
@@ -2562,8 +2562,8 @@ func (bc *BlockChain) GetTrieFlushInterval() time.Duration {
 	return time.Duration(bc.flushInterval.Load())
 }
 
-func (bc *BlockChain) StartVerkleTransition(originalRoot, translatedRoot common.Hash, chainConfig *params.ChainConfig, pragueTime *uint64, root common.Hash) {
-	bc.stateCache.StartVerkleTransition(originalRoot, translatedRoot, chainConfig, pragueTime, root)
+func (bc *BlockChain) StartVerkleTransition(originalRoot, translatedRoot common.Hash, chainConfig *params.ChainConfig, verkleTime *uint64, root common.Hash) {
+	bc.stateCache.StartVerkleTransition(originalRoot, translatedRoot, chainConfig, verkleTime, root)
 }
 func (bc *BlockChain) ReorgThroughVerkleTransition() {
 	bc.stateCache.ReorgThroughVerkleTransition()

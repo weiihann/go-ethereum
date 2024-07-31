@@ -357,7 +357,7 @@ func GenerateChainWithGenesis(genesis *Genesis, engine consensus.Engine, n int, 
 	if err != nil {
 		panic(err)
 	}
-	if genesis.Config != nil && genesis.Config.IsPrague(genesis.ToBlock().Number(), genesis.ToBlock().Time()) {
+	if genesis.Config != nil && genesis.Config.IsVerkle(genesis.ToBlock().Number(), genesis.ToBlock().Time()) {
 		blocks, receipts, _, _, _ := GenerateVerkleChain(genesis.Config, genesis.ToBlock(), engine, db, n, gen)
 		return db, blocks, receipts
 	}
@@ -386,8 +386,8 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 		preState := statedb.Copy()
 		fmt.Println("prestate", preState.GetTrie().(*trie.VerkleTrie).ToDot())
 
-		if config.IsPrague(b.header.Number, b.header.Time) {
-			if !config.IsPrague(b.parent.Number(), b.parent.Time()) {
+		if config.IsVerkle(b.header.Number, b.header.Time) {
+			if !config.IsVerkle(b.parent.Number(), b.parent.Time()) {
 				// Transition case: insert all 256 ancestors
 				InsertBlockHashHistoryAtEip2935Fork(statedb, b.header.Number.Uint64()-1, b.header.ParentHash, chainreader)
 			} else {
@@ -437,7 +437,7 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 	}
 	var snaps *snapshot.Tree
 	db := state.NewDatabaseWithConfig(diskdb, nil)
-	db.StartVerkleTransition(common.Hash{}, common.Hash{}, config, config.PragueTime, common.Hash{})
+	db.StartVerkleTransition(common.Hash{}, common.Hash{}, config, config.VerkleTime, common.Hash{})
 	db.EndVerkleTransition()
 	db.SaveTransitionState(parent.Root())
 	for i := 0; i < n; i++ {

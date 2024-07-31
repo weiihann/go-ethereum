@@ -484,8 +484,8 @@ func opBlockhash(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 		lower = upper - 256
 	}
 	if num64 >= lower && num64 < upper {
-		// if Prague is active, read it from the history contract (EIP 2935).
-		if evm.chainRules.IsPrague {
+		// if Verkle is active, read it from the history contract (EIP 2935).
+		if evm.chainRules.IsVerkle {
 			blockHash, statelessGas := getBlockHashFromContract(num64, evm.StateDB, evm.Accesses)
 			if interpreter.evm.chainRules.IsEIP4762 {
 				if !scope.Contract.UseGas(statelessGas) {
@@ -955,7 +955,7 @@ func opPush1(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 	if *pc < codeLen {
 		scope.Stack.push(integer.SetUint64(uint64(scope.Contract.Code[*pc])))
 
-		if !scope.Contract.IsDeployment && interpreter.evm.chainRules.IsPrague && *pc%31 == 0 {
+		if !scope.Contract.IsDeployment && interpreter.evm.chainRules.IsVerkle && *pc%31 == 0 {
 			// touch next chunk if PUSH1 is at the boundary. if so, *pc has
 			// advanced past this boundary.
 			contractAddr := scope.Contract.Address()
@@ -986,7 +986,7 @@ func makePush(size uint64, pushByteSize int) executionFunc {
 			endMin = startMin + pushByteSize
 		}
 
-		if !scope.Contract.IsDeployment && interpreter.evm.chainRules.IsPrague {
+		if !scope.Contract.IsDeployment && interpreter.evm.chainRules.IsVerkle {
 			contractAddr := scope.Contract.Address()
 			statelessGas := interpreter.evm.Accesses.TouchCodeChunksRangeAndChargeGas(contractAddr[:], uint64(startMin), uint64(pushByteSize), uint64(len(scope.Contract.Code)), false)
 			if !scope.Contract.UseGas(statelessGas) {

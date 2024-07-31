@@ -361,7 +361,7 @@ func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.
 		state.Witness().TouchFullAccount(w.Address[:], true)
 	}
 
-	if chain.Config().IsPrague(header.Number, header.Time) {
+	if chain.Config().IsVerkle(header.Number, header.Time) {
 		// uncomment when debugging
 		// fmt.Println("at block", header.Number, "performing transition?", state.Database().InTransition())
 		parent := chain.GetHeaderByHash(header.ParentHash)
@@ -403,7 +403,7 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 		keys  = state.Witness().Keys()
 		proot common.Hash
 	)
-	if chain.Config().IsPrague(header.Number, header.Time) {
+	if chain.Config().IsVerkle(header.Number, header.Time) {
 		// Open the pre-tree to prove the pre-state against
 		parent := chain.GetHeaderByNumber(header.Number.Uint64() - 1)
 		if parent == nil {
@@ -468,7 +468,7 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 
 	// Assemble and return the final block.
 	block := types.NewBlockWithWithdrawals(header, txs, uncles, receipts, withdrawals, trie.NewStackTrie(nil))
-	if chain.Config().IsPrague(header.Number, header.Time) && chain.Config().ProofInBlocks {
+	if chain.Config().IsVerkle(header.Number, header.Time) && chain.Config().ProofInBlocks {
 		block.SetVerkleProof(p, k, proot)
 	}
 	return block, nil

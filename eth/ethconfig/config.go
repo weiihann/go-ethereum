@@ -157,7 +157,7 @@ type Config struct {
 	OverrideCancun *uint64 `toml:",omitempty"`
 
 	// OverrideVerkle (TODO: remove after the fork)
-	OverridePrague *uint64 `toml:",omitempty"`
+	OverrideVerkle *uint64 `toml:",omitempty"`
 
 	// OverrideProofInBlock
 	OverrideProofInBlock *bool `toml:",omitempty"`

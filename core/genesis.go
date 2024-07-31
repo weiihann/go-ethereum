@@ -125,7 +125,7 @@ func (ga *GenesisAlloc) deriveHash(cfg *params.ChainConfig, timestamp uint64) (c
 	// Create an ephemeral in-memory database for computing hash,
 	// all the derived states will be discarded to not pollute disk.
 	db := state.NewDatabase(rawdb.NewMemoryDatabase())
-	if cfg.IsPrague(big.NewInt(int64(0)), timestamp) {
+	if cfg.IsVerkle(big.NewInt(int64(0)), timestamp) {
 		db.StartVerkleTransition(common.Hash{}, common.Hash{}, cfg, &timestamp, common.Hash{})
 		db.EndVerkleTransition()
 	}
@@ -150,7 +150,7 @@ func (ga *GenesisAlloc) deriveHash(cfg *params.ChainConfig, timestamp uint64) (c
 func (ga *GenesisAlloc) flush(db ethdb.Database, triedb *trie.Database, blockhash common.Hash, cfg *params.ChainConfig, timestamp *uint64) error {
 	database := state.NewDatabaseWithNodeDB(db, triedb)
 	// End the verkle conversion at genesis if the fork block is 0
-	if timestamp != nil && cfg.IsPrague(big.NewInt(int64(0)), *timestamp) {
+	if timestamp != nil && cfg.IsVerkle(big.NewInt(int64(0)), *timestamp) {
 		database.StartVerkleTransition(common.Hash{}, common.Hash{}, cfg, timestamp, common.Hash{})
 		database.EndVerkleTransition()
 	}
@@ -292,7 +292,7 @@ func (e *GenesisMismatchError) Error() string {
 // ChainOverrides contains the changes to chain config.
 type ChainOverrides struct {
 	OverrideCancun        *uint64
-	OverridePrague        *uint64
+	OverrideVerkle        *uint64
 	OverrideProofInBlock  *bool
 	OverrideOverlayStride *uint64
 }
@@ -323,8 +323,8 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *trie.Database, gen
 			if overrides != nil && overrides.OverrideCancun != nil {
 				config.CancunTime = overrides.OverrideCancun
 			}
-			if overrides != nil && overrides.OverridePrague != nil {
-				config.PragueTime = overrides.OverridePrague
+			if overrides != nil && overrides.OverrideVerkle != nil {
+				config.VerkleTime = overrides.OverrideVerkle
 			}
 		}
 	}
@@ -375,7 +375,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *trie.Database, gen
 	newcfg := genesis.configOrDefault(stored)
 	applyOverrides(newcfg)
 	// WORKAROUND it looks like this is broken, because overriding
-	// pragueTime will cause an error here, claiming that shanghaiTime
+	// verkleTime will cause an error here, claiming that shanghaiTime
 	// wasn't set (it is).
 	// if err := newcfg.CheckConfigForkOrder(); err != nil {
 	// 	return newcfg, common.Hash{}, err
@@ -464,7 +464,7 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 // IsVerkle indicates whether the state is already stored in a verkle
 // tree at genesis time.
 func (g *Genesis) IsVerkle() bool {
-	return g.Config.IsPrague(new(big.Int).SetUint64(g.Number), g.Timestamp)
+	return g.Config.IsVerkle(new(big.Int).SetUint64(g.Number), g.Timestamp)
 }
 
 // ToBlock returns the genesis block according to genesis specification.
@@ -560,7 +560,7 @@ func (g *Genesis) Commit(db ethdb.Database, triedb *trie.Database) (*types.Block
 // Note the state changes will be committed in hash-based scheme, use Commit
 // if path-scheme is preferred.
 func (g *Genesis) MustCommit(db ethdb.Database) *types.Block {
-	triedb := trie.NewDatabaseWithConfig(db, &trie.Config{Verkle: g.Config != nil && g.Config.IsPrague(big.NewInt(int64(g.Number)), g.Timestamp)})
+	triedb := trie.NewDatabaseWithConfig(db, &trie.Config{Verkle: g.Config != nil && g.Config.IsVerkle(big.NewInt(int64(g.Number)), g.Timestamp)})
 	block, err := g.Commit(db, triedb)
 	if err != nil {
 		panic(err)

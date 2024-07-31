@@ -318,7 +318,7 @@ var Forks = map[string]*params.ChainConfig{
 		ShanghaiTime:            u64(0),
 		CancunTime:              u64(0),
 	},
-	"Prague": {
+	"Verkle": {
 		ChainID:                 big.NewInt(1),
 		HomesteadBlock:          big.NewInt(0),
 		EIP150Block:             big.NewInt(0),
@@ -335,9 +335,9 @@ var Forks = map[string]*params.ChainConfig{
 		MergeNetsplitBlock:      big.NewInt(0),
 		TerminalTotalDifficulty: big.NewInt(0),
 		ShanghaiTime:            u64(0),
-		PragueTime:              u64(0),
+		VerkleTime:              u64(0),
 	},
-	"ShanghaiToPragueAtTime32": {
+	"ShanghaiToVerkleAtTime32": {
 		ChainID:                 big.NewInt(1),
 		HomesteadBlock:          big.NewInt(0),
 		EIP150Block:             big.NewInt(0),
@@ -354,7 +354,7 @@ var Forks = map[string]*params.ChainConfig{
 		MergeNetsplitBlock:      big.NewInt(0),
 		TerminalTotalDifficulty: big.NewInt(0),
 		ShanghaiTime:            u64(0),
-		PragueTime:              u64(32),
+		VerkleTime:              u64(32),
 	},
 }
 

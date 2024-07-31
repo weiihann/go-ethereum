@@ -78,7 +78,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		vmenv   = vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg)
 		signer  = types.MakeSigner(p.config, header.Number, header.Time)
 	)
-	if p.config.IsPrague(block.Number(), block.Time()) {
+	if p.config.IsVerkle(block.Number(), block.Time()) {
 		ProcessParentBlockHash(statedb, block.NumberU64()-1, block.ParentHash())
 	}
 	// Iterate over and process the individual transactions
