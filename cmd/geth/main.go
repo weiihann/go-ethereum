@@ -69,7 +69,7 @@ var (
 		utils.SmartCardDaemonPathFlag,
 		utils.OverrideOverlayStride,
 		utils.OverrideCancun,
-		utils.OverridePrague,
+		utils.OverrideVerkle,
 		utils.OverrideProofInBlock,
 		utils.ClearVerkleCosts,
 		utils.EnablePersonal,

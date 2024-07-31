@@ -41,7 +41,7 @@ type (
 func (evm *EVM) precompile(addr common.Address) (PrecompiledContract, bool) {
 	var precompiles map[common.Address]PrecompiledContract
 	switch {
-	case evm.chainRules.IsPrague:
+	case evm.chainRules.IsVerkle:
 		precompiles = PrecompiledContractsBerlin
 	case evm.chainRules.IsCancun:
 		precompiles = PrecompiledContractsCancun
@@ -137,7 +137,7 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig
 		chainConfig: chainConfig,
 		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
 	}
-	if txCtx.Accesses == nil && chainConfig.IsPrague(blockCtx.BlockNumber, blockCtx.Time) {
+	if txCtx.Accesses == nil && chainConfig.IsVerkle(blockCtx.BlockNumber, blockCtx.Time) {
 		evm.Accesses = evm.StateDB.(*state.StateDB).NewAccessWitness()
 	}
 	evm.interpreter = NewEVMInterpreter(evm)
@@ -147,7 +147,7 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig
 // Reset resets the EVM with a new transaction context.Reset
 // This is not threadsafe and should only be done very cautiously.
 func (evm *EVM) Reset(txCtx TxContext, statedb StateDB) {
-	if txCtx.Accesses == nil && evm.chainRules.IsPrague {
+	if txCtx.Accesses == nil && evm.chainRules.IsVerkle {
 		txCtx.Accesses = evm.StateDB.(*state.StateDB).NewAccessWitness()
 	}
 	evm.TxContext = txCtx

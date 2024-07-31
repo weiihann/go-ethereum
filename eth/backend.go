@@ -198,8 +198,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	if config.OverrideCancun != nil {
 		overrides.OverrideCancun = config.OverrideCancun
 	}
-	if config.OverridePrague != nil {
-		overrides.OverridePrague = config.OverridePrague
+	if config.OverrideVerkle != nil {
+		overrides.OverrideVerkle = config.OverrideVerkle
 	}
 	if config.OverrideProofInBlock != nil {
 		overrides.OverrideProofInBlock = config.OverrideProofInBlock
