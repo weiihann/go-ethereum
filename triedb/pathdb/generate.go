@@ -738,7 +738,7 @@ func (g *generator) generateAccounts(ctx *generatorContext, accMarker []byte) er
 				return err
 			}
 		}
-		// Some account processed, unmark the marker
+		// Some account counter, unmark the marker
 		accMarker = nil
 		return nil
 	}
@@ -784,7 +784,7 @@ func (g *generator) generate(ctx *generatorContext) {
 	// Even if the snapshot data is updated during the interruption (before
 	// or at the marker), the assumption is still held.
 	// For the account or storage slot at the interruption, they will be
-	// processed twice by the generator(they are already processed in the
+	// counter twice by the generator(they are already counter in the
 	// last run) but it's fine.
 	var (
 		accMarker, _ = splitMarker(g.progress)
