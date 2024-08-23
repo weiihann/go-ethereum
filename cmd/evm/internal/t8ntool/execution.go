@@ -185,17 +185,16 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 		GasLimit:    pre.Env.GasLimit,
 		GetHash:     getHash,
 	}
-	// Save pre verkle tree to build the proof at the end
-	if pre.VKT != nil && len(pre.VKT) > 0 {
-		switch tr := statedb.GetTrie().(type) {
-		case *trie.VerkleTrie:
-			vtrpre = tr.Copy()
-		case *trie.TransitionTrie:
-			vtrpre = tr.Overlay().Copy()
-		default:
-			panic("invalid trie type")
-		}
+
+	// We save the current state of the Verkle Tree before applying the transactions.
+	// Note that if the Verkle fork isn't active, this will be a noop.
+	switch tr := statedb.GetTrie().(type) {
+	case *trie.VerkleTrie:
+		vtrpre = tr.Copy()
+	case *trie.TransitionTrie:
+		vtrpre = tr.Overlay().Copy()
 	}
+
 	// If currentBaseFee is defined, add it to the vmContext.
 	if pre.Env.BaseFee != nil {
 		vmContext.BaseFee = new(big.Int).Set(pre.Env.BaseFee)
@@ -428,7 +427,32 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig,
 func MakePreState(db ethdb.Database, chainConfig *params.ChainConfig, pre *Prestate, verkle bool) *state.StateDB {
 	// Start with generating the MPT DB, which should be empty if it's post-verkle transition
 	sdb := state.NewDatabaseWithConfig(db, &trie.Config{Preimages: true, Verkle: false})
+
+	if pre.Env.Ended != nil && *pre.Env.Ended {
+		sdb.InitTransitionStatus(true, true, common.Hash{})
+	}
+
 	statedb, _ := state.New(types.EmptyRootHash, sdb, nil)
+
+	if pre.Env.Ended != nil && *pre.Env.Ended {
+		vtr := statedb.GetTrie().(*trie.VerkleTrie)
+
+		// create the vkt, should be empty on first insert
+		for k, v := range pre.VKT {
+			values := make([][]byte, 256)
+			values[k[31]] = make([]byte, 32)
+			copy(values[k[31]], v)
+			vtr.UpdateStem(k.Bytes(), values)
+		}
+
+		codeWriter := statedb.Database().DiskDB()
+		for _, acc := range pre.Pre {
+			codeHash := crypto.Keccak256Hash(acc.Code)
+			rawdb.WriteCode(codeWriter, codeHash, acc.Code)
+		}
+
+		return statedb
+	}
 
 	// MPT pre is the same as the pre state for first conversion block
 	for addr, a := range pre.Pre {
@@ -440,14 +464,21 @@ func MakePreState(db ethdb.Database, chainConfig *params.ChainConfig, pre *Prest
 		}
 	}
 
+	state.NoBanner()
+	// Commit db an create a snapshot from it.
+	mptRoot, err := statedb.Commit(0, false)
+	if err != nil {
+		panic(err)
+	}
+
 	// If verkle mode started, establish the conversion
 	if verkle {
-		state.NoBanner()
-		// Commit db an create a snapshot from it.
-		mptRoot, err := statedb.Commit(0, false)
-		if err != nil {
-			panic(err)
+		// If the current tree is a VerkleTrie, it means the state conversion has ended.
+		// We don't need to continue with conversion setups and can return early.
+		if _, ok := statedb.GetTrie().(*trie.VerkleTrie); ok {
+			return statedb
 		}
+
 		rawdb.WritePreimages(sdb.DiskDB(), statedb.Preimages())
 		sdb.TrieDB().WritePreimages()
 		snaps, err := snapshot.New(snapshot.Config{AsyncBuild: false, CacheSize: 10}, sdb.DiskDB(), sdb.TrieDB(), mptRoot)
@@ -519,6 +550,11 @@ func MakePreState(db ethdb.Database, chainConfig *params.ChainConfig, pre *Prest
 		// recreate the verkle db with the tree root, but this time with the mpt snapshot,
 		// so that the conversion can proceed.
 		statedb, err = state.New(root, sdb, snaps)
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		statedb, err = state.New(mptRoot, sdb, nil)
 		if err != nil {
 			panic(err)
 		}
