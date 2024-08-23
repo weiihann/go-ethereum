@@ -367,6 +367,7 @@ func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.
 		parent := chain.GetHeaderByHash(header.ParentHash)
 		if err := overlay.OverlayVerkleTransition(state, parent.Root, chain.Config().OverlayStride); err != nil {
 			log.Error("error performing the transition", "err", err)
+			panic(fmt.Sprintf("error performing the transition: %s", err))
 		}
 	}
 }
