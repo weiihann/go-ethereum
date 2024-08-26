@@ -147,7 +147,7 @@ type Trie interface {
 	// UpdateAccount abstracts an account write to the trie. It encodes the
 	// provided account object with associated algorithm and then updates it
 	// in the trie with provided address.
-	UpdateAccount(address common.Address, account *types.StateAccount) error
+	UpdateAccount(address common.Address, account *types.StateAccount, codeLen int) error
 
 	// UpdateContractCode abstracts code write to the trie. It is expected
 	// to be moved to the stateWriter interface when the latter is ready.
@@ -340,7 +340,7 @@ func (db *cachingDB) openMPTTrie(root common.Hash) (Trie, error) {
 	return tr, nil
 }
 
-func (db *cachingDB) openVKTrie(root common.Hash) (Trie, error) {
+func (db *cachingDB) openVKTrie(_ common.Hash) (Trie, error) {
 	payload, err := db.DiskDB().Get(trie.FlatDBVerkleNodeKeyPrefix)
 	if err != nil {
 		return trie.NewVerkleTrie(verkle.New(), db.triedb, db.addrToPoint, db.CurrentTransitionState.Ended), nil

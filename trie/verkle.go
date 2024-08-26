@@ -100,7 +100,7 @@ func (trie *VerkleTrie) GetWithHashedKey(key []byte) ([]byte, error) {
 
 func (t *VerkleTrie) GetAccount(addr common.Address) (*types.StateAccount, error) {
 	acc := &types.StateAccount{}
-	versionkey := t.pointCache.GetTreeKeyVersionCached(addr[:])
+	versionkey := t.pointCache.GetTreeKeyBasicDataCached(addr[:])
 	var (
 		values [][]byte
 		err    error
@@ -128,61 +128,44 @@ func (t *VerkleTrie) GetAccount(addr common.Address) (*types.StateAccount, error
 		return nil, nil
 	}
 
-	if len(values[utils.NonceLeafKey]) > 0 {
-		acc.Nonce = binary.LittleEndian.Uint64(values[utils.NonceLeafKey])
+	if len(values[utils.BasicDataLeafKey]) > 0 {
+		acc.Nonce = binary.BigEndian.Uint64(values[utils.BasicDataLeafKey][utils.BasicDataNonceOffset:])
 	}
+
 	// if the account has been deleted, then values[10] will be 0 and not nil. If it has
 	// been recreated after that, then its code keccak will NOT be 0. So return `nil` if
 	// the nonce, and values[10], and code keccak is 0.
-
-	if acc.Nonce == 0 && len(values) > 10 && len(values[10]) > 0 && bytes.Equal(values[utils.CodeHashLeafKey], zero[:]) {
+	if bytes.Equal(values[utils.BasicDataLeafKey], zero[:]) && len(values) > 10 && len(values[10]) > 0 && bytes.Equal(values[utils.CodeHashLeafKey], zero[:]) {
 		if !t.ended {
 			return nil, errDeletedAccount
 		} else {
 			return nil, nil
 		}
 	}
-	var balance [32]byte
-	copy(balance[:], values[utils.BalanceLeafKey])
-	for i := 0; i < len(balance)/2; i++ {
-		balance[len(balance)-i-1], balance[i] = balance[i], balance[len(balance)-i-1]
-	}
-	// var balance [32]byte
-	// if len(values[utils.BalanceLeafKey]) > 0 {
-	// 	for i := 0; i < len(balance); i++ {
-	// 		balance[len(balance)-i-1] = values[utils.BalanceLeafKey][i]
-	// 	}
-	// }
+	var balance [16]byte
+	copy(balance[:], values[utils.BasicDataLeafKey][utils.BasicDataBalanceOffset:])
 	acc.Balance = new(big.Int).SetBytes(balance[:])
 	acc.CodeHash = values[utils.CodeHashLeafKey]
-	// TODO fix the code size as well
 
 	return acc, nil
 }
 
 var zero [32]byte
 
-func (t *VerkleTrie) UpdateAccount(addr common.Address, acc *types.StateAccount) error {
+func (t *VerkleTrie) UpdateAccount(addr common.Address, acc *types.StateAccount, codeLen int) error {
 	var (
-		err            error
-		nonce, balance [32]byte
-		values         = make([][]byte, verkle.NodeWidth)
-		stem           = t.pointCache.GetTreeKeyVersionCached(addr[:])
+		err       error
+		basicData [32]byte
+		values    = make([][]byte, verkle.NodeWidth)
+		stem      = t.pointCache.GetTreeKeyBasicDataCached(addr[:])
 	)
 
-	// Only evaluate the polynomial once
-	values[utils.VersionLeafKey] = zero[:]
-	values[utils.NonceLeafKey] = nonce[:]
-	values[utils.BalanceLeafKey] = balance[:]
+	binary.BigEndian.PutUint32(basicData[utils.BasicDataCodeSizeOffset-1:], uint32(codeLen))
+	binary.BigEndian.PutUint64(basicData[utils.BasicDataNonceOffset:], acc.Nonce)
+	balanceBytes := acc.Balance.Bytes()
+	copy(basicData[32-len(balanceBytes):], balanceBytes[:])
+	values[utils.BasicDataLeafKey] = basicData[:]
 	values[utils.CodeHashLeafKey] = acc.CodeHash[:]
-
-	binary.LittleEndian.PutUint64(nonce[:], acc.Nonce)
-	bbytes := acc.Balance.Bytes()
-	if len(bbytes) > 0 {
-		for i, b := range bbytes {
-			balance[len(bbytes)-i-1] = b
-		}
-	}
 
 	switch root := t.root.(type) {
 	case *verkle.InternalNode:
@@ -193,7 +176,6 @@ func (t *VerkleTrie) UpdateAccount(addr common.Address, acc *types.StateAccount)
 	if err != nil {
 		return fmt.Errorf("UpdateAccount (%x) error: %v", addr, err)
 	}
-	// TODO figure out if the code size needs to be updated, too
 
 	return nil
 }
@@ -448,6 +430,7 @@ func (t *VerkleTrie) ClearStrorageRootConversion(addr common.Address) {
 	t.db.ClearStorageRootConversion(addr)
 }
 
+// Note: the basic data leaf needs to have been previously created for this to work
 func (t *VerkleTrie) UpdateContractCode(addr common.Address, codeHash common.Hash, code []byte) error {
 	var (
 		chunks = ChunkifyCode(code)
@@ -462,13 +445,6 @@ func (t *VerkleTrie) UpdateContractCode(addr common.Address, codeHash common.Has
 			key = utils.GetTreeKeyCodeChunkWithEvaluatedAddress(t.pointCache.GetTreeKeyHeader(addr[:]), uint256.NewInt(chunknr))
 		}
 		values[groupOffset] = chunks[i : i+32]
-
-		// Reuse the calculated key to also update the code size.
-		if i == 0 {
-			cs := make([]byte, 32)
-			binary.LittleEndian.PutUint64(cs, uint64(len(code)))
-			values[utils.CodeSizeLeafKey] = cs
-		}
 
 		if groupOffset == 255 || len(chunks)-i <= 32 {
 			err = t.UpdateStem(key[:31], values)
