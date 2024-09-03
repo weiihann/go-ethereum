@@ -77,10 +77,11 @@ func makeCallVariantGasEIP4762(oldCalculator gasFunc) gasFunc {
 		if err != nil {
 			return 0, err
 		}
-		if _, isPrecompile := evm.precompile(contract.Address()); isPrecompile {
+		target := common.Address(stack.Back(1).Bytes20())
+		if _, isPrecompile := evm.precompile(target); isPrecompile {
 			return gas, nil
 		}
-		wgas := evm.Accesses.TouchAndChargeMessageCall(contract.Address().Bytes())
+		wgas := evm.Accesses.TouchAndChargeMessageCall(target.Bytes())
 		if wgas == 0 {
 			wgas = params.WarmStorageReadCostEIP2929
 		}
