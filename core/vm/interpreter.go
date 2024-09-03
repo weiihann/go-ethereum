@@ -182,8 +182,8 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		if in.evm.chainRules.IsEIP4762 && !contract.IsDeployment {
 			// if the PC ends up in a new "chunk" of verkleized code, charge the
 			// associated costs.
-			contractAddr := contract.Address()
-			if !contract.UseGas(in.evm.TxContext.Accesses.TouchCodeChunksRangeAndChargeGas(contractAddr[:], pc, 1, uint64(len(contract.Code)), false)) {
+			codeAddr := contract.CodeAddr
+			if !contract.UseGas(in.evm.TxContext.Accesses.TouchCodeChunksRangeAndChargeGas(codeAddr[:], pc, 1, uint64(len(contract.Code)), false)) {
 				return nil, ErrOutOfGas
 			}
 		}
