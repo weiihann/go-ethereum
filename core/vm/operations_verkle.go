@@ -103,17 +103,20 @@ var (
 
 func gasSelfdestructEIP4762(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
 	beneficiaryAddr := common.Address(stack.peek().Bytes20())
-	if _, isPrecompile := evm.precompile(beneficiaryAddr); isPrecompile {
-		return 0, nil
+	contractAddr := contract.Address()
+
+	statelessGas := evm.Accesses.TouchBasicData(contractAddr[:], false)
+	balanceIsZero := evm.StateDB.GetBalance(contractAddr).Sign() == 0
+
+	if _, isPrecompile := evm.precompile(beneficiaryAddr); isPrecompile && balanceIsZero {
+		return statelessGas, nil
 	}
 
-	contractAddr := contract.Address()
-	statelessGas := evm.Accesses.TouchBasicData(contractAddr[:], false)
 	if contractAddr != beneficiaryAddr {
 		statelessGas += evm.Accesses.TouchBasicData(beneficiaryAddr[:], false)
 	}
 	// Charge write costs if it transfers value
-	if evm.StateDB.GetBalance(contractAddr).Sign() != 0 {
+	if !balanceIsZero {
 		statelessGas += evm.Accesses.TouchBasicData(contractAddr[:], true)
 		if contractAddr != beneficiaryAddr {
 			statelessGas += evm.Accesses.TouchBasicData(beneficiaryAddr[:], true)
