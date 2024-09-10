@@ -450,6 +450,15 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		return nil, common.Address{}, gas, ErrNonceUintOverflow
 	}
 	evm.StateDB.SetNonce(caller.Address(), nonce+1)
+
+	// Charge the contract creation init gas in verkle mode
+	if evm.chainRules.IsEIP4762 {
+		statelessGas := evm.Accesses.TouchAndChargeContractCreateCheck(address.Bytes())
+		if statelessGas > gas {
+			return nil, common.Address{}, 0, ErrOutOfGas
+		}
+		gas = gas - statelessGas
+	}
 	// We add this to the access list _before_ taking a snapshot. Even if the creation fails,
 	// the access-list change should not be rolled back
 	if evm.chainRules.IsEIP2929 {
@@ -467,6 +476,14 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		evm.StateDB.SetNonce(address, 1)
 	}
 
+	// Charge the contract creation init gas in verkle mode
+	if evm.chainRules.IsEIP4762 {
+		statelessGas := evm.Accesses.TouchAndChargeContractCreateInit(address.Bytes())
+		if statelessGas > gas {
+			return nil, common.Address{}, 0, ErrOutOfGas
+		}
+		gas = gas - statelessGas
+	}
 	evm.Context.Transfer(evm.StateDB, caller.Address(), address, value)
 
 	// Initialise a new contract and set the code that is to be used by the EVM.
@@ -476,12 +493,6 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	contract.IsDeployment = true
 
 	// Charge the contract creation init gas in verkle mode
-	var err error
-	if evm.chainRules.IsEIP4762 {
-		if !contract.UseGas(evm.Accesses.TouchAndChargeContractCreateInit(address.Bytes(), value.Sign() != 0)) {
-			err = ErrOutOfGas
-		}
-	}
 
 	if evm.Config.Tracer != nil {
 		if evm.depth == 0 {
@@ -491,10 +502,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		}
 	}
 
-	var ret []byte
-	if err == nil {
-		ret, err = evm.interpreter.Run(contract, nil, false)
-	}
+	ret, err := evm.interpreter.Run(contract, nil, false)
 
 	// Check whether the max code size has been exceeded, assign err if the case.
 	if err == nil && evm.chainRules.IsEIP158 && len(ret) > params.MaxCodeSize {
@@ -517,11 +525,6 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 				err = ErrCodeStoreOutOfGas
 			}
 		} else {
-			// Contract creation completed, touch the missing fields in the contract
-			if !contract.UseGas(evm.Accesses.TouchFullAccount(address.Bytes()[:], true)) {
-				err = ErrCodeStoreOutOfGas
-			}
-
 			if err == nil && len(ret) > 0 && !contract.UseGas(evm.Accesses.TouchCodeChunksRangeAndChargeGas(address.Bytes(), 0, uint64(len(ret)), uint64(len(ret)), true)) {
 				err = ErrCodeStoreOutOfGas
 			}
