@@ -200,9 +200,14 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	debug := evm.Config.Tracer != nil
 
 	if !evm.StateDB.Exist(addr) {
-		if !isPrecompile && evm.chainRules.IsEIP4762 {
-			// add proof of absence to witness
-			wgas := evm.Accesses.TouchFullAccount(addr.Bytes(), false)
+		if !isPrecompile && evm.chainRules.IsEIP4762 && value.Sign() != 0 {
+			// At this point, the read costs have already been charged, either because this
+			// is a direct tx call, in which case it's covered by the intrinsic gas, or because
+			// of a CALL instruction, in which case BASIC_DATA has been added to the access
+			// list in write mode. If there is enough gas paying for the addition of the code
+			// hash leaf to the access list, then account creation will proceed unimpaired.
+			// Thus, only pay for the creation of the code hash leaf here.
+			wgas := evm.Accesses.TouchCodeHash(addr.Bytes(), true, gas, false)
 			if gas < wgas {
 				evm.StateDB.RevertToSnapshot(snapshot)
 				return nil, 0, ErrOutOfGas
@@ -457,11 +462,11 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 
 	// Charge the contract creation init gas in verkle mode
 	if evm.chainRules.IsEIP4762 {
-		statelessGas := evm.Accesses.TouchAndChargeContractCreateCheck(address.Bytes())
+		statelessGas := evm.Accesses.TouchAndChargeContractCreateCheck(address.Bytes(), gas)
 		if statelessGas > gas {
 			return nil, common.Address{}, 0, ErrOutOfGas
 		}
-		gas = gas - statelessGas
+		gas -= statelessGas
 	}
 	// We add this to the access list _before_ taking a snapshot. Even if the creation fails,
 	// the access-list change should not be rolled back
@@ -473,6 +478,16 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	if evm.StateDB.GetNonce(address) != 0 || (contractHash != (common.Hash{}) && contractHash != types.EmptyCodeHash) {
 		return nil, common.Address{}, 0, ErrContractAddressCollision
 	}
+
+	// Charge the contract creation init gas in verkle mode
+	if evm.chainRules.IsEIP4762 {
+		consumed, wanted := evm.Accesses.TouchAndChargeContractCreateInit(address.Bytes(), gas)
+		if consumed < wanted {
+			return nil, common.Address{}, 0, ErrOutOfGas
+		}
+		gas -= consumed
+	}
+
 	// Create a new account on the state
 	snapshot := evm.StateDB.Snapshot()
 	evm.StateDB.CreateAccount(address)
@@ -480,14 +495,6 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		evm.StateDB.SetNonce(address, 1)
 	}
 
-	// Charge the contract creation init gas in verkle mode
-	if evm.chainRules.IsEIP4762 {
-		statelessGas := evm.Accesses.TouchAndChargeContractCreateInit(address.Bytes())
-		if statelessGas > gas {
-			return nil, common.Address{}, 0, ErrOutOfGas
-		}
-		gas = gas - statelessGas
-	}
 	evm.Context.Transfer(evm.StateDB, caller.Address(), address, value)
 
 	// Initialise a new contract and set the code that is to be used by the EVM.
@@ -495,8 +502,6 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	contract := NewContract(caller, AccountRef(address), value, gas)
 	contract.SetCodeOptionalHash(&address, codeAndHash)
 	contract.IsDeployment = true
-
-	// Charge the contract creation init gas in verkle mode
 
 	if evm.Config.Tracer != nil {
 		if evm.depth == 0 {
@@ -529,7 +534,9 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 				err = ErrCodeStoreOutOfGas
 			}
 		} else {
-			if err == nil && len(ret) > 0 && !contract.UseGas(evm.Accesses.TouchCodeChunksRangeAndChargeGas(address.Bytes(), 0, uint64(len(ret)), uint64(len(ret)), true)) {
+			consumed, wanted := evm.Accesses.TouchCodeChunksRangeAndChargeGas(address.Bytes(), 0, uint64(len(ret)), uint64(len(ret)), true, contract.Gas)
+			contract.UseGas(consumed) // consumed <= contract.Gas, so no return value check is needed
+			if len(ret) > 0 && (consumed < wanted) {
 				err = ErrCodeStoreOutOfGas
 			}
 		}
