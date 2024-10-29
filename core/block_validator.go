@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/consensus/beacon"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
@@ -130,6 +131,24 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 	// an error if they don't match.
 	if root := statedb.IntermediateRoot(v.config.IsEIP158(header.Number)); header.Root != root {
 		return fmt.Errorf("invalid merkle root (remote: %x local: %x) dberr: %w", header.Root, root, statedb.Error())
+	}
+	if blockEw := block.ExecutionWitness(); blockEw != nil {
+		parent := v.bc.GetHeaderByNumber(header.Number.Uint64() - 1)
+		if parent == nil {
+			return fmt.Errorf("nil parent header for block %d", header.Number)
+		}
+		stateDiff, proof, err := beacon.BuildVerkleProof(header, statedb, parent.Root)
+		if err != nil {
+			return fmt.Errorf("error building verkle proof: %w", err)
+		}
+		ew := types.ExecutionWitness{
+			StateDiff:       stateDiff,
+			VerkleProof:     proof,
+			ParentStateRoot: parent.Root,
+		}
+		if err := ew.Equal(blockEw); err != nil {
+			return fmt.Errorf("invalid execution witness: %v", err)
+		}
 	}
 	// Verify that the advertised root is correct before
 	// it can be used as an identifier for the conversion

@@ -45,6 +45,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/utils"
+	"github.com/ethereum/go-verkle"
 
 	//"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -608,13 +609,13 @@ func TestProcessVerkle(t *testing.T) {
 	//fmt.Printf("root= %x\n", chain[0].Root())
 
 	// check the proof for the 1st block
-	err = trie.DeserializeAndVerifyVerkleProof(proofs[0], genesis.Root().Bytes(), chain[0].Root().Bytes(), keyvals[0])
+	err = verkle.Verify(proofs[0], genesis.Root().Bytes(), chain[0].Root().Bytes(), keyvals[0])
 	if err != nil {
 		spew.Dump(genesis.Root().Bytes(), proofs[0])
 		t.Fatal(err)
 	}
 	// check the proof for the last block
-	err = trie.DeserializeAndVerifyVerkleProof(proofs[1], chain[0].Root().Bytes(), chain[1].Root().Bytes(), keyvals[1])
+	err = verkle.Verify(proofs[1], chain[0].Root().Bytes(), chain[1].Root().Bytes(), keyvals[1])
 	if err != nil {
 		t.Fatal(err)
 	}
