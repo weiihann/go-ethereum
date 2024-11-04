@@ -554,13 +554,18 @@ func InspectContractSize(db ethdb.Database) error {
 
 	var currContract common.Hash
 	var currTotalSize common.StorageSize
+	var currFirst bool
 	for it.Next() {
 		var (
 			key  = it.Key()
 			size = common.StorageSize(32 + len(it.Value()))
 		)
 
-		curr := common.BytesToHash(key[33:])
+		curr := common.BytesToHash(key[len(SnapshotStoragePrefix)+32:])
+		if !currFirst {
+			currContract = curr
+			fmt.Printf("Processing contract: %v\n", currContract.Hex())
+		}
 		if !bytes.Equal(curr[:], currContract[:]) {
 			fmt.Printf("Contract: %v, Size: %v\n", currContract.Hex(), currTotalSize.String())
 			currContract = curr
