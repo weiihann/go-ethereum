@@ -560,9 +560,9 @@ func InspectContractSize(db ethdb.Database) error {
 			size = common.StorageSize(32 + len(it.Value()))
 		)
 
-		curr := common.BytesToHash(key[len(TrieNodeStoragePrefix):])
+		curr := common.BytesToHash(key[33:])
 		if !bytes.Equal(curr[:], currContract[:]) {
-			fmt.Printf("Contract: %v, Size: %v\n", currContract, currTotalSize)
+			fmt.Printf("Contract: %v, Size: %v\n", currContract.Hex(), currTotalSize.String())
 			currContract = curr
 			currTotalSize = 0
 		}
