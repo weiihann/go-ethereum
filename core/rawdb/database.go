@@ -580,6 +580,7 @@ func InspectContractSize(db ethdb.Database) error {
 			contracts[0] = contractInfo{addr, size}
 			heap.Fix(&contractHeap{contracts: contracts}, 0)
 		}
+		fmt.Printf("Contract: %v, Size: %v\n", addr.Hex(), size.String())
 	}
 
 	for it.Next() {
@@ -592,6 +593,7 @@ func InspectContractSize(db ethdb.Database) error {
 		curr := common.BytesToHash(key)
 		if !currFirst {
 			currFirst = true
+			fmt.Printf("Processing contract: %v\n", currContract.Hex())
 		}
 		if !bytes.Equal(curr[:], currContract[:]) {
 			if currTotalSize > 0 {
