@@ -549,6 +549,28 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 	return nil
 }
 
+func InspectContractSize(db ethdb.Database) error {
+	it := db.NewIterator(SnapshotStoragePrefix, nil)
+
+	var currContract common.Hash
+	var currTotalSize common.StorageSize
+	for it.Next() {
+		var (
+			key  = it.Key()
+			size = common.StorageSize(32 + len(it.Value()))
+		)
+
+		curr := common.BytesToHash(key[len(TrieNodeStoragePrefix):])
+		if !bytes.Equal(curr[:], currContract[:]) {
+			fmt.Printf("Contract: %v, Size: %v\n", currContract, currTotalSize)
+			currContract = curr
+			currTotalSize = 0
+		}
+		currTotalSize += size
+	}
+	return nil
+}
+
 // printChainMetadata prints out chain metadata to stderr.
 func printChainMetadata(db ethdb.KeyValueStore) {
 	fmt.Fprintf(os.Stderr, "Chain metadata\n")
