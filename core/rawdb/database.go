@@ -18,10 +18,12 @@ package rawdb
 
 import (
 	"bytes"
+	"container/heap"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -549,33 +551,94 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 	return nil
 }
 
+type contractInfo struct {
+	addr common.Hash
+	size common.StorageSize
+}
+
 func InspectContractSize(db ethdb.Database) error {
 	it := db.NewIterator(SnapshotStoragePrefix, nil)
+	defer it.Release()
+
+	// Track contract sizes in a min heap of max size 5000
+	contracts := make([]contractInfo, 0, 5000)
 
 	var currContract common.Hash
 	var currTotalSize common.StorageSize
 	var currFirst bool
+
+	// Helper to add contract to tracked list
+	addContract := func(addr common.Hash, size common.StorageSize) {
+		if len(contracts) < 5000 {
+			contracts = append(contracts, contractInfo{addr, size})
+			if len(contracts) == 5000 {
+				// Convert to min heap when we reach capacity
+				heap.Init(&contractHeap{contracts: contracts})
+			}
+		} else if size > contracts[0].size {
+			// Replace smallest if new size is larger
+			contracts[0] = contractInfo{addr, size}
+			heap.Fix(&contractHeap{contracts: contracts}, 0)
+		}
+	}
+
 	for it.Next() {
 		var (
 			key  = it.Key()
 			size = common.StorageSize(32 + len(it.Value()))
 		)
 
-		key = key[len(SnapshotStoragePrefix) : len(SnapshotStoragePrefix)+common.HashLength]
+		key = key[len(SnapshotStoragePrefix) : len(SnapshotStoragePrefix)+common.HashLength+1]
 		curr := common.BytesToHash(key)
 		if !currFirst {
 			currFirst = true
-			fmt.Printf("Processing contract: %v\n", currContract.Hex())
 		}
 		if !bytes.Equal(curr[:], currContract[:]) {
-			fmt.Printf("Contract: %v, Size: %v\n", currContract.Hex(), currTotalSize.String())
+			if currTotalSize > 0 {
+				addContract(currContract, currTotalSize)
+			}
 			currContract = curr
 			currTotalSize = 0
 			currFirst = false
 		}
 		currTotalSize += size
 	}
+	// Add final contract
+	if currTotalSize > 0 {
+		addContract(currContract, currTotalSize)
+	}
+
+	// Sort final results
+	sort.Slice(contracts, func(i, j int) bool {
+		return contracts[i].size > contracts[j].size
+	})
+
+	// Print results
+	fmt.Printf("\nTop %d contracts by storage size:\n", len(contracts))
+	for i, c := range contracts {
+		fmt.Printf("%d. Contract: %v, Size: %v\n", i+1, c.addr.Hex(), c.size.String())
+	}
+
 	return nil
+}
+
+// Helper type for min heap operations
+type contractHeap struct {
+	contracts []contractInfo
+}
+
+func (h *contractHeap) Len() int           { return len(h.contracts) }
+func (h *contractHeap) Less(i, j int) bool { return h.contracts[i].size < h.contracts[j].size }
+func (h *contractHeap) Swap(i, j int) {
+	h.contracts[i], h.contracts[j] = h.contracts[j], h.contracts[i]
+}
+func (h *contractHeap) Push(x interface{}) { h.contracts = append(h.contracts, x.(contractInfo)) }
+func (h *contractHeap) Pop() interface{} {
+	old := h.contracts
+	n := len(old)
+	x := old[n-1]
+	h.contracts = old[0 : n-1]
+	return x
 }
 
 // printChainMetadata prints out chain metadata to stderr.
