@@ -71,6 +71,7 @@ Remove blockchain and state databases`,
 		ArgsUsage: "",
 		Subcommands: []*cli.Command{
 			dbInspectCmd,
+			dbInspectContractSizeCmd,
 			dbStatCmd,
 			dbCompactCmd,
 			dbGetCmd,
