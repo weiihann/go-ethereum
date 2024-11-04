@@ -95,6 +95,12 @@ Remove blockchain and state databases`,
 		Usage:       "Inspect the storage size for each type of data in the database",
 		Description: `This commands iterates the entire database. If the optional 'prefix' and 'start' arguments are provided, then the iteration is limited to the given subset of data.`,
 	}
+	dbInspectContractSizeCmd = &cli.Command{
+		Action:      inspectContractSize,
+		Name:        "inspect-contract-size",
+		Usage:       "Inspect the storage size for each contract in the database",
+		Description: `This commands iterates the entire database for storage trie nodes.`,
+	}
 	dbCheckStateContentCmd = &cli.Command{
 		Action:    checkStateContent,
 		Name:      "check-state-content",
@@ -352,6 +358,16 @@ func inspect(ctx *cli.Context) error {
 	defer db.Close()
 
 	return rawdb.InspectDatabase(db, prefix, start)
+}
+
+func inspectContractSize(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	return rawdb.InspectContractSize(db)
 }
 
 func checkStateContent(ctx *cli.Context) error {
