@@ -617,7 +617,7 @@ func TestProcessVerkle(t *testing.T) {
 		t.Fatal(err)
 	}
 	// check the proof for the last block
-	err = verkle.Verify(proofs[1], chain[0].Root().Bytes(), chain[1].Root().Bytes(), keyvals[1])
+	err = verkle.Verify(proofs[1], chain[0].Root().Bytes(), chain[1].Root().Bytes(), keyvals[1], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
