@@ -289,13 +289,14 @@ func (sf *subfetcher) abort() {
 
 // loop waits for new tasks to be scheduled and keeps loading them until it runs
 // out of tasks or its underlying trie is retrieved for committing.
+// TODO(weiihann): how to parse period to prefetcher?
 func (sf *subfetcher) loop() {
 	// No matter how the loop stops, signal anyone waiting that it's terminated
 	defer close(sf.term)
 
 	// Start by opening the trie and stop processing if it fails
 	if sf.owner == (common.Hash{}) {
-		trie, err := sf.db.OpenTrie(sf.root)
+		trie, err := sf.db.OpenTrie(sf.root, 0) // TODO(weiihann): Verkle currently doesn't support prefetching, ignore period for now
 		if err != nil {
 			log.Warn("Trie prefetcher failed opening trie", "root", sf.root, "err", err)
 			return

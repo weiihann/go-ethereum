@@ -414,7 +414,7 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 		state.Database().LoadTransitionState(parent.Root)
 
 		var err error
-		stateDiff, proof, err = BuildVerkleProof(header, state, parent.Root)
+		stateDiff, proof, err = BuildVerkleProof(header, state, parent.Root, types.GetStatePeriod(chain.Config(), parent.Time))
 		if err != nil {
 			return nil, fmt.Errorf("error building verkle proof: %w", err)
 		}
@@ -429,13 +429,13 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 	return block, nil
 }
 
-func BuildVerkleProof(header *types.Header, state *state.StateDB, parentRoot common.Hash) (verkle.StateDiff, *verkle.VerkleProof, error) {
+func BuildVerkleProof(header *types.Header, state *state.StateDB, parentRoot common.Hash, curPeriod verkle.StatePeriod) (verkle.StateDiff, *verkle.VerkleProof, error) {
 	var (
 		proof     *verkle.VerkleProof
 		stateDiff verkle.StateDiff
 	)
 
-	preTrie, err := state.Database().OpenTrie(parentRoot)
+	preTrie, err := state.Database().OpenTrie(parentRoot, curPeriod)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error opening pre-state tree root: %w", err)
 	}
@@ -469,7 +469,7 @@ func BuildVerkleProof(header *types.Header, state *state.StateDB, parentRoot com
 		// conversion, when the previous tree is a merkle tree.
 		//  Logically, the "previous" verkle tree is an empty tree.
 		okpre = true
-		vtrpre = trie.NewVerkleTrie(verkle.New(), state.Database().TrieDB(), utils.NewPointCache(), false)
+		vtrpre = trie.NewVerkleTrie(verkle.New(), state.Database().TrieDB(), utils.NewPointCache(), false, 0) // TODO(weiihann)
 		post := state.GetTrie().(*trie.TransitionTrie)
 		vtrpost = post.Overlay()
 		okpost = true
