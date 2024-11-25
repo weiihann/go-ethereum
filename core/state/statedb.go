@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/trie/triestate"
+	"github.com/ethereum/go-verkle"
 )
 
 type revision struct {
@@ -148,8 +149,8 @@ type StateDB struct {
 }
 
 // New creates a new state from a given trie.
-func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
-	tr, err := db.OpenTrie(root)
+func New(root common.Hash, db Database, snaps *snapshot.Tree, curPeriod verkle.StatePeriod) (*StateDB, error) {
+	tr, err := db.OpenTrie(root, curPeriod)
 	if err != nil {
 		return nil, err
 	}

@@ -336,7 +336,8 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 		return nil, nil
 	}
 	for i := 0; i < n; i++ {
-		statedb, err := state.New(parent.Root(), state.NewDatabase(db), nil)
+		curPeriod := types.GetStatePeriod(config, parent.Time())
+		statedb, err := state.New(parent.Root(), state.NewDatabase(db), nil, curPeriod)
 		if err != nil {
 			panic(err)
 		}
@@ -432,7 +433,7 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 			proots = append(proots, parent.Root())
 
 			// quick check that we are self-consistent
-			err = verkle.Verify(block.ExecutionWitness().VerkleProof, block.ExecutionWitness().ParentStateRoot[:], block.Root().Bytes(), block.ExecutionWitness().StateDiff)
+			err = verkle.Verify(block.ExecutionWitness().VerkleProof, block.ExecutionWitness().ParentStateRoot[:], block.Root().Bytes(), block.ExecutionWitness().StateDiff, 0) // TODO(weiihann)
 			if err != nil {
 				panic(err)
 			}
@@ -447,7 +448,8 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 	db.EndVerkleTransition()
 	db.SaveTransitionState(parent.Root())
 	for i := 0; i < n; i++ {
-		statedb, err := state.New(parent.Root(), db, snaps)
+		curPeriod := types.GetStatePeriod(config, parent.Time())
+		statedb, err := state.New(parent.Root(), db, snaps, curPeriod)
 		if err != nil {
 			panic(fmt.Sprintf("could not find state for block %d: err=%v, parent root=%x", i, err, parent.Root()))
 		}

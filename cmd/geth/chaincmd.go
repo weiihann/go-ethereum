@@ -513,7 +513,7 @@ func dump(ctx *cli.Context) error {
 	config := &trie.Config{
 		Preimages: true, // always enable preimage lookup
 	}
-	state, err := state.New(root, state.NewDatabaseWithConfig(db, config), nil)
+	state, err := state.New(root, state.NewDatabaseWithConfig(db, config), nil, types.Period0) // TODO(weiihann): load head block and get the period
 	if err != nil {
 		return err
 	}
