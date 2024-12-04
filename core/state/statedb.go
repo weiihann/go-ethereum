@@ -1468,3 +1468,7 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 	}
 	return copied
 }
+
+func (s *StateDB) Revive(stem verkle.Stem, values [][]byte) error {
+	return s.trie.Revive(stem, values)
+}

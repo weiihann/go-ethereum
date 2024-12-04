@@ -567,7 +567,7 @@ func MakePreState(db ethdb.Database, chainConfig *params.ChainConfig, pre *Prest
 			panic(err)
 		}
 	} else {
-		statedb, err = state.New(mptRoot, sdb, nil)
+		statedb, err = state.New(mptRoot, sdb, nil, types.Period0)
 		if err != nil {
 			panic(err)
 		}

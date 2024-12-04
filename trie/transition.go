@@ -197,3 +197,7 @@ func (t *TransitionTrie) Copy() *TransitionTrie {
 func (t *TransitionTrie) UpdateContractCode(addr common.Address, codeHash common.Hash, code []byte) error {
 	return t.overlay.UpdateContractCode(addr, codeHash, code)
 }
+
+func (t *TransitionTrie) Revive(_ verkle.Stem, _ [][]byte) error {
+	panic("shouldn't happen in transition trie")
+}
