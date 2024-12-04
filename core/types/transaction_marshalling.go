@@ -41,6 +41,7 @@ type txJSON struct {
 	Value                *hexutil.Big    `json:"value"`
 	Input                *hexutil.Bytes  `json:"input"`
 	AccessList           *AccessList     `json:"accessList,omitempty"`
+	ReviveList           []ReviveValue   `json:"reviveList,omitempty"`
 	BlobVersionedHashes  []common.Hash   `json:"blobVersionedHashes,omitempty"`
 	V                    *hexutil.Big    `json:"v"`
 	R                    *hexutil.Big    `json:"r"`
@@ -115,6 +116,25 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 		enc.V = (*hexutil.Big)(itx.V.ToBig())
 		enc.R = (*hexutil.Big)(itx.R.ToBig())
 		enc.S = (*hexutil.Big)(itx.S.ToBig())
+
+	case *ReviveTx:
+		enc.ChainID = (*hexutil.Big)(itx.ChainID.ToBig())
+		enc.Nonce = (*hexutil.Uint64)(&itx.Nonce)
+		enc.To = tx.To()
+		enc.Gas = (*hexutil.Uint64)(&itx.Gas)
+		enc.MaxFeePerGas = (*hexutil.Big)(itx.GasFeeCap.ToBig())
+		enc.MaxPriorityFeePerGas = (*hexutil.Big)(itx.GasTipCap.ToBig())
+		enc.Value = (*hexutil.Big)(itx.Value.ToBig())
+		enc.Input = (*hexutil.Bytes)(&itx.Data)
+		enc.AccessList = &itx.AccessList
+		enc.V = (*hexutil.Big)(itx.V.ToBig())
+		enc.R = (*hexutil.Big)(itx.R.ToBig())
+		enc.S = (*hexutil.Big)(itx.S.ToBig())
+		// TODO(weiihann): seems a bit hacky
+		enc.ReviveList = make([]ReviveValue, len(itx.ReviveList))
+		for i, revive := range itx.ReviveList {
+			enc.ReviveList[i] = revive
+		}
 	}
 	return json.Marshal(&enc)
 }

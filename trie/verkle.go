@@ -197,6 +197,15 @@ func (trie *VerkleTrie) UpdateStem(key []byte, values [][]byte) error {
 	}
 }
 
+func (trie *VerkleTrie) Revive(stem verkle.Stem, values [][]byte) error {
+	switch root := trie.root.(type) {
+	case *verkle.InternalNode:
+		return root.InsertValuesAtStem(stem, values, trie.curPeriod, true, trie.FlatdbNodeResolver)
+	default:
+		panic("invalid root type")
+	}
+}
+
 // Update associates key with value in the trie. If value has length zero, any
 // existing value is deleted from the trie. The value bytes must not be modified
 // by the caller while they are stored in the trie. If a node was not found in the

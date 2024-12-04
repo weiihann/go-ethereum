@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-verkle"
 )
 
 type account struct{}
@@ -50,6 +51,7 @@ type dummyStatedb struct {
 
 func (*dummyStatedb) GetRefund() uint64                       { return 1337 }
 func (*dummyStatedb) GetBalance(addr common.Address) *big.Int { return new(big.Int) }
+func (*dummyStatedb) Revive(_ verkle.Stem, _ [][]byte) error {panic("not supported")}
 
 type vmContext struct {
 	blockCtx vm.BlockContext
