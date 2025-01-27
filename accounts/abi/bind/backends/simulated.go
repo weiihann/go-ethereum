@@ -662,7 +662,7 @@ func (b *SimulatedBackend) callContract(ctx context.Context, call ethereum.CallM
 		GasTipCap:         call.GasTipCap,
 		Data:              call.Data,
 		AccessList:        call.AccessList,
-		// TODO(weiihann): need to add revive list?
+		// TODO(wh): handle revive
 		SkipAccountChecks: true,
 	}
 

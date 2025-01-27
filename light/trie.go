@@ -191,7 +191,7 @@ type odrTrie struct {
 	trie *trie.Trie
 }
 
-func (t *odrTrie) Revive(_ verkle.Stem, _ [][]byte) error {
+func (t *odrTrie) Revive(_ verkle.Stem, _ [][]byte, _ verkle.StatePeriod, _ verkle.StatePeriod) error {
 	panic("not supported")
 }
 

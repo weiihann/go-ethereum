@@ -189,7 +189,8 @@ type Trie interface {
 	// IsVerkle returns true if the trie is verkle-tree based
 	IsVerkle() bool
 
-	Revive(stem verkle.Stem, values [][]byte) error
+	// Revive(stem verkle.Stem, values [][]byte) error
+	Revive(stem verkle.Stem, values [][]byte, oldPeriod, curPeriod verkle.StatePeriod) error
 }
 
 // NewDatabase creates a backing store for state. The returned database is safe for

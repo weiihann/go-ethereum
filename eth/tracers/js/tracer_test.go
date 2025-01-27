@@ -51,7 +51,9 @@ type dummyStatedb struct {
 
 func (*dummyStatedb) GetRefund() uint64                       { return 1337 }
 func (*dummyStatedb) GetBalance(addr common.Address) *big.Int { return new(big.Int) }
-func (*dummyStatedb) Revive(_ verkle.Stem, _ [][]byte) error {panic("not supported")}
+func (*dummyStatedb) Revive(_ verkle.Stem, _ [][]byte, _ verkle.StatePeriod, _ verkle.StatePeriod) error { panic("not supported") }
+func (*dummyStatedb) CurPeriod() verkle.StatePeriod { return 0 }
+func (*dummyStatedb) SetCurPeriod(period verkle.StatePeriod) { }
 
 type vmContext struct {
 	blockCtx vm.BlockContext

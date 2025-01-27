@@ -294,6 +294,6 @@ func (t *StateTrie) IsVerkle() bool {
 	return false
 }
 
-func (t *StateTrie) Revive(_ verkle.Stem, _ [][]byte) error {
+func (t *StateTrie) Revive(_ verkle.Stem, _ [][]byte, _ verkle.StatePeriod, _ verkle.StatePeriod) error {
 	panic("not supported")
 }

@@ -82,7 +82,6 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if p.config.IsVerkle(block.Number(), block.Time()) {
 		ProcessParentBlockHash(statedb, block.NumberU64()-1, block.ParentHash())
 	}
-	// TODO(weiihann): need to do anything here?
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
 		msg, err := TransactionToMessage(tx, signer, header.BaseFee)

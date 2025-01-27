@@ -52,8 +52,9 @@ type dummyStatedb struct {
 func (*dummyStatedb) GetRefund() uint64                                       { return 1337 }
 func (*dummyStatedb) GetState(_ common.Address, _ common.Hash) common.Hash    { return common.Hash{} }
 func (*dummyStatedb) SetState(_ common.Address, _ common.Hash, _ common.Hash) {}
-func (*dummyStatedb) Revive(_ verkle.Stem, _ [][]byte) error { panic("not supported") }
-
+func (*dummyStatedb) Revive(_ verkle.Stem, _ [][]byte, _ verkle.StatePeriod, _ verkle.StatePeriod) error { panic("not supported") }
+func (*dummyStatedb) CurPeriod() verkle.StatePeriod { return 0 }
+func (*dummyStatedb) SetCurPeriod(period verkle.StatePeriod) { }
 func TestStoreCapture(t *testing.T) {
 	var (
 		logger   = NewStructLogger(nil)

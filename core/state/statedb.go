@@ -121,6 +121,7 @@ type StateDB struct {
 
 	// Verkle witness
 	witness *AccessWitness
+	curPeriod verkle.StatePeriod
 
 	// Journal of state modifications. This is the backbone of
 	// Snapshot and RevertToSnapshot.
@@ -176,6 +177,7 @@ func New(root common.Hash, db Database, snaps *snapshot.Tree, curPeriod verkle.S
 	}
 	if tr.IsVerkle() {
 		sdb.witness = sdb.NewAccessWitness()
+		sdb.curPeriod = curPeriod
 	}
 	if sdb.snaps != nil {
 		sdb.snap = sdb.snaps.Snapshot(root)
@@ -1469,6 +1471,14 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 	return copied
 }
 
-func (s *StateDB) Revive(stem verkle.Stem, values [][]byte) error {
-	return s.trie.Revive(stem, values)
+func (s *StateDB) Revive(stem verkle.Stem, values [][]byte, oldPeriod, curPeriod verkle.StatePeriod) error {
+	return s.trie.Revive(stem, values, oldPeriod, curPeriod)
+}
+
+func (s *StateDB) CurPeriod() verkle.StatePeriod {
+	return s.curPeriod
+}
+
+func (s *StateDB) SetCurPeriod(period verkle.StatePeriod) {
+	s.curPeriod = period
 }

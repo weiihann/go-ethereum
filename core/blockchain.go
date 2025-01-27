@@ -1779,7 +1779,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			bc.StartVerkleTransition(parent.Root, emptyVerkleRoot, bc.Config(), &parent.Time, parent.Root)
 			bc.stateCache.SetLastMerkleRoot(parent.Root)
 		}
-		statedb, err := state.New(parent.Root, bc.stateCache, bc.snaps, curPeriod) // TODO(weiihann): here
+		statedb, err := state.New(parent.Root, bc.stateCache, bc.snaps, curPeriod)
 		if err != nil {
 			return it.index, err
 		}

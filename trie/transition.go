@@ -198,6 +198,6 @@ func (t *TransitionTrie) UpdateContractCode(addr common.Address, codeHash common
 	return t.overlay.UpdateContractCode(addr, codeHash, code)
 }
 
-func (t *TransitionTrie) Revive(_ verkle.Stem, _ [][]byte) error {
+func (t *TransitionTrie) Revive(_ verkle.Stem, _ [][]byte, _ verkle.StatePeriod, _ verkle.StatePeriod) error {
 	panic("shouldn't happen in transition trie")
 }

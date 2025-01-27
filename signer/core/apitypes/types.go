@@ -155,7 +155,8 @@ func (args *SendTxArgs) ToTransaction() *types.Transaction {
 			AccessList: *args.AccessList,
 		}
 	case args.ReviveList != nil:
-		// TODO(weiihann): handle this
+		// TODO(wh): handle this
+		panic("ToTransaction(): revive list not implemented")
 
 	default:
 		data = &types.LegacyTx{
