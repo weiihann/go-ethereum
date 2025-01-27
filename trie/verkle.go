@@ -61,7 +61,7 @@ func (trie *VerkleTrie) FlatdbNodeResolver(path []byte) ([]byte, error) {
 }
 
 func (trie *VerkleTrie) InsertMigratedLeaves(leaves []verkle.LeafNode) error {
-	return trie.root.(*verkle.InternalNode).InsertMigratedLeaves(leaves, trie.curPeriod, trie.FlatdbNodeResolver)
+	return trie.root.(*verkle.InternalNode).InsertMigratedLeaves(leaves, trie.FlatdbNodeResolver)
 }
 
 var (
@@ -177,7 +177,7 @@ func (t *VerkleTrie) UpdateAccount(addr common.Address, acc *types.StateAccount,
 
 	switch root := t.root.(type) {
 	case *verkle.InternalNode:
-		err = root.InsertValuesAtStem(stem, values, t.curPeriod, false, t.FlatdbNodeResolver) // TODO(weiihann): check isResurrect
+		err = root.InsertValuesAtStem(stem, values, t.curPeriod, false, t.FlatdbNodeResolver)
 	default:
 		return errInvalidRootType
 	}
@@ -191,16 +191,16 @@ func (t *VerkleTrie) UpdateAccount(addr common.Address, acc *types.StateAccount,
 func (trie *VerkleTrie) UpdateStem(key []byte, values [][]byte) error {
 	switch root := trie.root.(type) {
 	case *verkle.InternalNode:
-		return root.InsertValuesAtStem(key, values, trie.curPeriod, false, trie.FlatdbNodeResolver) // TODO(weiihann): check isResurrect
+		return root.InsertValuesAtStem(key, values, trie.curPeriod, false, trie.FlatdbNodeResolver)
 	default:
 		panic("invalid root type")
 	}
 }
 
-func (trie *VerkleTrie) Revive(stem verkle.Stem, values [][]byte) error {
+func (trie *VerkleTrie) Revive(stem verkle.Stem, values [][]byte, oldPeriod, curPeriod verkle.StatePeriod) error {
 	switch root := trie.root.(type) {
 	case *verkle.InternalNode:
-		return root.InsertValuesAtStem(stem, values, trie.curPeriod, true, trie.FlatdbNodeResolver)
+		return root.Revive(stem, values, oldPeriod, curPeriod, false, trie.FlatdbNodeResolver)
 	default:
 		panic("invalid root type")
 	}

@@ -86,7 +86,10 @@ type StateDB interface {
 	Witness() *state.AccessWitness
 	SetWitness(*state.AccessWitness)
 
-	Revive(stem verkle.Stem, values [][]byte) error
+	CurPeriod() verkle.StatePeriod
+	SetCurPeriod(verkle.StatePeriod)
+
+	Revive(stem verkle.Stem, values [][]byte, oldPeriod, curPeriod verkle.StatePeriod) error
 }
 
 // CallContext provides a basic interface for the EVM calling conventions. The EVM

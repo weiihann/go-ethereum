@@ -336,8 +336,8 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 		return nil, nil
 	}
 	for i := 0; i < n; i++ {
-		curPeriod := types.GetStatePeriod(config, parent.Time())
-		statedb, err := state.New(parent.Root(), state.NewDatabase(db), nil, curPeriod)
+		parentPeriod := types.GetStatePeriod(config, parent.Time())
+		statedb, err := state.New(parent.Root(), state.NewDatabase(db), nil, parentPeriod)
 		if err != nil {
 			panic(err)
 		}
@@ -386,6 +386,7 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 		b.header = makeHeader(chainreader, parent, statedb, b.engine)
 		preState := statedb.Copy()
 		fmt.Println("prestate", preState.GetTrie().(*trie.VerkleTrie).ToDot())
+		statedb.SetCurPeriod(types.GetStatePeriod(config, b.header.Time)) // update period as we are going to process new block 
 
 		if config.IsVerkle(b.header.Number, b.header.Time) {
 			if !config.IsVerkle(b.parent.Number(), b.parent.Time()) {
@@ -433,7 +434,8 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 			proots = append(proots, parent.Root())
 
 			// quick check that we are self-consistent
-			err = verkle.Verify(block.ExecutionWitness().VerkleProof, block.ExecutionWitness().ParentStateRoot[:], block.Root().Bytes(), block.ExecutionWitness().StateDiff, 0) // TODO(weiihann)
+			blockPeriod := types.GetStatePeriod(config, b.header.Time)
+			err = verkle.Verify(block.ExecutionWitness().VerkleProof, block.ExecutionWitness().ParentStateRoot[:], block.Root().Bytes(), block.ExecutionWitness().StateDiff, blockPeriod)
 			if err != nil {
 				panic(err)
 			}

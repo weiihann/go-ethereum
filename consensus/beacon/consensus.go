@@ -469,7 +469,7 @@ func BuildVerkleProof(header *types.Header, state *state.StateDB, parentRoot com
 		// conversion, when the previous tree is a merkle tree.
 		//  Logically, the "previous" verkle tree is an empty tree.
 		okpre = true
-		vtrpre = trie.NewVerkleTrie(verkle.New(), state.Database().TrieDB(), utils.NewPointCache(), false, 0) // TODO(weiihann)
+		vtrpre = trie.NewVerkleTrie(verkle.New(), state.Database().TrieDB(), utils.NewPointCache(), false, types.Period0)
 		post := state.GetTrie().(*trie.TransitionTrie)
 		vtrpost = post.Overlay()
 		okpost = true

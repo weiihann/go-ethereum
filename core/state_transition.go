@@ -431,7 +431,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 
 	// Before performing the actual transition, we first perform the revive
 	for _, revive := range msg.ReviveList {
-		if err := st.state.Revive(revive.Stem, revive.Values); err != nil {
+		if err := st.state.Revive(revive.Stem, revive.Values, revive.LastPeriod, st.state.CurPeriod()); err != nil {
 			return nil, err
 		}
 	}
