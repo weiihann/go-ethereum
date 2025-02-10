@@ -25,24 +25,42 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// slicePool is a shared pool of hash slice, for reducing the GC pressure.
-var slicePool = sync.Pool{
-	New: func() interface{} {
-		slice := make([]common.Hash, 0, 16) // Pre-allocate a slice with a reasonable capacity.
-		return &slice
-	},
+// slicePool is a pool for hash slice. It is safe for concurrent use.
+type slicePool struct {
+	c chan []common.Hash
+	w int
 }
 
-// getSlice obtains the hash slice from the shared pool.
-func getSlice() []common.Hash {
-	slice := *slicePool.Get().(*[]common.Hash)
-	slice = slice[:0]
-	return slice
+// newSlicePool creates a new pool for shared hash slice. The sliceCap sets the
+// capacity of newly allocated slices, and the nitems determines how many items
+// the pool will hold, at maximum.
+func newSlicePool(sliceCap, nitems int) *slicePool {
+	return &slicePool{
+		c: make(chan []common.Hash, nitems),
+		w: sliceCap,
+	}
 }
 
-// returnSlice returns the hash slice back to the shared pool for following usage.
-func returnSlice(slice []common.Hash) {
-	slicePool.Put(&slice)
+// get returns a slice. Safe for concurrent use.
+func (p *slicePool) get() []common.Hash {
+	select {
+	case b := <-p.c:
+		return b[:0]
+	default:
+		return make([]common.Hash, 0, p.w)
+	}
+}
+
+// put returns a slice to the pool. Safe for concurrent use. This method
+// will ignore slices that are too large (>3x the cap)
+func (p *slicePool) put(b []common.Hash) {
+	if len(b) > 3*p.w {
+		return
+	}
+	select {
+	case p.c <- b:
+	default:
+	}
 }
 
 // lookup is an internal structure used to efficiently determine the layer in
@@ -51,6 +69,7 @@ type lookup struct {
 	accounts   map[common.Hash][]common.Hash
 	storages   map[common.Hash]map[common.Hash][]common.Hash
 	descendant func(state common.Hash, ancestor common.Hash) bool
+	pool       *slicePool
 }
 
 // newLookup initializes the lookup structure.
@@ -67,6 +86,7 @@ func newLookup(head layer, descendant func(state common.Hash, ancestor common.Ha
 		accounts:   make(map[common.Hash][]common.Hash),
 		storages:   make(map[common.Hash]map[common.Hash][]common.Hash),
 		descendant: descendant,
+		pool:       newSlicePool(16, 4096),
 	}
 	// Apply the diff layers from bottom to top
 	for i := len(layers) - 1; i >= 0; i-- {
@@ -159,7 +179,7 @@ func (l *lookup) addLayer(diff *diffLayer) {
 		for accountHash := range diff.states.accountData {
 			list, exists := l.accounts[accountHash]
 			if !exists {
-				list = getSlice()
+				list = l.pool.get()
 			}
 			list = append(list, state)
 			l.accounts[accountHash] = list
@@ -178,7 +198,7 @@ func (l *lookup) addLayer(diff *diffLayer) {
 			for slotHash := range slots {
 				list, exists := subset[slotHash]
 				if !exists {
-					list = getSlice()
+					list = l.pool.get()
 				}
 				list = append(list, state)
 				subset[slotHash] = list
@@ -212,7 +232,7 @@ func (l *lookup) removeLayer(diff *diffLayer) error {
 					if i == 0 {
 						list = list[1:]
 						if cap(list) > 1024 {
-							list = append(getSlice(), list...)
+							list = append(l.pool.get(), list...)
 						}
 					} else {
 						list = append(list[:i], list[i+1:]...)
@@ -227,7 +247,7 @@ func (l *lookup) removeLayer(diff *diffLayer) error {
 			if len(list) != 0 {
 				l.accounts[accountHash] = list
 			} else {
-				returnSlice(list)
+				l.pool.put(list)
 				delete(l.accounts, accountHash)
 			}
 		}
@@ -252,7 +272,7 @@ func (l *lookup) removeLayer(diff *diffLayer) error {
 						if i == 0 {
 							list = list[1:]
 							if cap(list) > 1024 {
-								list = append(getSlice(), list...)
+								list = append(l.pool.get(), list...)
 							}
 						} else {
 							list = append(list[:i], list[i+1:]...)
@@ -267,7 +287,7 @@ func (l *lookup) removeLayer(diff *diffLayer) error {
 				if len(list) != 0 {
 					subset[slotHash] = list
 				} else {
-					returnSlice(subset[slotHash])
+					l.pool.put(subset[slotHash])
 					delete(subset, slotHash)
 				}
 			}
