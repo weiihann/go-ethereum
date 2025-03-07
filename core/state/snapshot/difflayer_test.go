@@ -71,11 +71,11 @@ func TestMergeBasics(t *testing.T) {
 		}
 	}
 	// Add some (identical) layers on top
-	parent := newDiffLayer(emptyLayer(), common.Hash{}, copyAccounts(accounts), copyStorage(storage))
-	child := newDiffLayer(parent, common.Hash{}, copyAccounts(accounts), copyStorage(storage))
-	child = newDiffLayer(child, common.Hash{}, copyAccounts(accounts), copyStorage(storage))
-	child = newDiffLayer(child, common.Hash{}, copyAccounts(accounts), copyStorage(storage))
-	child = newDiffLayer(child, common.Hash{}, copyAccounts(accounts), copyStorage(storage))
+	parent := newDiffLayer(emptyLayer(), common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage))
+	child := newDiffLayer(parent, common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage))
+	child = newDiffLayer(child, common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage))
+	child = newDiffLayer(child, common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage))
+	child = newDiffLayer(child, common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage))
 
 	// And flatten
 	merged := (child.flatten()).(*diffLayer)
@@ -130,13 +130,13 @@ func TestMergeDelete(t *testing.T) {
 		}
 	}
 	// Add some flipAccs-flopping layers on top
-	parent := newDiffLayer(emptyLayer(), common.Hash{}, flip(), storage)
-	child := parent.Update(common.Hash{}, flop(), storage)
-	child = child.Update(common.Hash{}, flip(), storage)
-	child = child.Update(common.Hash{}, flop(), storage)
-	child = child.Update(common.Hash{}, flip(), storage)
-	child = child.Update(common.Hash{}, flop(), storage)
-	child = child.Update(common.Hash{}, flip(), storage)
+	parent := newDiffLayer(emptyLayer(), common.Hash{}, 0, flip(), storage)
+	child := parent.Update(common.Hash{}, 0, flop(), storage)
+	child = child.Update(common.Hash{}, 0, flip(), storage)
+	child = child.Update(common.Hash{}, 0, flop(), storage)
+	child = child.Update(common.Hash{}, 0, flip(), storage)
+	child = child.Update(common.Hash{}, 0, flop(), storage)
+	child = child.Update(common.Hash{}, 0, flip(), storage)
 
 	if data, _ := child.Account(h1); data == nil {
 		t.Errorf("last diff layer: expected %x account to be non-nil", h1)
@@ -176,7 +176,7 @@ func TestInsertAndMerge(t *testing.T) {
 			accounts = make(map[common.Hash][]byte)
 			storage  = make(map[common.Hash]map[common.Hash][]byte)
 		)
-		parent = newDiffLayer(emptyLayer(), common.Hash{}, accounts, storage)
+		parent = newDiffLayer(emptyLayer(), common.Hash{}, 0, accounts, storage)
 	}
 	{
 		var (
@@ -186,7 +186,7 @@ func TestInsertAndMerge(t *testing.T) {
 		accounts[acc] = randomAccount()
 		storage[acc] = make(map[common.Hash][]byte)
 		storage[acc][slot] = []byte{0x01}
-		child = newDiffLayer(parent, common.Hash{}, accounts, storage)
+		child = newDiffLayer(parent, common.Hash{}, 0, accounts, storage)
 	}
 	// And flatten
 	merged := (child.flatten()).(*diffLayer)
@@ -221,7 +221,7 @@ func BenchmarkSearch(b *testing.B) {
 		for i := 0; i < 10000; i++ {
 			accounts[randomHash()] = randomAccount()
 		}
-		return newDiffLayer(parent, common.Hash{}, accounts, storage)
+		return newDiffLayer(parent, common.Hash{}, 0, accounts, storage)
 	}
 	var layer snapshot
 	layer = emptyLayer()
@@ -262,7 +262,7 @@ func BenchmarkSearchSlot(b *testing.B) {
 			accStorage[randomHash()] = value
 			storage[accountKey] = accStorage
 		}
-		return newDiffLayer(parent, common.Hash{}, accounts, storage)
+		return newDiffLayer(parent, common.Hash{}, 0, accounts, storage)
 	}
 	var layer snapshot
 	layer = emptyLayer()
@@ -298,7 +298,7 @@ func BenchmarkFlatten(b *testing.B) {
 			}
 			storage[accountKey] = accStorage
 		}
-		return newDiffLayer(parent, common.Hash{}, accounts, storage)
+		return newDiffLayer(parent, common.Hash{}, 0, accounts, storage)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -346,7 +346,7 @@ func BenchmarkJournal(b *testing.B) {
 			}
 			storage[accountKey] = accStorage
 		}
-		return newDiffLayer(parent, common.Hash{}, accounts, storage)
+		return newDiffLayer(parent, common.Hash{}, 0, accounts, storage)
 	}
 	layer := snapshot(emptyLayer())
 	for i := 1; i < 128; i++ {
