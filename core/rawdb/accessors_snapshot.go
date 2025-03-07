@@ -92,6 +92,26 @@ func DeleteAccountSnapshot(db ethdb.KeyValueWriter, hash common.Hash) {
 	}
 }
 
+func ReadAccountSnapshotMeta(db ethdb.KeyValueReader, hash common.Hash) uint64 {
+	data, _ := db.Get(accountSnapshotMetaKey(hash))
+	if len(data) != 8 {
+		return 0
+	}
+	return binary.BigEndian.Uint64(data)
+}
+
+func WriteAccountSnapshotMeta(db ethdb.KeyValueWriter, hash common.Hash, block uint64) {
+	if err := db.Put(accountSnapshotMetaKey(hash), uint64ToBytes(block)); err != nil {
+		log.Crit("Failed to store account snapshot meta", "err", err)
+	}
+}
+
+func DeleteAccountSnapshotMeta(db ethdb.KeyValueWriter, hash common.Hash) {
+	if err := db.Delete(accountSnapshotMetaKey(hash)); err != nil {
+		log.Crit("Failed to delete account snapshot meta", "err", err)
+	}
+}
+
 // ReadStorageSnapshot retrieves the snapshot entry of a storage trie leaf.
 func ReadStorageSnapshot(db ethdb.KeyValueReader, accountHash, storageHash common.Hash) []byte {
 	data, _ := db.Get(storageSnapshotKey(accountHash, storageHash))
@@ -109,6 +129,26 @@ func WriteStorageSnapshot(db ethdb.KeyValueWriter, accountHash, storageHash comm
 func DeleteStorageSnapshot(db ethdb.KeyValueWriter, accountHash, storageHash common.Hash) {
 	if err := db.Delete(storageSnapshotKey(accountHash, storageHash)); err != nil {
 		log.Crit("Failed to delete storage snapshot", "err", err)
+	}
+}
+
+func ReadStorageSnapshotMeta(db ethdb.KeyValueReader, accountHash, storageHash common.Hash) uint64 {
+	data, _ := db.Get(storageSnapshotMetaKey(accountHash, storageHash))
+	if len(data) != 8 {
+		return 0
+	}
+	return binary.BigEndian.Uint64(data)
+}
+
+func WriteStorageSnapshotMeta(db ethdb.KeyValueWriter, accountHash, storageHash common.Hash, block uint64) {
+	if err := db.Put(storageSnapshotMetaKey(accountHash, storageHash), uint64ToBytes(block)); err != nil {
+		log.Crit("Failed to store storage snapshot meta", "err", err)
+	}
+}
+
+func DeleteStorageSnapshotMeta(db ethdb.KeyValueWriter, accountHash, storageHash common.Hash) {
+	if err := db.Delete(storageSnapshotMetaKey(accountHash, storageHash)); err != nil {
+		log.Crit("Failed to delete storage snapshot meta", "err", err)
 	}
 }
 

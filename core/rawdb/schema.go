@@ -105,12 +105,14 @@ var (
 	blockBodyPrefix     = []byte("b") // blockBodyPrefix + num (uint64 big endian) + hash -> block body
 	blockReceiptsPrefix = []byte("r") // blockReceiptsPrefix + num (uint64 big endian) + hash -> block receipts
 
-	txLookupPrefix        = []byte("l") // txLookupPrefix + hash -> transaction/receipt lookup metadata
-	bloomBitsPrefix       = []byte("B") // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
-	SnapshotAccountPrefix = []byte("a") // SnapshotAccountPrefix + account hash -> account trie value
-	SnapshotStoragePrefix = []byte("o") // SnapshotStoragePrefix + account hash + storage hash -> storage trie value
-	CodePrefix            = []byte("c") // CodePrefix + code hash -> account code
-	skeletonHeaderPrefix  = []byte("S") // skeletonHeaderPrefix + num (uint64 big endian) -> header
+	txLookupPrefix            = []byte("l")  // txLookupPrefix + hash -> transaction/receipt lookup metadata
+	bloomBitsPrefix           = []byte("B")  // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
+	SnapshotAccountPrefix     = []byte("a")  // SnapshotAccountPrefix + account hash -> account trie value
+	SnapshotStoragePrefix     = []byte("o")  // SnapshotStoragePrefix + account hash + storage hash -> storage trie value
+	SnapshotAccountMetaPrefix = []byte("ma") // SnapshotAccountMetaPrefix + account hash -> block number
+	SnapshotStorageMetaPrefix = []byte("mo") // SnapshotStorageMetaPrefix + account hash + storage hash -> block number
+	CodePrefix                = []byte("c")  // CodePrefix + code hash -> account code
+	skeletonHeaderPrefix      = []byte("S")  // skeletonHeaderPrefix + num (uint64 big endian) -> header
 
 	// Path-based storage scheme of merkle patricia trie.
 	TrieNodeAccountPrefix = []byte("A") // TrieNodeAccountPrefix + hexPath -> trie node
@@ -204,10 +206,22 @@ func accountSnapshotKey(hash common.Hash) []byte {
 	return append(SnapshotAccountPrefix, hash.Bytes()...)
 }
 
+func accountSnapshotMetaKey(hash common.Hash) []byte {
+	return append(SnapshotAccountMetaPrefix, hash.Bytes()...)
+}
+
 // storageSnapshotKey = SnapshotStoragePrefix + account hash + storage hash
 func storageSnapshotKey(accountHash, storageHash common.Hash) []byte {
 	buf := make([]byte, len(SnapshotStoragePrefix)+common.HashLength+common.HashLength)
 	n := copy(buf, SnapshotStoragePrefix)
+	n += copy(buf[n:], accountHash.Bytes())
+	copy(buf[n:], storageHash.Bytes())
+	return buf
+}
+
+func storageSnapshotMetaKey(accountHash, storageHash common.Hash) []byte {
+	buf := make([]byte, len(SnapshotStorageMetaPrefix)+common.HashLength+common.HashLength)
+	n := copy(buf, SnapshotStorageMetaPrefix)
 	n += copy(buf[n:], accountHash.Bytes())
 	copy(buf[n:], storageHash.Bytes())
 	return buf
@@ -340,4 +354,10 @@ func ResolveStorageTrieNode(key []byte) (bool, common.Hash, []byte) {
 func IsStorageTrieNode(key []byte) bool {
 	ok, _, _ := ResolveStorageTrieNode(key)
 	return ok
+}
+
+func uint64ToBytes(number uint64) []byte {
+	enc := make([]byte, 8)
+	binary.BigEndian.PutUint64(enc, number)
+	return enc
 }
