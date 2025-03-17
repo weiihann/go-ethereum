@@ -53,7 +53,7 @@ func makeTestState(scheme string) (ethdb.Database, Database, *triedb.Database, c
 	db := rawdb.NewMemoryDatabase()
 	nodeDb := triedb.NewDatabase(db, config)
 	sdb := NewDatabase(nodeDb, nil)
-	state, _ := New(types.EmptyRootHash, sdb)
+	state, _ := New(types.EmptyRootHash, sdb, 0)
 
 	// Fill it with some arbitrary data
 	var accounts []*testAccount
@@ -93,7 +93,7 @@ func checkStateAccounts(t *testing.T, db ethdb.Database, scheme string, root com
 		config.PathDB = pathdb.Defaults
 	}
 	// Check root availability and state contents
-	state, err := New(root, NewDatabase(triedb.NewDatabase(db, &config), nil))
+	state, err := New(root, NewDatabase(triedb.NewDatabase(db, &config), nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create state trie at %x: %v", root, err)
 	}
@@ -119,7 +119,7 @@ func checkStateConsistency(db ethdb.Database, scheme string, root common.Hash) e
 	if scheme == rawdb.PathScheme {
 		config.PathDB = pathdb.Defaults
 	}
-	state, err := New(root, NewDatabase(triedb.NewDatabase(db, config), nil))
+	state, err := New(root, NewDatabase(triedb.NewDatabase(db, config), nil), 0)
 	if err != nil {
 		return err
 	}
@@ -150,22 +150,27 @@ func TestIterativeStateSyncIndividual(t *testing.T) {
 	testIterativeStateSync(t, 1, false, false, rawdb.HashScheme)
 	testIterativeStateSync(t, 1, false, false, rawdb.PathScheme)
 }
+
 func TestIterativeStateSyncBatched(t *testing.T) {
 	testIterativeStateSync(t, 100, false, false, rawdb.HashScheme)
 	testIterativeStateSync(t, 100, false, false, rawdb.PathScheme)
 }
+
 func TestIterativeStateSyncIndividualFromDisk(t *testing.T) {
 	testIterativeStateSync(t, 1, true, false, rawdb.HashScheme)
 	testIterativeStateSync(t, 1, true, false, rawdb.PathScheme)
 }
+
 func TestIterativeStateSyncBatchedFromDisk(t *testing.T) {
 	testIterativeStateSync(t, 100, true, false, rawdb.HashScheme)
 	testIterativeStateSync(t, 100, true, false, rawdb.PathScheme)
 }
+
 func TestIterativeStateSyncIndividualByPath(t *testing.T) {
 	testIterativeStateSync(t, 1, false, true, rawdb.HashScheme)
 	testIterativeStateSync(t, 1, false, true, rawdb.PathScheme)
 }
+
 func TestIterativeStateSyncBatchedByPath(t *testing.T) {
 	testIterativeStateSync(t, 100, false, true, rawdb.HashScheme)
 	testIterativeStateSync(t, 100, false, true, rawdb.PathScheme)
@@ -411,6 +416,7 @@ func TestIterativeRandomStateSyncIndividual(t *testing.T) {
 	testIterativeRandomStateSync(t, 1, rawdb.HashScheme)
 	testIterativeRandomStateSync(t, 1, rawdb.PathScheme)
 }
+
 func TestIterativeRandomStateSyncBatched(t *testing.T) {
 	testIterativeRandomStateSync(t, 100, rawdb.HashScheme)
 	testIterativeRandomStateSync(t, 100, rawdb.PathScheme)
@@ -626,7 +632,7 @@ func testIncompleteStateSync(t *testing.T, scheme string) {
 	db, srcDb, ndb, srcRoot, srcAccounts := makeTestState(scheme)
 
 	// isCodeLookup to save some hashing
-	var isCode = make(map[common.Hash]struct{})
+	isCode := make(map[common.Hash]struct{})
 	for _, acc := range srcAccounts {
 		if len(acc.code) > 0 {
 			isCode[crypto.Keccak256Hash(acc.code)] = struct{}{}

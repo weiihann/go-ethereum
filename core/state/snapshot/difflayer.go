@@ -165,7 +165,6 @@ func newDiffLayer(parent snapshot, root common.Hash, block uint64, accounts map[
 			snapshotDirtyStorageWriteMeter.Mark(int64(len(data)))
 		}
 	}
-	dl.fillMeta() // fill the meta maps with the block number of this diff layer
 	return dl
 }
 
@@ -205,7 +204,6 @@ func newDiffLayerWithMeta(parent snapshot, root common.Hash, block uint64, accou
 			snapshotDirtyStorageWriteMeter.Mark(int64(len(data)))
 		}
 	}
-	// no need to call fillMeta(), this will only be used for loading from journal
 	return dl
 }
 
@@ -418,6 +416,12 @@ func (dl *diffLayer) Update(blockRoot common.Hash, blockNum uint64, accounts map
 	return newDiffLayer(dl, blockRoot, blockNum, accounts, storage)
 }
 
+func (dl *diffLayer) UpdateWithMeta(blockRoot common.Hash, blockNum uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte,
+	accountsMeta map[common.Hash]uint64, storagesMeta map[common.Hash]map[common.Hash]uint64,
+) *diffLayer {
+	return newDiffLayerWithMeta(dl, blockRoot, blockNum, accounts, storage, accountsMeta, storagesMeta)
+}
+
 // flatten pushes all data from this point downwards, flattening everything into
 // a single diff at the bottom. Since usually the lowermost diff is the largest,
 // the flattening builds up from there in reverse.
@@ -503,25 +507,6 @@ func (dl *diffLayer) flatten() snapshot {
 		storageList: make(map[common.Hash][]common.Hash),
 		diffed:      dl.diffed,
 		memory:      parent.memory + dl.memory,
-	}
-}
-
-// fillMeta fills the accountMeta and storageMeta maps with the current block number
-// of the diff layer.
-func (dl *diffLayer) fillMeta() {
-	dl.lock.RLock()
-	defer dl.lock.RUnlock()
-
-	for hash := range dl.accountData {
-		dl.accountMeta[hash] = dl.block
-	}
-	for accountHash, slots := range dl.storageData {
-		for storageHash := range slots {
-			if _, ok := dl.storageMeta[accountHash]; !ok {
-				dl.storageMeta[accountHash] = make(map[common.Hash]uint64)
-			}
-			dl.storageMeta[accountHash][storageHash] = dl.block
-		}
 	}
 }
 

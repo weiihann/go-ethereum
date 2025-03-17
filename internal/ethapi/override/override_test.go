@@ -37,7 +37,7 @@ func (p *precompileContract) Run(input []byte) ([]byte, error) { return nil, nil
 
 func TestStateOverrideMovePrecompile(t *testing.T) {
 	db := state.NewDatabase(triedb.NewDatabase(rawdb.NewMemoryDatabase(), nil), nil)
-	statedb, err := state.New(types.EmptyRootHash, db)
+	statedb, err := state.New(types.EmptyRootHash, db, 0)
 	if err != nil {
 		t.Fatalf("failed to create statedb: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestStateOverrideMovePrecompile(t *testing.T) {
 		a := common.BytesToAddress(b)
 		return &a
 	}
-	var testSuite = []struct {
+	testSuite := []struct {
 		overrides           StateOverride
 		expectedPrecompiles map[common.Address]struct{}
 		fail                bool

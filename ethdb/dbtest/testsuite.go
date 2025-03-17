@@ -335,7 +335,6 @@ func TestDatabaseSuite(t *testing.T, New func() ethdb.KeyValueStore) {
 		if err := db.Delete([]byte("key")); err == nil {
 			t.Fatalf("expected error on Delete after Close")
 		}
-
 		b := db.NewBatch()
 		if err := b.Put([]byte("batchkey"), []byte("batchval")); err != nil {
 			t.Fatalf("expected no error on batch.Put after Close, got %v", err)

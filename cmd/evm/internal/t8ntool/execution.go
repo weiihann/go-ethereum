@@ -307,8 +307,8 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig, 
 			receipt.Bloom = types.CreateBloom(receipt)
 
 			// These three are non-consensus fields:
-			//receipt.BlockHash
-			//receipt.BlockNumber
+			// receipt.BlockHash
+			// receipt.BlockNumber
 			receipt.TransactionIndex = uint(txIndex)
 			receipts = append(receipts, receipt)
 			if evm.Config.Tracer != nil && evm.Config.Tracer.OnTxEnd != nil {
@@ -406,7 +406,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig, 
 
 	// Re-create statedb instance with new root upon the updated database
 	// for accessing latest states.
-	statedb, err = state.New(root, statedb.Database())
+	statedb, err = state.New(root, statedb.Database(), 0)
 	if err != nil {
 		return nil, nil, nil, NewError(ErrorEVM, fmt.Errorf("could not reopen state: %v", err))
 	}
@@ -417,7 +417,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig, 
 func MakePreState(db ethdb.Database, accounts types.GenesisAlloc) *state.StateDB {
 	tdb := triedb.NewDatabase(db, &triedb.Config{Preimages: true})
 	sdb := state.NewDatabase(tdb, nil)
-	statedb, _ := state.New(types.EmptyRootHash, sdb)
+	statedb, _ := state.New(types.EmptyRootHash, sdb, 0)
 	for addr, a := range accounts {
 		statedb.SetCode(addr, a.Code)
 		statedb.SetNonce(addr, a.Nonce, tracing.NonceChangeGenesis)
@@ -428,7 +428,7 @@ func MakePreState(db ethdb.Database, accounts types.GenesisAlloc) *state.StateDB
 	}
 	// Commit and re-open to start with a clean state.
 	root, _ := statedb.Commit(0, false, false)
-	statedb, _ = state.New(root, sdb)
+	statedb, _ = state.New(root, sdb, 0)
 	return statedb
 }
 
@@ -444,7 +444,8 @@ func rlpHash(x interface{}) (h common.Hash) {
 // parent timestamp + difficulty.
 // Note: this method only works for ethash engine.
 func calcDifficulty(config *params.ChainConfig, number, currentTime, parentTime uint64,
-	parentDifficulty *big.Int, parentUncleHash common.Hash) *big.Int {
+	parentDifficulty *big.Int, parentUncleHash common.Hash,
+) *big.Int {
 	uncleHash := parentUncleHash
 	if uncleHash == (common.Hash{}) {
 		uncleHash = types.EmptyUncleHash

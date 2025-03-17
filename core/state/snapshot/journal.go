@@ -64,13 +64,6 @@ type journalAccount struct {
 	Blob []byte
 }
 
-// Same as journalAccount but with the block number.
-type journalAccountWithBlock struct {
-	Hash  common.Hash
-	Blob  []byte
-	Block uint64
-}
-
 // journalStorage is an account's storage map in a diffLayer's disk journal.
 type journalStorage struct {
 	Hash common.Hash
@@ -78,11 +71,18 @@ type journalStorage struct {
 	Vals [][]byte
 }
 
-// Same as journalStorage but with the block number.
-type journalStorageWithBlock struct {
+type journalAccountMeta struct {
 	Hash  common.Hash
-	Keys  []common.Hash
-	Vals  [][]byte
+	Block uint64
+}
+
+type journalStorageMeta struct {
+	Hash  common.Hash
+	Slots []journalSlotMeta
+}
+
+type journalSlotMeta struct {
+	Key   common.Hash
 	Block uint64
 }
 
@@ -259,17 +259,21 @@ func (dl *diffLayer) Journal(buffer *bytes.Buffer) (common.Hash, error) {
 	if err := rlp.Encode(buffer, dl.root); err != nil {
 		return common.Hash{}, err
 	}
-	accounts := make([]journalAccountWithBlock, 0, len(dl.accountData))
+
+	accounts := make([]journalAccount, 0, len(dl.accountData))
 	for hash, blob := range dl.accountData {
-		accounts = append(accounts, journalAccountWithBlock{
+		acc := journalAccount{
 			Hash: hash,
 			Blob: blob,
-		})
+		}
+		accounts = append(accounts, acc)
 	}
+
 	if err := rlp.Encode(buffer, accounts); err != nil {
 		return common.Hash{}, err
 	}
-	storage := make([]journalStorage, 0, len(dl.storageData))
+
+	storages := make([]journalStorage, 0, len(dl.storageData))
 	for hash, slots := range dl.storageData {
 		keys := make([]common.Hash, 0, len(slots))
 		vals := make([][]byte, 0, len(slots))
@@ -277,11 +281,38 @@ func (dl *diffLayer) Journal(buffer *bytes.Buffer) (common.Hash, error) {
 			keys = append(keys, key)
 			vals = append(vals, val)
 		}
-		storage = append(storage, journalStorage{Hash: hash, Keys: keys, Vals: vals})
+		st := journalStorage{Hash: hash, Keys: keys, Vals: vals}
+		storages = append(storages, st)
 	}
-	if err := rlp.Encode(buffer, storage); err != nil {
+
+	if err := rlp.Encode(buffer, storages); err != nil {
 		return common.Hash{}, err
 	}
+
+	// Journal the account meta
+	accountsMeta := make([]journalAccountMeta, 0, len(dl.accountMeta))
+	for hash, block := range dl.accountMeta {
+		accountsMeta = append(accountsMeta, journalAccountMeta{Hash: hash, Block: block})
+	}
+
+	if err := rlp.Encode(buffer, accountsMeta); err != nil {
+		return common.Hash{}, err
+	}
+
+	// Journal the storage meta
+	storageMeta := make([]journalStorageMeta, 0, len(dl.storageMeta))
+	for hash, slots := range dl.storageMeta {
+		slotsMeta := make([]journalSlotMeta, 0, len(slots))
+		for key, block := range slots {
+			slotsMeta = append(slotsMeta, journalSlotMeta{Key: key, Block: block})
+		}
+		storageMeta = append(storageMeta, journalStorageMeta{Hash: hash, Slots: slotsMeta})
+	}
+
+	if err := rlp.Encode(buffer, storageMeta); err != nil {
+		return common.Hash{}, err
+	}
+
 	log.Debug("Journalled diff layer", "root", dl.root, "parent", dl.parent.Root())
 	return base, nil
 }
@@ -309,7 +340,7 @@ func iterateJournal(db ethdb.KeyValueReader, callback journalCallback) error {
 		log.Warn("Failed to resolve the journal version", "error", err)
 		return errors.New("failed to resolve journal version")
 	}
-	if version != journalV0 && version != journalCurrentVersion { // TODO(weiihann): handle this
+	if version != journalV0 && version != journalV1 && version != journalCurrentVersion {
 		log.Warn("Discarded journal with wrong version", "required", journalCurrentVersion, "got", version)
 		return errors.New("wrong journal version")
 	}
@@ -440,14 +471,15 @@ func iterateJournalWithMeta(db ethdb.KeyValueReader, callback journalCallbackMet
 	for {
 		var (
 			root        common.Hash
-			accountV1   []journalAccount
-			storageV1   []journalStorage
-			accounts    []journalAccountWithBlock
-			storage     []journalStorageWithBlock
+			accounts    []journalAccount
+			storages    []journalStorage
 			accountData = make(map[common.Hash][]byte)
 			storageData = make(map[common.Hash]map[common.Hash][]byte)
-			accountMeta = make(map[common.Hash]uint64)
-			storageMeta = make(map[common.Hash]map[common.Hash]uint64)
+
+			jAccountMeta []journalAccountMeta
+			jStorageMeta []journalStorageMeta
+			accountMeta  = make(map[common.Hash]uint64)
+			storageMeta  = make(map[common.Hash]map[common.Hash]uint64)
 		)
 		// Read the next diff journal entry
 		if err := r.Decode(&root); err != nil {
@@ -488,35 +520,11 @@ func iterateJournalWithMeta(db ethdb.KeyValueReader, callback journalCallbackMet
 			}
 		}
 
-		// If the version is V1, decode the account and storage entries with the default block number 0.
-		if version == journalV1 {
-			if err := r.Decode(&accountV1); err != nil {
-				return fmt.Errorf("load diff accounts: %v", err)
-			}
-			if err := r.Decode(&storageV1); err != nil {
-				return fmt.Errorf("load diff storage: %v", err)
-			}
-
-			for _, entry := range accountV1 {
-				accounts = append(accounts, journalAccountWithBlock{
-					Hash: entry.Hash,
-					Blob: entry.Blob,
-				})
-			}
-			for _, entry := range storageV1 {
-				storage = append(storage, journalStorageWithBlock{
-					Hash: entry.Hash,
-					Keys: entry.Keys,
-					Vals: entry.Vals,
-				})
-			}
-		} else {
-			if err := r.Decode(&accounts); err != nil {
-				return fmt.Errorf("load diff accounts: %v", err)
-			}
-			if err := r.Decode(&storage); err != nil {
-				return fmt.Errorf("load diff storage: %v", err)
-			}
+		if err := r.Decode(&accounts); err != nil {
+			return fmt.Errorf("load diff accounts: %v", err)
+		}
+		if err := r.Decode(&storages); err != nil {
+			return fmt.Errorf("load diff storage: %v", err)
 		}
 
 		for _, entry := range accounts {
@@ -525,22 +533,39 @@ func iterateJournalWithMeta(db ethdb.KeyValueReader, callback journalCallbackMet
 			} else {
 				accountData[entry.Hash] = nil
 			}
-			accountMeta[entry.Hash] = entry.Block
 		}
-		for _, entry := range storage {
+		for _, entry := range storages {
 			slots := make(map[common.Hash][]byte)
-			slotsMeta := make(map[common.Hash]uint64)
 			for i, key := range entry.Keys {
 				if len(entry.Vals[i]) > 0 { // RLP loses nil-ness, but `[]byte{}` is not a valid item, so reinterpret that
 					slots[key] = entry.Vals[i]
 				} else {
 					slots[key] = nil
 				}
-				slotsMeta[key] = entry.Block
 			}
 			storageData[entry.Hash] = slots
-			storageMeta[entry.Hash] = slotsMeta
 		}
+
+		if version == journalV2 {
+			if err := r.Decode(&jAccountMeta); err != nil {
+				return fmt.Errorf("load diff account meta: %v", err)
+			}
+			if err := r.Decode(&jStorageMeta); err != nil {
+				return fmt.Errorf("load diff storage meta: %v", err)
+			}
+
+			for _, entry := range jAccountMeta {
+				accountMeta[entry.Hash] = entry.Block
+			}
+			for _, entry := range jStorageMeta {
+				slotsMeta := make(map[common.Hash]uint64)
+				for _, slot := range entry.Slots {
+					slotsMeta[slot.Key] = slot.Block
+				}
+				storageMeta[entry.Hash] = slotsMeta
+			}
+		}
+
 		if err := callback(parent, root, accountData, storageData, accountMeta, storageMeta); err != nil {
 			return err
 		}

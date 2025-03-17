@@ -184,6 +184,12 @@ func (dl *diskLayer) Update(blockHash common.Hash, blockNum uint64, accounts map
 	return newDiffLayer(dl, blockHash, blockNum, accounts, storage)
 }
 
+func (dl *diskLayer) UpdateWithMeta(blockHash common.Hash, blockNum uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte,
+	accountsMeta map[common.Hash]uint64, storagesMeta map[common.Hash]map[common.Hash]uint64,
+) *diffLayer {
+	return newDiffLayerWithMeta(dl, blockHash, blockNum, accounts, storage, accountsMeta, storagesMeta)
+}
+
 // stopGeneration aborts the state snapshot generation if it is currently running.
 func (dl *diskLayer) stopGeneration() {
 	dl.lock.RLock()
