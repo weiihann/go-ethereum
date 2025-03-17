@@ -53,6 +53,10 @@ func randomAccount() []byte {
 	return data
 }
 
+func randomBlock() uint64 {
+	return rand.Uint64()
+}
+
 // randomAccountSet generates a set of random accounts with the given strings as
 // the account address hashes.
 func randomAccountSet(hashes ...string) map[common.Hash][]byte {
@@ -487,5 +491,40 @@ func TestReadStateDuringFlattening(t *testing.T) {
 		}
 	case <-time.NewTimer(time.Millisecond * 300).C:
 		t.Fatal("Unexpected blocker")
+	}
+}
+
+func TestSnapshotMeta(t *testing.T) {
+	// Create an empty base layer and a snapshot tree out of it
+	base := &diskLayer{
+		diskdb: rawdb.NewMemoryDatabase(),
+		root:   common.HexToHash("0x01"),
+		cache:  fastcache.New(1024 * 500),
+	}
+	snaps := &Tree{
+		layers: map[common.Hash]snapshot{
+			base.root: base,
+		},
+	}
+	accounts := map[common.Hash][]byte{
+		common.HexToHash("0xa1"): randomAccount(),
+	}
+	storage := map[common.Hash]map[common.Hash][]byte{
+		common.HexToHash("0xa1"): {common.HexToHash("0xb1"): randomAccount()},
+	}
+
+	accountsMeta0 := map[common.Hash]uint64{common.HexToHash("0xa1"): 0}
+	storageMeta0 := map[common.Hash]map[common.Hash]uint64{common.HexToHash("0xa1"): {common.HexToHash("0xb1"): 0}}
+	accountsMeta1 := map[common.Hash]uint64{common.HexToHash("0xa1"): 1}
+	storageMeta1 := map[common.Hash]map[common.Hash]uint64{common.HexToHash("0xa1"): {common.HexToHash("0xb1"): 1}}
+	accountsMeta2 := map[common.Hash]uint64{common.HexToHash("0xa1"): 2}
+	storageMeta2 := map[common.Hash]map[common.Hash]uint64{common.HexToHash("0xa1"): {common.HexToHash("0xb1"): 2}}
+
+	snaps.UpdateWithMeta(common.HexToHash("0xa1"), 0, common.HexToHash("0x01"), accounts, storage, accountsMeta0, storageMeta0)
+	snaps.UpdateWithMeta(common.HexToHash("0xa2"), 1, common.HexToHash("0xa1"), accounts, storage, accountsMeta1, storageMeta1)
+	snaps.UpdateWithMeta(common.HexToHash("0xa3"), 2, common.HexToHash("0xa2"), accounts, storage, accountsMeta2, storageMeta2)
+
+	if err := snaps.Cap(common.HexToHash("0xa3"), 2); err != nil {
+		t.Fatalf("Failed to cap the snapshot: %v", err)
 	}
 }

@@ -105,7 +105,7 @@ func TestExecute(t *testing.T) {
 }
 
 func TestCall(t *testing.T) {
-	state, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+	state, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 	address := common.HexToAddress("0xaa")
 	state.SetCode(address, []byte{
 		byte(vm.PUSH1), 10,
@@ -128,9 +128,9 @@ func TestCall(t *testing.T) {
 }
 
 func BenchmarkCall(b *testing.B) {
-	var definition = `[{"constant":true,"inputs":[],"name":"seller","outputs":[{"name":"","type":"address"}],"type":"function"},{"constant":false,"inputs":[],"name":"abort","outputs":[],"type":"function"},{"constant":true,"inputs":[],"name":"value","outputs":[{"name":"","type":"uint256"}],"type":"function"},{"constant":false,"inputs":[],"name":"refund","outputs":[],"type":"function"},{"constant":true,"inputs":[],"name":"buyer","outputs":[{"name":"","type":"address"}],"type":"function"},{"constant":false,"inputs":[],"name":"confirmReceived","outputs":[],"type":"function"},{"constant":true,"inputs":[],"name":"state","outputs":[{"name":"","type":"uint8"}],"type":"function"},{"constant":false,"inputs":[],"name":"confirmPurchase","outputs":[],"type":"function"},{"inputs":[],"type":"constructor"},{"anonymous":false,"inputs":[],"name":"Aborted","type":"event"},{"anonymous":false,"inputs":[],"name":"PurchaseConfirmed","type":"event"},{"anonymous":false,"inputs":[],"name":"ItemReceived","type":"event"},{"anonymous":false,"inputs":[],"name":"Refunded","type":"event"}]`
+	definition := `[{"constant":true,"inputs":[],"name":"seller","outputs":[{"name":"","type":"address"}],"type":"function"},{"constant":false,"inputs":[],"name":"abort","outputs":[],"type":"function"},{"constant":true,"inputs":[],"name":"value","outputs":[{"name":"","type":"uint256"}],"type":"function"},{"constant":false,"inputs":[],"name":"refund","outputs":[],"type":"function"},{"constant":true,"inputs":[],"name":"buyer","outputs":[{"name":"","type":"address"}],"type":"function"},{"constant":false,"inputs":[],"name":"confirmReceived","outputs":[],"type":"function"},{"constant":true,"inputs":[],"name":"state","outputs":[{"name":"","type":"uint8"}],"type":"function"},{"constant":false,"inputs":[],"name":"confirmPurchase","outputs":[],"type":"function"},{"inputs":[],"type":"constructor"},{"anonymous":false,"inputs":[],"name":"Aborted","type":"event"},{"anonymous":false,"inputs":[],"name":"PurchaseConfirmed","type":"event"},{"anonymous":false,"inputs":[],"name":"ItemReceived","type":"event"},{"anonymous":false,"inputs":[],"name":"Refunded","type":"event"}]`
 
-	var code = common.Hex2Bytes("6060604052361561006c5760e060020a600035046308551a53811461007457806335a063b4146100865780633fa4f245146100a6578063590e1ae3146100af5780637150d8ae146100cf57806373fac6f0146100e1578063c19d93fb146100fe578063d696069714610112575b610131610002565b610133600154600160a060020a031681565b610131600154600160a060020a0390811633919091161461015057610002565b61014660005481565b610131600154600160a060020a039081163391909116146102d557610002565b610133600254600160a060020a031681565b610131600254600160a060020a0333811691161461023757610002565b61014660025460ff60a060020a9091041681565b61013160025460009060ff60a060020a9091041681146101cc57610002565b005b600160a060020a03166060908152602090f35b6060908152602090f35b60025460009060a060020a900460ff16811461016b57610002565b600154600160a060020a03908116908290301631606082818181858883f150506002805460a060020a60ff02191660a160020a179055506040517f72c874aeff0b183a56e2b79c71b46e1aed4dee5e09862134b8821ba2fddbf8bf9250a150565b80546002023414806101dd57610002565b6002805460a060020a60ff021973ffffffffffffffffffffffffffffffffffffffff1990911633171660a060020a1790557fd5d55c8a68912e9a110618df8d5e2e83b8d83211c57a8ddd1203df92885dc881826060a15050565b60025460019060a060020a900460ff16811461025257610002565b60025460008054600160a060020a0390921691606082818181858883f150508354604051600160a060020a0391821694503090911631915082818181858883f150506002805460a060020a60ff02191660a160020a179055506040517fe89152acd703c9d8c7d28829d443260b411454d45394e7995815140c8cbcbcf79250a150565b60025460019060a060020a900460ff1681146102f057610002565b6002805460008054600160a060020a0390921692909102606082818181858883f150508354604051600160a060020a0391821694503090911631915082818181858883f150506002805460a060020a60ff02191660a160020a179055506040517f8616bbbbad963e4e65b1366f1d75dfb63f9e9704bbbf91fb01bec70849906cf79250a15056")
+	code := common.Hex2Bytes("6060604052361561006c5760e060020a600035046308551a53811461007457806335a063b4146100865780633fa4f245146100a6578063590e1ae3146100af5780637150d8ae146100cf57806373fac6f0146100e1578063c19d93fb146100fe578063d696069714610112575b610131610002565b610133600154600160a060020a031681565b610131600154600160a060020a0390811633919091161461015057610002565b61014660005481565b610131600154600160a060020a039081163391909116146102d557610002565b610133600254600160a060020a031681565b610131600254600160a060020a0333811691161461023757610002565b61014660025460ff60a060020a9091041681565b61013160025460009060ff60a060020a9091041681146101cc57610002565b005b600160a060020a03166060908152602090f35b6060908152602090f35b60025460009060a060020a900460ff16811461016b57610002565b600154600160a060020a03908116908290301631606082818181858883f150506002805460a060020a60ff02191660a160020a179055506040517f72c874aeff0b183a56e2b79c71b46e1aed4dee5e09862134b8821ba2fddbf8bf9250a150565b80546002023414806101dd57610002565b6002805460a060020a60ff021973ffffffffffffffffffffffffffffffffffffffff1990911633171660a060020a1790557fd5d55c8a68912e9a110618df8d5e2e83b8d83211c57a8ddd1203df92885dc881826060a15050565b60025460019060a060020a900460ff16811461025257610002565b60025460008054600160a060020a0390921691606082818181858883f150508354604051600160a060020a0391821694503090911631915082818181858883f150506002805460a060020a60ff02191660a160020a179055506040517fe89152acd703c9d8c7d28829d443260b411454d45394e7995815140c8cbcbcf79250a150565b60025460019060a060020a900460ff1681146102f057610002565b6002805460008054600160a060020a0390921692909102606082818181858883f150508354604051600160a060020a0391821694503090911631915082818181858883f150506002805460a060020a60ff02191660a160020a179055506040517f8616bbbbad963e4e65b1366f1d75dfb63f9e9704bbbf91fb01bec70849906cf79250a15056")
 
 	abi, err := abi.JSON(strings.NewReader(definition))
 	if err != nil {
@@ -159,9 +159,10 @@ func BenchmarkCall(b *testing.B) {
 		}
 	}
 }
+
 func benchmarkEVM_Create(bench *testing.B, code string) {
 	var (
-		statedb, _ = state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+		statedb, _ = state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 		sender     = common.BytesToAddress([]byte("sender"))
 		receiver   = common.BytesToAddress([]byte("receiver"))
 	)
@@ -201,14 +202,17 @@ func BenchmarkEVM_CREATE_500(bench *testing.B) {
 	// initcode size 500K, repeatedly calls CREATE and then modifies the mem contents
 	benchmarkEVM_Create(bench, "5b6207a120600080f0600152600056")
 }
+
 func BenchmarkEVM_CREATE2_500(bench *testing.B) {
 	// initcode size 500K, repeatedly calls CREATE2 and then modifies the mem contents
 	benchmarkEVM_Create(bench, "5b586207a120600080f5600152600056")
 }
+
 func BenchmarkEVM_CREATE_1200(bench *testing.B) {
 	// initcode size 1200K, repeatedly calls CREATE and then modifies the mem contents
 	benchmarkEVM_Create(bench, "5b62124f80600080f0600152600056")
 }
+
 func BenchmarkEVM_CREATE2_1200(bench *testing.B) {
 	// initcode size 1200K, repeatedly calls CREATE2 and then modifies the mem contents
 	benchmarkEVM_Create(bench, "5b5862124f80600080f5600152600056")
@@ -227,7 +231,7 @@ func BenchmarkEVM_SWAP1(b *testing.B) {
 		return contract
 	}
 
-	state, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+	state, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 	contractAddr := common.BytesToAddress([]byte("contract"))
 
 	b.Run("10k", func(b *testing.B) {
@@ -255,7 +259,7 @@ func BenchmarkEVM_RETURN(b *testing.B) {
 		return contract
 	}
 
-	state, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+	state, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 	contractAddr := common.BytesToAddress([]byte("contract"))
 
 	for _, n := range []uint64{1_000, 10_000, 100_000, 1_000_000} {
@@ -308,8 +312,8 @@ func (d *dummyChain) GetHeader(h common.Hash, n uint64) *types.Header {
 	s := common.LeftPadBytes(big.NewInt(int64(n-1)).Bytes(), 32)
 	copy(parentHash[:], s)
 
-	//parentHash := common.Hash{byte(n - 1)}
-	//fmt.Printf("GetHeader(%x, %d) => header with parent %x\n", h, n, parentHash)
+	// parentHash := common.Hash{byte(n - 1)}
+	// fmt.Printf("GetHeader(%x, %d) => header with parent %x\n", h, n, parentHash)
 	return fakeHeader(n, parentHash)
 }
 
@@ -397,7 +401,7 @@ func TestBlockhash(t *testing.T) {
 func benchmarkNonModifyingCode(gas uint64, code []byte, name string, tracerCode string, b *testing.B) {
 	cfg := new(Config)
 	setDefaults(cfg)
-	cfg.State, _ = state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+	cfg.State, _ = state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 	cfg.GasLimit = gas
 	if len(tracerCode) > 0 {
 		tracer, err := tracers.DefaultDirectory.New(tracerCode, new(tracers.Context), nil, cfg.ChainConfig)
@@ -425,7 +429,7 @@ func benchmarkNonModifyingCode(gas uint64, code []byte, name string, tracerCode 
 		})
 	}
 
-	//cfg.State.CreateAccount(cfg.Origin)
+	// cfg.State.CreateAccount(cfg.Origin)
 	// set the receiver's (the executing contract) code for execution.
 	cfg.State.SetCode(destination, code)
 	Call(destination, nil, cfg)
@@ -482,8 +486,8 @@ func BenchmarkSimpleLoop(b *testing.B) {
 		Call(nil, 0xee, 0, 0, 0x20, 0x0, 0x0).
 		Op(vm.POP).Jump(lbl).Bytes() // pop return value and jump to label
 
-	//tracer := logger.NewJSONLogger(nil, os.Stdout)
-	//Execute(loopingCode, nil, &Config{
+	// tracer := logger.NewJSONLogger(nil, os.Stdout)
+	// Execute(loopingCode, nil, &Config{
 	//	EVMConfig: vm.Config{
 	//		Debug:  true,
 	//		Tracer: tracer,
@@ -497,8 +501,8 @@ func BenchmarkSimpleLoop(b *testing.B) {
 	benchmarkNonModifyingCode(100000000, callEOA, "call-EOA-100M", "", b)
 	benchmarkNonModifyingCode(100000000, callRevertingContractWithInput, "call-reverting-100M", "", b)
 
-	//benchmarkNonModifyingCode(10000000, staticCallIdentity, "staticcall-identity-10M", b)
-	//benchmarkNonModifyingCode(10000000, loopingCode, "loop-10M", b)
+	// benchmarkNonModifyingCode(10000000, staticCallIdentity, "staticcall-identity-10M", b)
+	// benchmarkNonModifyingCode(10000000, loopingCode, "loop-10M", b)
 }
 
 // TestEip2929Cases contains various testcases that are used for
@@ -546,13 +550,13 @@ func TestEip2929Cases(t *testing.T) {
 	{ // EXTCODECOPY
 		code := []byte{
 			// extcodecopy( 0xff,0,0,0,0)
-			byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, //length, codeoffset, memoffset
+			byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, // length, codeoffset, memoffset
 			byte(vm.PUSH1), 0xff, byte(vm.EXTCODECOPY),
 			// extcodecopy( 0xff,0,0,0,0)
-			byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, //length, codeoffset, memoffset
+			byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, // length, codeoffset, memoffset
 			byte(vm.PUSH1), 0xff, byte(vm.EXTCODECOPY),
 			// extcodecopy( this,0,0,0,0)
-			byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, //length, codeoffset, memoffset
+			byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, byte(vm.PUSH1), 0x00, // length, codeoffset, memoffset
 			byte(vm.ADDRESS), byte(vm.EXTCODECOPY),
 
 			byte(vm.STOP),
@@ -563,7 +567,6 @@ func TestEip2929Cases(t *testing.T) {
 
 	{ // SLOAD + SSTORE
 		code := []byte{
-
 			// Add slot `0x1` to access list
 			byte(vm.PUSH1), 0x01, byte(vm.SLOAD), byte(vm.POP), // SLOAD( 0x1) (add to access list)
 			// Write to `0x1` which is already in access list
@@ -662,14 +665,14 @@ func TestColdAccountAccessCost(t *testing.T) {
 			want: 7600,
 		},
 	} {
-		var step = 0
-		var have = uint64(0)
+		step := 0
+		have := uint64(0)
 		Execute(tc.code, nil, &Config{
 			EVMConfig: vm.Config{
 				Tracer: &tracing.Hooks{
 					OnOpcode: func(pc uint64, op byte, gas, cost uint64, scope tracing.OpContext, rData []byte, depth int, err error) {
 						// Uncomment to investigate failures:
-						//t.Logf("%d: %v %d", step, vm.OpCode(op).String(), cost)
+						// t.Logf("%d: %v %d", step, vm.OpCode(op).String(), cost)
 						if step == tc.step {
 							have = cost
 						}
@@ -712,7 +715,8 @@ func TestRuntimeJSTracer(t *testing.T) {
 	exit: function(res) {
 		this.exits++;
 		this.gasUsed = res.getGasUsed();
-	}}`}
+	}}`,
+	}
 	initcode := program.New().Return(0, 0).Bytes()
 	tests := []struct {
 		code []byte
@@ -771,7 +775,7 @@ func TestRuntimeJSTracer(t *testing.T) {
 	main := common.HexToAddress("0xaa")
 	for i, jsTracer := range jsTracers {
 		for j, tc := range tests {
-			statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+			statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 			statedb.SetCode(main, tc.code)
 			statedb.SetCode(common.HexToAddress("0xbb"), calleeCode)
 			statedb.SetCode(common.HexToAddress("0xcc"), calleeCode)
@@ -788,7 +792,8 @@ func TestRuntimeJSTracer(t *testing.T) {
 				State:    statedb,
 				EVMConfig: vm.Config{
 					Tracer: tracer.Hooks,
-				}})
+				},
+			})
 			if err != nil {
 				t.Fatal("didn't expect error", err)
 			}
@@ -813,7 +818,7 @@ func TestJSTracerCreateTx(t *testing.T) {
 	exit: function(res) { this.exits++ }}`
 	code := []byte{byte(vm.PUSH1), 0, byte(vm.PUSH1), 0, byte(vm.RETURN)}
 
-	statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+	statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 	tracer, err := tracers.DefaultDirectory.New(jsTracer, new(tracers.Context), nil, params.MergedTestChainConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -822,7 +827,8 @@ func TestJSTracerCreateTx(t *testing.T) {
 		State: statedb,
 		EVMConfig: vm.Config{
 			Tracer: tracer.Hooks,
-		}})
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +867,7 @@ func BenchmarkTracerStepVsCallFrame(b *testing.B) {
 // TestDelegatedAccountAccessCost tests that calling an account with an EIP-7702
 // delegation designator incurs the correct amount of gas based on the tracer.
 func TestDelegatedAccountAccessCost(t *testing.T) {
-	statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+	statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 	statedb.SetCode(common.HexToAddress("0xff"), types.AddressToDelegation(common.HexToAddress("0xaa")))
 	statedb.SetCode(common.HexToAddress("0xaa"), program.New().Return(0, 0).Bytes())
 
@@ -914,8 +920,8 @@ func TestDelegatedAccountAccessCost(t *testing.T) {
 			want: 7600,
 		},
 	} {
-		var step = 0
-		var have = uint64(0)
+		step := 0
+		have := uint64(0)
 		Execute(tc.code, nil, &Config{
 			ChainConfig: params.MergedTestChainConfig,
 			State:       statedb,

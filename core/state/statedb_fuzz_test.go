@@ -108,7 +108,7 @@ func newStateTestAction(addr common.Address, r *rand.Rand, index int) testAction
 			},
 		},
 	}
-	var nonRandom = index != -1
+	nonRandom := index != -1
 	if index == -1 {
 		index = r.Intn(len(actions))
 	}
@@ -209,7 +209,7 @@ func (test *stateTest) run() bool {
 		if i != 0 {
 			root = roots[len(roots)-1]
 		}
-		state, err := New(root, NewDatabase(tdb, snaps))
+		state, err := New(root, NewDatabase(tdb, snaps), 0)
 		if err != nil {
 			panic(err)
 		}

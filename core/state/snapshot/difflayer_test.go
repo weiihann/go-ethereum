@@ -109,6 +109,73 @@ func TestMergeBasics(t *testing.T) {
 	}
 }
 
+func TestMergeBasicsWithMeta(t *testing.T) {
+	var (
+		accounts     = make(map[common.Hash][]byte)
+		storage      = make(map[common.Hash]map[common.Hash][]byte)
+		accountsMeta = make(map[common.Hash]uint64)
+		storagesMeta = make(map[common.Hash]map[common.Hash]uint64)
+	)
+	// Fill up a parent
+	for i := 0; i < 100; i++ {
+		h := randomHash()
+		data := randomAccount()
+
+		accounts[h] = data
+		accountsMeta[h] = randomBlock()
+		if rand.Intn(4) == 0 {
+			accounts[h] = nil
+		}
+		if rand.Intn(2) == 0 {
+			accStorage := make(map[common.Hash][]byte)
+			value := make([]byte, 32)
+			crand.Read(value)
+			accStorage[randomHash()] = value
+			storage[h] = accStorage
+			accountsMeta[h] = randomBlock()
+			storagesMeta[h] = make(map[common.Hash]uint64)
+			storagesMeta[h][randomHash()] = randomBlock()
+		}
+	}
+	// Add some (identical) layers on top
+	parent := newDiffLayerWithMeta(emptyLayer(), common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage), accountsMeta, storagesMeta)
+	child := newDiffLayerWithMeta(parent, common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage), accountsMeta, storagesMeta)
+	child = newDiffLayerWithMeta(child, common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage), accountsMeta, storagesMeta)
+	child = newDiffLayerWithMeta(child, common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage), accountsMeta, storagesMeta)
+	child = newDiffLayerWithMeta(child, common.Hash{}, 0, copyAccounts(accounts), copyStorage(storage), accountsMeta, storagesMeta)
+
+	// And flatten
+	merged := (child.flatten()).(*diffLayer)
+
+	{ // Check account lists
+		if have, want := len(merged.accountList), 0; have != want {
+			t.Errorf("accountList wrong: have %v, want %v", have, want)
+		}
+		if have, want := len(merged.AccountList()), len(accounts); have != want {
+			t.Errorf("AccountList() wrong: have %v, want %v", have, want)
+		}
+		if have, want := len(merged.accountList), len(accounts); have != want {
+			t.Errorf("accountList [2] wrong: have %v, want %v", have, want)
+		}
+	}
+	{ // Check storage lists
+		i := 0
+		for aHash, sMap := range storage {
+			if have, want := len(merged.storageList), i; have != want {
+				t.Errorf("[1] storageList wrong: have %v, want %v", have, want)
+			}
+			list := merged.StorageList(aHash)
+			if have, want := len(list), len(sMap); have != want {
+				t.Errorf("[2] StorageList() wrong: have %v, want %v", have, want)
+			}
+			if have, want := len(merged.storageList[aHash]), len(sMap); have != want {
+				t.Errorf("storageList wrong: have %v, want %v", have, want)
+			}
+			i++
+		}
+	}
+}
+
 // TestMergeDelete tests some deletion
 func TestMergeDelete(t *testing.T) {
 	storage := make(map[common.Hash]map[common.Hash][]byte)

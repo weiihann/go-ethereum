@@ -131,6 +131,7 @@ type snapshot interface {
 	//
 	// Note, the maps are retained by the method to avoid copying everything.
 	Update(blockRoot common.Hash, blockNum uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer
+	UpdateWithMeta(blockRoot common.Hash, blockNum uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte, accountsMeta map[common.Hash]uint64, storagesMeta map[common.Hash]map[common.Hash]uint64) *diffLayer
 
 	// Journal commits an entire diff hierarchy to disk into a single journal entry.
 	// This is meant to be used during shutdown to persist the snapshot without
@@ -360,6 +361,31 @@ func (t *Tree) Update(blockRoot common.Hash, blockNum uint64, parentRoot common.
 	return nil
 }
 
+func (t *Tree) UpdateWithMeta(blockRoot common.Hash, blockNum uint64, parentRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte, accountsMeta map[common.Hash]uint64, storagesMeta map[common.Hash]map[common.Hash]uint64) error {
+	// Reject noop updates to avoid self-loops in the snapshot tree. This is a
+	// special case that can only happen for Clique networks where empty blocks
+	// don't modify the state (0 block subsidy).
+	//
+	// Although we could silently ignore this internally, it should be the caller's
+	// responsibility to avoid even attempting to insert such a snapshot.
+	if blockRoot == parentRoot {
+		return errSnapshotCycle
+	}
+	// Generate a new snapshot on top of the parent
+	parent := t.Snapshot(parentRoot)
+	if parent == nil {
+		return fmt.Errorf("parent [%#x] snapshot missing", parentRoot)
+	}
+	snap := parent.(snapshot).UpdateWithMeta(blockRoot, blockNum, accounts, storage, accountsMeta, storagesMeta)
+
+	// Save the new snapshot for later
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	t.layers[snap.root] = snap
+	return nil
+}
+
 // Cap traverses downwards the snapshot tree from a head block hash until the
 // number of allowed layers are crossed. All layers beyond the permitted number
 // are flattened downwards.
@@ -548,12 +574,10 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 		// Push the account to disk
 		if len(data) != 0 {
 			rawdb.WriteAccountSnapshot(batch, hash, data)
-			rawdb.WriteAccountSnapshotMeta(batch, hash, bottom.block)
 			base.cache.Set(hash[:], data)
 			snapshotCleanAccountWriteMeter.Mark(int64(len(data)))
 		} else {
 			rawdb.DeleteAccountSnapshot(batch, hash)
-			rawdb.DeleteAccountSnapshotMeta(batch, hash)
 			base.cache.Set(hash[:], nil)
 		}
 		snapshotFlushAccountItemMeter.Mark(1)
@@ -568,6 +592,12 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 			}
 			batch.Reset()
 		}
+	}
+	// Write the account meta data
+	// This is separated from the account data write because the data might only be read but not
+	// modified, so it doesn't exist in the account state diff.
+	for accountHash, block := range bottom.accountMeta {
+		rawdb.WriteAccountSnapshotMeta(batch, accountHash, block)
 	}
 	// Push all the storage slots into the database
 	for accountHash, storage := range bottom.storageData {
@@ -585,12 +615,10 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 			}
 			if len(data) > 0 {
 				rawdb.WriteStorageSnapshot(batch, accountHash, storageHash, data)
-				rawdb.WriteStorageSnapshotMeta(batch, accountHash, storageHash, bottom.block)
 				base.cache.Set(append(accountHash[:], storageHash[:]...), data)
 				snapshotCleanStorageWriteMeter.Mark(int64(len(data)))
 			} else {
 				rawdb.DeleteStorageSnapshot(batch, accountHash, storageHash)
-				rawdb.DeleteStorageSnapshotMeta(batch, accountHash, storageHash)
 				base.cache.Set(append(accountHash[:], storageHash[:]...), nil)
 			}
 			snapshotFlushStorageItemMeter.Mark(1)
@@ -605,6 +633,12 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 				}
 				batch.Reset()
 			}
+		}
+	}
+	// Write the storage meta data
+	for accountHash, block := range bottom.storageMeta {
+		for storageHash, block := range block {
+			rawdb.WriteStorageSnapshotMeta(batch, accountHash, storageHash, block)
 		}
 	}
 	// Update the snapshot block marker and write any remainder data

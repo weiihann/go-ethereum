@@ -58,12 +58,10 @@ var (
 // header only chain. The database and genesis specification for block generation
 // are also returned in case more test blocks are needed later.
 func newCanonical(engine consensus.Engine, n int, full bool, scheme string) (ethdb.Database, *Genesis, *BlockChain, error) {
-	var (
-		genesis = &Genesis{
-			BaseFee: big.NewInt(params.InitialBaseFee),
-			Config:  params.AllEthashProtocolChanges,
-		}
-	)
+	genesis := &Genesis{
+		BaseFee: big.NewInt(params.InitialBaseFee),
+		Config:  params.AllEthashProtocolChanges,
+	}
 	// Initialize a fresh chain with only a genesis block
 	blockchain, _ := NewBlockChain(rawdb.NewMemoryDatabase(), DefaultCacheConfigWithScheme(scheme), genesis, nil, engine, vm.Config{}, nil)
 
@@ -151,7 +149,7 @@ func testBlockChainImport(chain types.Blocks, blockchain *BlockChain) error {
 			}
 			return err
 		}
-		statedb, err := state.New(blockchain.GetBlockByHash(block.ParentHash()).Root(), blockchain.statedb)
+		statedb, err := state.New(blockchain.GetBlockByHash(block.ParentHash()).Root(), blockchain.statedb, block.NumberU64())
 		if err != nil {
 			return err
 		}
@@ -189,6 +187,7 @@ func testHeaderChainImport(chain []*types.Header, blockchain *BlockChain) error 
 	}
 	return nil
 }
+
 func TestLastBlock(t *testing.T) {
 	testLastBlock(t, rawdb.HashScheme)
 	testLastBlock(t, rawdb.PathScheme)
@@ -265,6 +264,7 @@ func TestExtendCanonicalHeaders(t *testing.T) {
 	testExtendCanonical(t, false, rawdb.HashScheme)
 	testExtendCanonical(t, false, rawdb.PathScheme)
 }
+
 func TestExtendCanonicalBlocks(t *testing.T) {
 	testExtendCanonical(t, true, rawdb.HashScheme)
 	testExtendCanonical(t, true, rawdb.PathScheme)
@@ -293,6 +293,7 @@ func TestExtendCanonicalHeadersAfterMerge(t *testing.T) {
 	testExtendCanonicalAfterMerge(t, false, rawdb.HashScheme)
 	testExtendCanonicalAfterMerge(t, false, rawdb.PathScheme)
 }
+
 func TestExtendCanonicalBlocksAfterMerge(t *testing.T) {
 	testExtendCanonicalAfterMerge(t, true, rawdb.HashScheme)
 	testExtendCanonicalAfterMerge(t, true, rawdb.PathScheme)
@@ -318,6 +319,7 @@ func TestShorterForkHeaders(t *testing.T) {
 	testShorterFork(t, false, rawdb.HashScheme)
 	testShorterFork(t, false, rawdb.PathScheme)
 }
+
 func TestShorterForkBlocks(t *testing.T) {
 	testShorterFork(t, true, rawdb.HashScheme)
 	testShorterFork(t, true, rawdb.PathScheme)
@@ -348,6 +350,7 @@ func TestShorterForkHeadersAfterMerge(t *testing.T) {
 	testShorterForkAfterMerge(t, false, rawdb.HashScheme)
 	testShorterForkAfterMerge(t, false, rawdb.PathScheme)
 }
+
 func TestShorterForkBlocksAfterMerge(t *testing.T) {
 	testShorterForkAfterMerge(t, true, rawdb.HashScheme)
 	testShorterForkAfterMerge(t, true, rawdb.PathScheme)
@@ -377,6 +380,7 @@ func TestLongerForkHeaders(t *testing.T) {
 	testLongerFork(t, false, rawdb.HashScheme)
 	testLongerFork(t, false, rawdb.PathScheme)
 }
+
 func TestLongerForkBlocks(t *testing.T) {
 	testLongerFork(t, true, rawdb.HashScheme)
 	testLongerFork(t, true, rawdb.PathScheme)
@@ -406,6 +410,7 @@ func TestLongerForkHeadersAfterMerge(t *testing.T) {
 	testLongerForkAfterMerge(t, false, rawdb.HashScheme)
 	testLongerForkAfterMerge(t, false, rawdb.PathScheme)
 }
+
 func TestLongerForkBlocksAfterMerge(t *testing.T) {
 	testLongerForkAfterMerge(t, true, rawdb.HashScheme)
 	testLongerForkAfterMerge(t, true, rawdb.PathScheme)
@@ -435,6 +440,7 @@ func TestEqualForkHeaders(t *testing.T) {
 	testEqualFork(t, false, rawdb.HashScheme)
 	testEqualFork(t, false, rawdb.PathScheme)
 }
+
 func TestEqualForkBlocks(t *testing.T) {
 	testEqualFork(t, true, rawdb.HashScheme)
 	testEqualFork(t, true, rawdb.PathScheme)
@@ -465,6 +471,7 @@ func TestEqualForkHeadersAfterMerge(t *testing.T) {
 	testEqualForkAfterMerge(t, false, rawdb.HashScheme)
 	testEqualForkAfterMerge(t, false, rawdb.PathScheme)
 }
+
 func TestEqualForkBlocksAfterMerge(t *testing.T) {
 	testEqualForkAfterMerge(t, true, rawdb.HashScheme)
 	testEqualForkAfterMerge(t, true, rawdb.PathScheme)
@@ -493,6 +500,7 @@ func TestBrokenHeaderChain(t *testing.T) {
 	testBrokenChain(t, false, rawdb.HashScheme)
 	testBrokenChain(t, false, rawdb.PathScheme)
 }
+
 func TestBrokenBlockChain(t *testing.T) {
 	testBrokenChain(t, true, rawdb.HashScheme)
 	testBrokenChain(t, true, rawdb.PathScheme)
@@ -526,6 +534,7 @@ func TestReorgLongHeaders(t *testing.T) {
 	testReorgLong(t, false, rawdb.HashScheme)
 	testReorgLong(t, false, rawdb.PathScheme)
 }
+
 func TestReorgLongBlocks(t *testing.T) {
 	testReorgLong(t, true, rawdb.HashScheme)
 	testReorgLong(t, true, rawdb.PathScheme)
@@ -541,6 +550,7 @@ func TestReorgShortHeaders(t *testing.T) {
 	testReorgShort(t, false, rawdb.HashScheme)
 	testReorgShort(t, false, rawdb.PathScheme)
 }
+
 func TestReorgShortBlocks(t *testing.T) {
 	testReorgShort(t, true, rawdb.HashScheme)
 	testReorgShort(t, true, rawdb.PathScheme)
@@ -622,6 +632,7 @@ func TestHeadersInsertNonceError(t *testing.T) {
 	testInsertNonceError(t, false, rawdb.HashScheme)
 	testInsertNonceError(t, false, rawdb.PathScheme)
 }
+
 func TestBlocksInsertNonceError(t *testing.T) {
 	testInsertNonceError(t, true, rawdb.HashScheme)
 	testInsertNonceError(t, true, rawdb.PathScheme)
@@ -1335,6 +1346,7 @@ func testCanonicalBlockRetrieval(t *testing.T, scheme string) {
 	}
 	pend.Wait()
 }
+
 func TestEIP155Transition(t *testing.T) {
 	testEIP155Transition(t, rawdb.HashScheme)
 	testEIP155Transition(t, rawdb.PathScheme)
@@ -1449,6 +1461,7 @@ func testEIP155Transition(t *testing.T, scheme string) {
 		t.Errorf("have %v, want %v", have, want)
 	}
 }
+
 func TestEIP161AccountRemoval(t *testing.T) {
 	testEIP161AccountRemoval(t, rawdb.HashScheme)
 	testEIP161AccountRemoval(t, rawdb.PathScheme)
@@ -2030,10 +2043,12 @@ func TestInsertKnownHeaders(t *testing.T) {
 	testInsertKnownChainData(t, "headers", rawdb.HashScheme)
 	testInsertKnownChainData(t, "headers", rawdb.PathScheme)
 }
+
 func TestInsertKnownReceiptChain(t *testing.T) {
 	testInsertKnownChainData(t, "receipts", rawdb.HashScheme)
 	testInsertKnownChainData(t, "receipts", rawdb.PathScheme)
 }
+
 func TestInsertKnownBlocks(t *testing.T) {
 	testInsertKnownChainData(t, "blocks", rawdb.HashScheme)
 	testInsertKnownChainData(t, "blocks", rawdb.PathScheme)
@@ -2160,18 +2175,23 @@ func testInsertKnownChainData(t *testing.T, typ string, scheme string) {
 func TestInsertKnownHeadersWithMerging(t *testing.T) {
 	testInsertKnownChainDataWithMerging(t, "headers", 0)
 }
+
 func TestInsertKnownReceiptChainWithMerging(t *testing.T) {
 	testInsertKnownChainDataWithMerging(t, "receipts", 0)
 }
+
 func TestInsertKnownBlocksWithMerging(t *testing.T) {
 	testInsertKnownChainDataWithMerging(t, "blocks", 0)
 }
+
 func TestInsertKnownHeadersAfterMerging(t *testing.T) {
 	testInsertKnownChainDataWithMerging(t, "headers", 1)
 }
+
 func TestInsertKnownReceiptChainAfterMerging(t *testing.T) {
 	testInsertKnownChainDataWithMerging(t, "receipts", 1)
 }
+
 func TestInsertKnownBlocksAfterMerging(t *testing.T) {
 	testInsertKnownChainDataWithMerging(t, "blocks", 1)
 }
@@ -2780,7 +2800,8 @@ func testDeleteRecreateSlots(t *testing.T, scheme string) {
 	}
 	bbCode := []byte{
 		// Push initcode onto stack
-		byte(vm.PUSH1) + byte(len(initCode)-1)}
+		byte(vm.PUSH1) + byte(len(initCode)-1),
+	}
 	bbCode = append(bbCode, initCode...)
 	bbCode = append(bbCode, []byte{
 		byte(vm.PUSH1), 0x0, // memory start on stack
@@ -2988,7 +3009,8 @@ func testDeleteRecreateSlotsAcrossManyBlocks(t *testing.T, scheme string) {
 	}
 	bbCode := []byte{
 		// Push initcode onto stack
-		byte(vm.PUSH1) + byte(len(initCode)-1)}
+		byte(vm.PUSH1) + byte(len(initCode)-1),
+	}
 	bbCode = append(bbCode, initCode...)
 	bbCode = append(bbCode, []byte{
 		byte(vm.PUSH1), 0x0, // memory start on stack
@@ -3029,13 +3051,13 @@ func testDeleteRecreateSlotsAcrossManyBlocks(t *testing.T, scheme string) {
 		blocknum int
 		values   map[int]int
 	}
-	var current = &expectation{
+	current := &expectation{
 		exist:    true, // exists in genesis
 		blocknum: 0,
 		values:   map[int]int{1: 1, 2: 2},
 	}
 	var expectations []*expectation
-	var newDestruct = func(e *expectation, b *BlockGen) *types.Transaction {
+	newDestruct := func(e *expectation, b *BlockGen) *types.Transaction {
 		tx, _ := types.SignTx(types.NewTransaction(nonce, aa,
 			big.NewInt(0), 50000, b.header.BaseFee, nil), types.HomesteadSigner{}, key)
 		nonce++
@@ -3043,10 +3065,10 @@ func testDeleteRecreateSlotsAcrossManyBlocks(t *testing.T, scheme string) {
 			e.exist = false
 			e.values = nil
 		}
-		//t.Logf("block %d; adding destruct\n", e.blocknum)
+		// t.Logf("block %d; adding destruct\n", e.blocknum)
 		return tx
 	}
-	var newResurrect = func(e *expectation, b *BlockGen) *types.Transaction {
+	newResurrect := func(e *expectation, b *BlockGen) *types.Transaction {
 		tx, _ := types.SignTx(types.NewTransaction(nonce, bb,
 			big.NewInt(0), 100000, b.header.BaseFee, nil), types.HomesteadSigner{}, key)
 		nonce++
@@ -3054,12 +3076,12 @@ func testDeleteRecreateSlotsAcrossManyBlocks(t *testing.T, scheme string) {
 			e.exist = true
 			e.values = map[int]int{3: e.blocknum + 1, 4: 4}
 		}
-		//t.Logf("block %d; adding resurrect\n", e.blocknum)
+		// t.Logf("block %d; adding resurrect\n", e.blocknum)
 		return tx
 	}
 
 	_, blocks, _ := GenerateChainWithGenesis(gspec, engine, 150, func(i int, b *BlockGen) {
-		var exp = new(expectation)
+		exp := new(expectation)
 		exp.blocknum = i + 1
 		exp.values = make(map[int]int)
 		for k, v := range current.values {
@@ -3085,15 +3107,15 @@ func testDeleteRecreateSlotsAcrossManyBlocks(t *testing.T, scheme string) {
 	})
 	// Import the canonical chain
 	chain, err := NewBlockChain(rawdb.NewMemoryDatabase(), DefaultCacheConfigWithScheme(scheme), gspec, nil, engine, vm.Config{
-		//Debug:  true,
-		//Tracer: vm.NewJSONLogger(nil, os.Stdout),
+		// Debug:  true,
+		// Tracer: vm.NewJSONLogger(nil, os.Stdout),
 	}, nil)
 	if err != nil {
 		t.Fatalf("failed to create tester chain: %v", err)
 	}
 	defer chain.Stop()
 
-	var asHash = func(num int) common.Hash {
+	asHash := func(num int) common.Hash {
 		return common.BytesToHash([]byte{byte(num)})
 	}
 	for i, block := range blocks {
@@ -3182,7 +3204,8 @@ func testInitThenFailCreateContract(t *testing.T, scheme string) {
 	}
 	bbCode := []byte{
 		// Push initcode onto stack
-		byte(vm.PUSH1) + byte(len(initCode)-1)}
+		byte(vm.PUSH1) + byte(len(initCode)-1),
+	}
 	bbCode = append(bbCode, initCode...)
 	bbCode = append(bbCode, []byte{
 		byte(vm.PUSH1), 0x0, // memory start on stack
@@ -3223,8 +3246,8 @@ func testInitThenFailCreateContract(t *testing.T, scheme string) {
 
 	// Import the canonical chain
 	chain, err := NewBlockChain(rawdb.NewMemoryDatabase(), DefaultCacheConfigWithScheme(scheme), gspec, nil, engine, vm.Config{
-		//Debug:  true,
-		//Tracer: vm.NewJSONLogger(nil, os.Stdout),
+		// Debug:  true,
+		// Tracer: vm.NewJSONLogger(nil, os.Stdout),
 	}, nil)
 	if err != nil {
 		t.Fatalf("failed to create tester chain: %v", err)
@@ -3581,7 +3604,7 @@ func TestCanonicalHashMarker(t *testing.T) {
 }
 
 func testCanonicalHashMarker(t *testing.T, scheme string) {
-	var cases = []struct {
+	cases := []struct {
 		forkA int
 		forkB int
 	}{
@@ -3697,6 +3720,7 @@ func TestCreateThenDeletePreByzantium(t *testing.T) {
 		ByzantiumBlock: big.NewInt(1_700_000),
 	})
 }
+
 func TestCreateThenDeletePostByzantium(t *testing.T) {
 	testCreateThenDelete(t, params.TestChainConfig)
 }
@@ -3721,7 +3745,8 @@ func testCreateThenDelete(t *testing.T, config *params.ChainConfig) {
 		byte(vm.PUSH1), 0x1,
 		byte(vm.SSTORE),
 		// Get the runtime-code on the stack
-		byte(vm.PUSH32)}
+		byte(vm.PUSH32),
+	}
 	initCode = append(initCode, code...)
 	initCode = append(initCode, []byte{
 		byte(vm.PUSH1), 0x0, // offset
@@ -3763,8 +3788,8 @@ func testCreateThenDelete(t *testing.T, config *params.ChainConfig) {
 	})
 	// Import the canonical chain
 	chain, err := NewBlockChain(rawdb.NewMemoryDatabase(), nil, gspec, nil, engine, vm.Config{
-		//Debug:  true,
-		//Tracer: logger.NewJSONLogger(nil, os.Stdout),
+		// Debug:  true,
+		// Tracer: logger.NewJSONLogger(nil, os.Stdout),
 	}, nil)
 	if err != nil {
 		t.Fatalf("failed to create tester chain: %v", err)
@@ -3919,7 +3944,8 @@ func TestTransientStorageReset(t *testing.T) {
 		byte(vm.TSTORE),
 
 		// Get the runtime-code on the stack
-		byte(vm.PUSH32)}
+		byte(vm.PUSH32),
+	}
 	initCode = append(initCode, code...)
 	initCode = append(initCode, []byte{
 		byte(vm.PUSH1), 0x0, // offset

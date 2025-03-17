@@ -80,7 +80,8 @@ func setDefaults(cfg *Config) {
 			TerminalTotalDifficulty: big.NewInt(0),
 			MergeNetsplitBlock:      nil,
 			ShanghaiTime:            &shanghaiTime,
-			CancunTime:              &cancunTime}
+			CancunTime:              &cancunTime,
+		}
 	}
 	if cfg.Difficulty == nil {
 		cfg.Difficulty = new(big.Int)
@@ -123,7 +124,7 @@ func Execute(code, input []byte, cfg *Config) ([]byte, *state.StateDB, error) {
 	setDefaults(cfg)
 
 	if cfg.State == nil {
-		cfg.State, _ = state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+		cfg.State, _ = state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 	}
 	var (
 		address = common.BytesToAddress([]byte("contract"))
@@ -162,7 +163,7 @@ func Create(input []byte, cfg *Config) ([]byte, common.Address, uint64, error) {
 	setDefaults(cfg)
 
 	if cfg.State == nil {
-		cfg.State, _ = state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+		cfg.State, _ = state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 	}
 	var (
 		vmenv = NewEnv(cfg)
