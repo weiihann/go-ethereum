@@ -471,17 +471,17 @@ func (dl *diffLayer) flatten() snapshot {
 		maps.Copy(parent.storageData[accountHash], storage)
 	}
 
-	for accountHash, slots := range parent.storageMeta {
+	for accountHash, slots := range dl.storageMeta {
 		// If the account is not present in the parent, copy the entire storage meta
 		// from the child.
-		if _, ok := parent.storageData[accountHash]; !ok {
-			parent.storageMeta[accountHash] = dl.storageMeta[accountHash]
+		if _, ok := parent.storageMeta[accountHash]; !ok {
+			parent.storageMeta[accountHash] = slots
 			continue
 		}
 
 		for storageHash := range slots {
 			// If the storage slot is not present in the parent, copy directly
-			if _, ok := parent.storageData[accountHash][storageHash]; !ok {
+			if _, ok := parent.storageMeta[accountHash][storageHash]; !ok {
 				parent.storageMeta[accountHash][storageHash] = dl.block
 				continue
 			}
