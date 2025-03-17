@@ -308,6 +308,9 @@ type ChainConfig struct {
 	// Proof in block
 	ProofInBlocks bool   `json:"proofInBlocks,omitempty"`
 	OverlayStride uint64 `json:"overlayStride,omitempty"`
+
+	// TODO(weiihann): only used for testing, remove this field later
+	StateExpiryPeriod *uint64 `json:"stateExpiryPeriod,omitempty"`
 }
 
 // EthashConfig is the consensus engine configs for proof-of-work based sealing.

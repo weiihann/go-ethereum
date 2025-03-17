@@ -385,8 +385,16 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 		b := &BlockGen{i: i, chain: blocks, parent: parent, statedb: statedb, config: config, engine: engine}
 		b.header = makeHeader(chainreader, parent, statedb, b.engine)
 		preState := statedb.Copy()
-		fmt.Println("prestate", preState.GetTrie().(*trie.VerkleTrie).ToDot())
-		statedb.SetCurPeriod(types.GetStatePeriod(config, b.header.Time)) // update period as we are going to process new block 
+		fmt.Println("--------------------------------")
+		fmt.Println("block", b.header.Number)
+		if b.header.Number.Cmp(new(big.Int).SetUint64(2)) == 0 {
+			fmt.Println("here")
+		}
+		fmt.Println("--------------------------------")
+		fmt.Printf("prestate root: %x\n", preState.GetTrie().(*trie.VerkleTrie).Hash())
+		fmt.Println(preState.GetTrie().(*trie.VerkleTrie).ToDot())
+		curPeriod := types.GetStatePeriod(config, b.header.Time)
+		statedb.SetCurPeriod(curPeriod) // update period as we are going to process new block 
 
 		if config.IsVerkle(b.header.Number, b.header.Time) {
 			if !config.IsVerkle(b.parent.Number(), b.parent.Time()) {
@@ -434,8 +442,7 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 			proots = append(proots, parent.Root())
 
 			// quick check that we are self-consistent
-			blockPeriod := types.GetStatePeriod(config, b.header.Time)
-			err = verkle.Verify(block.ExecutionWitness().VerkleProof, block.ExecutionWitness().ParentStateRoot[:], block.Root().Bytes(), block.ExecutionWitness().StateDiff, blockPeriod)
+			err = verkle.Verify(block.ExecutionWitness().VerkleProof, block.ExecutionWitness().ParentStateRoot[:], block.Root().Bytes(), block.ExecutionWitness().StateDiff, curPeriod)
 			if err != nil {
 				panic(err)
 			}
@@ -450,8 +457,8 @@ func GenerateVerkleChain(config *params.ChainConfig, parent *types.Block, engine
 	db.EndVerkleTransition()
 	db.SaveTransitionState(parent.Root())
 	for i := 0; i < n; i++ {
-		curPeriod := types.GetStatePeriod(config, parent.Time())
-		statedb, err := state.New(parent.Root(), db, snaps, curPeriod)
+		parentPeriod := types.GetStatePeriod(config, parent.Time())
+		statedb, err := state.New(parent.Root(), db, snaps, parentPeriod)
 		if err != nil {
 			panic(fmt.Sprintf("could not find state for block %d: err=%v, parent root=%x", i, err, parent.Root()))
 		}

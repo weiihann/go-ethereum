@@ -134,4 +134,4 @@ require (
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
 
-replace github.com/ethereum/go-verkle => github.com/weiihann/go-verkle v0.11.2
+replace github.com/ethereum/go-verkle => github.com/weiihann/go-verkle v0.11.3-0.20250221075231-54a369960b8d

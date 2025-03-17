@@ -986,6 +986,7 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 // It is called in between transactions to get the root hash that
 // goes into transaction receipts.
 func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
+	fmt.Println("StateDB.IntermediateRoot")
 	// Finalise all the dirty storage states and write them into the tries
 	s.Finalise(deleteEmptyObjects)
 
@@ -1046,8 +1047,9 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountHashes += time.Since(start) }(time.Now())
 	}
+	fmt.Printf("StateDB.IntermediateRoot s.trie.hash before\n")
 	root := s.trie.Hash()
-
+	fmt.Printf("StateDB.IntermediateRoot s.trie.hash after: %x\n", root)
 	// Save the root of the MPT so that it can be used during the transition
 	if !s.Database().InTransition() && !s.Database().Transitioned() {
 		s.Database().SetLastMerkleRoot(root)
@@ -1223,6 +1225,19 @@ func (s *StateDB) GetTrie() Trie {
 // The associated block number of the state transition is also provided
 // for more chain context.
 func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool) (common.Hash, error) {
+	if s.GetTrie().IsVerkle() {
+		fmt.Println("--------------------------------")
+		fmt.Println("StateDB.Commit")
+		fmt.Println("--------------------------------")
+		tr := s.trie
+		switch vkt := tr.(type) {
+		case *trie.VerkleTrie:
+			fmt.Println(vkt.ToDot())
+		case *trie.TransitionTrie:
+			fmt.Println(vkt.Overlay().ToDot())
+		}
+		fmt.Println("--------------------------------")
+	}
 	// Short circuit in case any database failure occurred earlier.
 	if s.dbErr != nil {
 		return common.Hash{}, fmt.Errorf("commit aborted due to earlier error: %v", s.dbErr)
@@ -1481,4 +1496,7 @@ func (s *StateDB) CurPeriod() verkle.StatePeriod {
 
 func (s *StateDB) SetCurPeriod(period verkle.StatePeriod) {
 	s.curPeriod = period
+	if tr, ok := s.trie.(*trie.VerkleTrie); ok {
+		tr.SetPeriod(period)
+	}
 }

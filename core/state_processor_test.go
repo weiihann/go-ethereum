@@ -611,7 +611,7 @@ func TestProcessVerkle(t *testing.T) {
 	//fmt.Printf("root= %x\n", chain[0].Root())
 
 	// check the proof for the 1st block
-	err = verkle.Verify(proofs[0], genesis.Root().Bytes(), chain[0].Root().Bytes(), keyvals[0], 0) // TODO(weiihann)
+	err = verkle.Verify(proofs[0], genesis.Root().Bytes(), chain[0].Root().Bytes(), keyvals[0], 0)
 	if err != nil {
 		spew.Dump(genesis.Root().Bytes(), proofs[0])
 		t.Fatal(err)
@@ -1633,6 +1633,382 @@ func TestProcessVerkleSelfDestructInSameTxWithSelfBeneficiary(t *testing.T) {
 
 		if balanceStateDiff.NewValue != nil {
 			t.Fatalf("the post-state balance after self-destruct must be nil since the contract shouldn't be created at all")
+		}
+	}
+}
+
+func TestProcessVerkleWithStateExpiry(t *testing.T) {
+	var (
+		config = &params.ChainConfig{
+			ChainID:                       big.NewInt(1),
+			HomesteadBlock:                big.NewInt(0),
+			EIP150Block:                   big.NewInt(0),
+			EIP155Block:                   big.NewInt(0),
+			EIP158Block:                   big.NewInt(0),
+			ByzantiumBlock:                big.NewInt(0),
+			ConstantinopleBlock:           big.NewInt(0),
+			PetersburgBlock:               big.NewInt(0),
+			IstanbulBlock:                 big.NewInt(0),
+			MuirGlacierBlock:              big.NewInt(0),
+			BerlinBlock:                   big.NewInt(0),
+			LondonBlock:                   big.NewInt(0),
+			Ethash:                        new(params.EthashConfig),
+			ShanghaiTime:                  u64(0),
+			VerkleTime:                    u64(0),
+			StateExpiryTime:               u64(0),
+			TerminalTotalDifficulty:       common.Big0,
+			TerminalTotalDifficultyPassed: true,
+			ProofInBlocks:                 true,
+			StateExpiryPeriod:             u64(10),
+		}
+		signer     = types.LatestSigner(config)
+		testKey, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+		bcdb       = rawdb.NewMemoryDatabase() // Database for the blockchain
+		gendb      = rawdb.NewMemoryDatabase() // Database for the block-generation code, they must be separate as they are path-based.
+		coinbase   = common.HexToAddress("0x71562b71999873DB5b286dF957af199Ec94617F7")
+		gspec      = &Genesis{
+			Config: config,
+			Alloc: GenesisAlloc{
+				coinbase: GenesisAccount{
+					Balance: big.NewInt(1000000000000000000), // 1 ether
+					Nonce:   0,
+				},
+				params.HistoryStorageAddress: GenesisAccount{
+					Balance: big.NewInt(0),
+					Nonce:   1,
+				},
+			},
+		}
+		loggerCfg = &logger.Config{}
+	)
+
+	os.MkdirAll("output", 0755)
+	traceFile, err := os.Create("./output/traces.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verkle trees use the snapshot, which must be enabled before the
+	// data is saved into the tree+database.
+	genesis := gspec.MustCommit(bcdb)
+	blockchain, _ := NewBlockChain(bcdb, nil, gspec, nil, beacon.New(ethash.NewFaker()), vm.Config{Tracer: logger.NewJSONLogger(loggerCfg, traceFile)}, nil, nil)
+	defer blockchain.Stop()
+
+	// Commit the genesis block to the block-generation database as it
+	// is now independent of the blockchain database.
+	gspec.MustCommit(gendb)
+
+	txCost1 := params.TxGas
+	txCost2 := params.TxGas
+	contractCreationCost := intrinsicContractCreationGas +
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + params.WitnessBranchReadCost + params.WitnessBranchWriteCost + /* creation */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* creation with value */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #0 */
+		39 /* execution costs */
+	codeWithExtCodeCopyGas := intrinsicCodeWithExtCodeCopyGas +
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + params.WitnessBranchReadCost + params.WitnessBranchWriteCost + /* creation (tx) */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* write code hash */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + params.WitnessBranchReadCost + params.WitnessBranchWriteCost + /* creation (CREATE at pc=0x20) */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* write code hash */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #0 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #1 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #2 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #3 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #4 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #5 */
+		params.WitnessChunkReadCost + /* SLOAD in constructor */
+		params.WitnessChunkWriteCost + /* SSTORE in constructor */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + params.WitnessBranchReadCost + params.WitnessBranchWriteCost + /* creation (CREATE at PC=0x121) */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* write code hash */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #0 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #1 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #2 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #3 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #4 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #5 */
+		params.WitnessChunkReadCost + /* SLOAD in constructor */
+		params.WitnessChunkWriteCost + /* SSTORE in constructor */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* write code hash for tx creation */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #0 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #1 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #2 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #3 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #4 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #5 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #6 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #7 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #8 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #9 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #10 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #11 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #12 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #13 */
+		params.WitnessChunkReadCost + params.WitnessChunkWriteCost + /* code chunk #14 */
+		4144 /* execution costs */
+	blockGasUsagesExpected := []uint64{
+		txCost1*2 + txCost2,
+		txCost1*2 + txCost2 + contractCreationCost + codeWithExtCodeCopyGas,
+		txCost1*2 + txCost2,
+	}
+	nonceCount := uint64(0)
+	// TODO utiliser GenerateChainWithGenesis pour le rendre plus pratique
+	chain, _, proofs, keyvals, _ := GenerateVerkleChain(gspec.Config, genesis, beacon.New(ethash.NewFaker()), gendb, 3, func(i int, gen *BlockGen) {
+		gen.SetPoS()
+
+		// TODO need to check that the tx cost provided is the exact amount used (no remaining left-over)
+		tx, _ := types.SignTx(types.NewTransaction(nonceCount, common.Address{byte(i), 2, 3}, big.NewInt(999), txCost1, big.NewInt(875000000), nil), signer, testKey)
+		gen.AddTx(tx)
+		nonceCount++
+		// tx, _ = types.SignTx(types.NewTransaction(nonceCount, common.Address{}, big.NewInt(999), txCost1, big.NewInt(875000000), nil), signer, testKey)
+		// gen.AddTx(tx)
+		// nonceCount++
+		// tx, _ = types.SignTx(types.NewTransaction(nonceCount, common.Address{}, big.NewInt(0), txCost2, big.NewInt(875000000), nil), signer, testKey)
+		// gen.AddTx(tx)
+		// nonceCount++
+		// Add two contract creations in block #2
+		// if i == 1 {
+		// 	tx, _ = types.SignTx(types.NewContractCreation(nonceCount, big.NewInt(16), 3000000, big.NewInt(875000000), code), signer, testKey)
+		// 	gen.AddTx(tx)
+		// 	nonceCount++
+		// 	tx, _ = types.SignTx(types.NewContractCreation(nonceCount, big.NewInt(0), 3000000, big.NewInt(875000000), codeWithExtCodeCopy), signer, testKey)
+		// 	gen.AddTx(tx)
+		// 	nonceCount++
+		// }
+	})
+
+	kvjson, err := json.Marshal(keyvals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile("./output/statediffs.json", kvjson, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockrlp, err := rlp.EncodeToBytes(genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile(fmt.Sprintf("./output/block%d.rlp.hex", 0), []byte(fmt.Sprintf("%x", blockrlp)), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range chain {
+		blockrlp, err := rlp.EncodeToBytes(block)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = os.WriteFile(fmt.Sprintf("./output/block%d.rlp.hex", block.NumberU64()), []byte(fmt.Sprintf("%x", blockrlp)), 0644)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Uncomment to extract block #2
+	//f, _ := os.Create("block2.rlp")
+	//defer f.Close()
+	//var buf bytes.Buffer
+	//rlp.Encode(&buf, chain[1])
+	//f.Write(buf.Bytes())
+	//fmt.Printf("root= %x\n", chain[0].Root())
+
+	// check the proof for the 1st block
+	err = verkle.Verify(proofs[0], genesis.Root().Bytes(), chain[0].Root().Bytes(), keyvals[0], types.Period0)
+	if err != nil {
+		spew.Dump(genesis.Root().Bytes(), proofs[0])
+		t.Fatal(err)
+	}
+	// check the proof for the 2nd block
+	err = verkle.Verify(proofs[1], chain[0].Root().Bytes(), chain[1].Root().Bytes(), keyvals[1], types.Period1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// check the proof for the 3rd block
+	err = verkle.Verify(proofs[2], chain[1].Root().Bytes(), chain[2].Root().Bytes(), keyvals[2], types.Period2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("verified verkle proof")
+
+	endnum, err := blockchain.InsertChain(chain)
+	if err != nil {
+		t.Fatalf("block %d imported with error: %v", endnum, err)
+	}
+
+	for i := 0; i < 3; i++ {
+		b := blockchain.GetBlockByNumber(uint64(i) + 1)
+		if b == nil {
+			t.Fatalf("expected block %d to be present in chain", i+1)
+		}
+		if b.Hash() != chain[i].Hash() {
+			t.Fatalf("block #%d not found at expected height", b.NumberU64())
+		}
+		if b.GasUsed() != blockGasUsagesExpected[i] {
+			t.Fatalf("expected block #%d txs to use %d, got %d\n", b.NumberU64(), blockGasUsagesExpected[i], b.GasUsed())
+		}
+	}
+}
+
+func TestProcessVerkleWithStateExpiryThisWorks(t *testing.T) {
+	var (
+		config = &params.ChainConfig{
+			ChainID:                       big.NewInt(1),
+			HomesteadBlock:                big.NewInt(0),
+			EIP150Block:                   big.NewInt(0),
+			EIP155Block:                   big.NewInt(0),
+			EIP158Block:                   big.NewInt(0),
+			ByzantiumBlock:                big.NewInt(0),
+			ConstantinopleBlock:           big.NewInt(0),
+			PetersburgBlock:               big.NewInt(0),
+			IstanbulBlock:                 big.NewInt(0),
+			MuirGlacierBlock:              big.NewInt(0),
+			BerlinBlock:                   big.NewInt(0),
+			LondonBlock:                   big.NewInt(0),
+			Ethash:                        new(params.EthashConfig),
+			ShanghaiTime:                  u64(0),
+			VerkleTime:                    u64(0),
+			StateExpiryTime:               u64(0),
+			TerminalTotalDifficulty:       common.Big0,
+			TerminalTotalDifficultyPassed: true,
+			ProofInBlocks:                 true,
+			StateExpiryPeriod:             u64(100),
+		}
+		signer     = types.LatestSigner(config)
+		testKey, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+		bcdb       = rawdb.NewMemoryDatabase() // Database for the blockchain
+		gendb      = rawdb.NewMemoryDatabase() // Database for the block-generation code, they must be separate as they are path-based.
+		coinbase   = common.HexToAddress("0x71562b71999873DB5b286dF957af199Ec94617F7")
+		gspec      = &Genesis{
+			Config: config,
+			Alloc: GenesisAlloc{
+				coinbase: GenesisAccount{
+					Balance: big.NewInt(1000000000000000000), // 1 ether
+					Nonce:   0,
+				},
+				params.HistoryStorageAddress: GenesisAccount{
+					Balance: big.NewInt(0),
+					Nonce:   1,
+				},
+			},
+		}
+		loggerCfg = &logger.Config{}
+	)
+
+	os.MkdirAll("output", 0755)
+	traceFile, err := os.Create("./output/traces.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verkle trees use the snapshot, which must be enabled before the
+	// data is saved into the tree+database.
+	genesis := gspec.MustCommit(bcdb)
+	blockchain, _ := NewBlockChain(bcdb, nil, gspec, nil, beacon.New(ethash.NewFaker()), vm.Config{Tracer: logger.NewJSONLogger(loggerCfg, traceFile)}, nil, nil)
+	defer blockchain.Stop()
+
+	// Commit the genesis block to the block-generation database as it
+	// is now independent of the blockchain database.
+	gspec.MustCommit(gendb)
+
+	txCost1 := params.TxGas
+	blockGasUsagesExpected := []uint64{
+		txCost1,
+		txCost1,
+		txCost1,
+	}
+	nonceCount := uint64(0)
+	// TODO utiliser GenerateChainWithGenesis pour le rendre plus pratique
+	chain, _, proofs, keyvals, _ := GenerateVerkleChain(gspec.Config, genesis, beacon.New(ethash.NewFaker()), gendb, 3, func(i int, gen *BlockGen) {
+		gen.SetPoS()
+
+		// TODO need to check that the tx cost provided is the exact amount used (no remaining left-over)
+		tx, _ := types.SignTx(types.NewTransaction(nonceCount, common.Address{byte(i), 2, 3}, big.NewInt(999), txCost1, big.NewInt(875000000), nil), signer, testKey)
+		gen.AddTx(tx)
+		nonceCount++
+		// tx, _ = types.SignTx(types.NewTransaction(nonceCount, common.Address{}, big.NewInt(999), txCost1, big.NewInt(875000000), nil), signer, testKey)
+		// gen.AddTx(tx)
+		// nonceCount++
+		// tx, _ = types.SignTx(types.NewTransaction(nonceCount, common.Address{}, big.NewInt(0), txCost2, big.NewInt(875000000), nil), signer, testKey)
+		// gen.AddTx(tx)
+		// nonceCount++
+		// Add two contract creations in block #2
+		// if i == 1 {
+		// 	tx, _ = types.SignTx(types.NewContractCreation(nonceCount, big.NewInt(16), 3000000, big.NewInt(875000000), code), signer, testKey)
+		// 	gen.AddTx(tx)
+		// 	nonceCount++
+		// 	tx, _ = types.SignTx(types.NewContractCreation(nonceCount, big.NewInt(0), 3000000, big.NewInt(875000000), codeWithExtCodeCopy), signer, testKey)
+		// 	gen.AddTx(tx)
+		// 	nonceCount++
+		// }
+	})
+
+	kvjson, err := json.Marshal(keyvals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile("./output/statediffs.json", kvjson, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockrlp, err := rlp.EncodeToBytes(genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile(fmt.Sprintf("./output/block%d.rlp.hex", 0), []byte(fmt.Sprintf("%x", blockrlp)), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range chain {
+		blockrlp, err := rlp.EncodeToBytes(block)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = os.WriteFile(fmt.Sprintf("./output/block%d.rlp.hex", block.NumberU64()), []byte(fmt.Sprintf("%x", blockrlp)), 0644)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Uncomment to extract block #2
+	//f, _ := os.Create("block2.rlp")
+	//defer f.Close()
+	//var buf bytes.Buffer
+	//rlp.Encode(&buf, chain[1])
+	//f.Write(buf.Bytes())
+	//fmt.Printf("root= %x\n", chain[0].Root())
+
+	// check the proof for the 1st block
+	err = verkle.Verify(proofs[0], genesis.Root().Bytes(), chain[0].Root().Bytes(), keyvals[0], types.Period0)
+	if err != nil {
+		spew.Dump(genesis.Root().Bytes(), proofs[0])
+		t.Fatal(err)
+	}
+	// check the proof for the 2nd block
+	err = verkle.Verify(proofs[1], chain[0].Root().Bytes(), chain[1].Root().Bytes(), keyvals[1], types.Period0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// check the proof for the 3rd block
+	err = verkle.Verify(proofs[2], chain[1].Root().Bytes(), chain[2].Root().Bytes(), keyvals[2], types.Period0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("verified verkle proof")
+
+	endnum, err := blockchain.InsertChain(chain)
+	if err != nil {
+		t.Fatalf("block %d imported with error: %v", endnum, err)
+	}
+
+	for i := 0; i < 3; i++ {
+		b := blockchain.GetBlockByNumber(uint64(i) + 1)
+		if b == nil {
+			t.Fatalf("expected block %d to be present in chain", i+1)
+		}
+		if b.Hash() != chain[i].Hash() {
+			t.Fatalf("block #%d not found at expected height", b.NumberU64())
+		}
+		if b.GasUsed() != blockGasUsagesExpected[i] {
+			t.Fatalf("expected block #%d txs to use %d, got %d\n", b.NumberU64(), blockGasUsagesExpected[i], b.GasUsed())
 		}
 	}
 }

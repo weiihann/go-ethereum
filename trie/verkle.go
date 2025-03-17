@@ -82,6 +82,7 @@ var (
 // GetKey returns the sha3 preimage of a hashed key that was previously used
 // to store a value.
 func (trie *VerkleTrie) GetKey(key []byte) []byte {
+	fmt.Printf("vkt period %d GetKey %x\n", trie.curPeriod, key)
 	return key
 }
 
@@ -89,6 +90,7 @@ func (trie *VerkleTrie) GetKey(key []byte) []byte {
 // not be modified by the caller. If a node was not found in the database, a
 // trie.MissingNodeError is returned.
 func (trie *VerkleTrie) GetStorage(addr common.Address, key []byte) ([]byte, error) {
+	fmt.Printf("VerkleTrie.GetStorage addr: %x key: %x\n", addr, key)
 	pointEval := trie.pointCache.GetTreeKeyHeader(addr[:])
 	k := utils.GetTreeKeyStorageSlotWithEvaluatedAddress(pointEval, key)
 	return trie.root.Get(k, trie.curPeriod, trie.FlatdbNodeResolver)
@@ -97,10 +99,12 @@ func (trie *VerkleTrie) GetStorage(addr common.Address, key []byte) ([]byte, err
 // GetWithHashedKey returns the value, assuming that the key has already
 // been hashed.
 func (trie *VerkleTrie) GetWithHashedKey(key []byte) ([]byte, error) {
+	fmt.Printf("VerkleTrie.GetWithHashedKey key: %x\n", key)
 	return trie.root.Get(key, trie.curPeriod, trie.FlatdbNodeResolver)
 }
 
 func (t *VerkleTrie) GetAccount(addr common.Address) (*types.StateAccount, error) {
+	fmt.Printf("VerkleTrie.GetAccount addr: %x\n", addr)
 	acc := &types.StateAccount{}
 	versionkey := t.pointCache.GetTreeKeyBasicDataCached(addr[:])
 	var (
@@ -237,12 +241,14 @@ func (trie *VerkleTrie) DeleteStorage(addr common.Address, key []byte) error {
 // Hash returns the root hash of the trie. It does not write to the database and
 // can be used even if the trie doesn't have one.
 func (trie *VerkleTrie) Hash() common.Hash {
+	fmt.Println("VerkleTrie.Hash")
 	return trie.root.Commit().Bytes()
 }
 
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
 func (trie *VerkleTrie) Commit(_ bool) (common.Hash, *trienode.NodeSet, error) {
+	// fmt.Println("Commit\n", trie.ToDot())
 	root, ok := trie.root.(*verkle.InternalNode)
 	if !ok {
 		return common.Hash{}, nil, errors.New("unexpected root node type")
@@ -301,7 +307,12 @@ func (trie *VerkleTrie) IsVerkle() bool {
 	return true
 }
 
+func (trie *VerkleTrie) SetPeriod(period verkle.StatePeriod) {
+	trie.curPeriod = period
+}
+
 func ProveAndSerialize(pretrie, posttrie *VerkleTrie, keys [][]byte, resolver verkle.NodeResolverFn) (*verkle.VerkleProof, verkle.StateDiff, error) {
+	fmt.Println("ProveAndSerialize")
 	var postroot verkle.VerkleNode
 	if posttrie != nil {
 		postroot = posttrie.root
