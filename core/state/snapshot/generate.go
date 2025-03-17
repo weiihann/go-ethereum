@@ -284,7 +284,8 @@ func (dl *diskLayer) proveRange(ctx *generatorContext, trieId *trie.ID, prefix [
 			diskMore: diskMore,
 			trieMore: cont,
 			proofErr: err,
-			tr:       tr},
+			tr:       tr,
+		},
 		nil
 }
 
@@ -515,11 +516,13 @@ func generateStorages(ctx *generatorContext, dl *diskLayer, stateRoot common.Has
 
 		if delete {
 			rawdb.DeleteStorageSnapshot(ctx.batch, account, common.BytesToHash(key))
+			rawdb.DeleteStorageSnapshotMeta(ctx.batch, account, common.BytesToHash(key))
 			snapWipedStorageMeter.Mark(1)
 			return nil
 		}
 		if write {
 			rawdb.WriteStorageSnapshot(ctx.batch, account, common.BytesToHash(key), val)
+			rawdb.WriteStorageSnapshotMeta(ctx.batch, account, common.BytesToHash(key), 0) // TODO(weiihann): default to 0
 			snapGeneratedStorageMeter.Mark(1)
 		} else {
 			snapRecoveredStorageMeter.Mark(1)
@@ -534,7 +537,7 @@ func generateStorages(ctx *generatorContext, dl *diskLayer, stateRoot common.Has
 		return nil
 	}
 	// Loop for re-generating the missing storage slots.
-	var origin = common.CopyBytes(storeMarker)
+	origin := common.CopyBytes(storeMarker)
 	for {
 		id := trie.StorageTrieID(stateRoot, account, storageRoot)
 		exhausted, last, err := dl.generateRange(ctx, id, append(rawdb.SnapshotStoragePrefix, account.Bytes()...), snapStorage, origin, storageCheckRange, onStorage, nil)
@@ -564,6 +567,7 @@ func generateAccounts(ctx *generatorContext, dl *diskLayer, accMarker []byte) er
 		start := time.Now()
 		if delete {
 			rawdb.DeleteAccountSnapshot(ctx.batch, account)
+			rawdb.DeleteAccountSnapshotMeta(ctx.batch, account)
 			snapWipedAccountMeter.Mark(1)
 			snapAccountWriteCounter.Inc(time.Since(start).Nanoseconds())
 
@@ -590,6 +594,7 @@ func generateAccounts(ctx *generatorContext, dl *diskLayer, accMarker []byte) er
 				data := types.SlimAccountRLP(acc)
 				dataLen = len(data)
 				rawdb.WriteAccountSnapshot(ctx.batch, account, data)
+				rawdb.WriteAccountSnapshotMeta(ctx.batch, account, 0) // TODO(weiihann): default to 0
 				snapGeneratedAccountMeter.Mark(1)
 			}
 			ctx.stats.storage += common.StorageSize(1 + common.HashLength + dataLen)

@@ -374,6 +374,8 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		txLookups       stat
 		accountSnaps    stat
 		storageSnaps    stat
+		accountMeta     stat
+		storageMeta     stat
 		preimages       stat
 		bloomBits       stat
 		beaconHeaders   stat
@@ -428,8 +430,12 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 			txLookups.Add(size)
 		case bytes.HasPrefix(key, SnapshotAccountPrefix) && len(key) == (len(SnapshotAccountPrefix)+common.HashLength):
 			accountSnaps.Add(size)
+		case bytes.HasPrefix(key, SnapshotAccountMetaPrefix) && len(key) == (len(SnapshotAccountMetaPrefix)+common.HashLength):
+			accountMeta.Add(size)
 		case bytes.HasPrefix(key, SnapshotStoragePrefix) && len(key) == (len(SnapshotStoragePrefix)+2*common.HashLength):
 			storageSnaps.Add(size)
+		case bytes.HasPrefix(key, SnapshotStorageMetaPrefix) && len(key) == (len(SnapshotStorageMetaPrefix)+2*common.HashLength):
+			storageMeta.Add(size)
 		case bytes.HasPrefix(key, PreimagePrefix) && len(key) == (len(PreimagePrefix)+common.HashLength):
 			preimages.Add(size)
 		case bytes.HasPrefix(key, configPrefix) && len(key) == (len(configPrefix)+common.HashLength):
@@ -514,7 +520,9 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		{"Key-Value store", "Verkle trie state lookups", verkleStateLookups.Size(), verkleStateLookups.Count()},
 		{"Key-Value store", "Trie preimages", preimages.Size(), preimages.Count()},
 		{"Key-Value store", "Account snapshot", accountSnaps.Size(), accountSnaps.Count()},
+		{"Key-Value store", "Account snapshot meta", accountMeta.Size(), accountMeta.Count()},
 		{"Key-Value store", "Storage snapshot", storageSnaps.Size(), storageSnaps.Count()},
+		{"Key-Value store", "Storage snapshot meta", storageMeta.Size(), storageMeta.Count()},
 		{"Key-Value store", "Beacon sync headers", beaconHeaders.Size(), beaconHeaders.Count()},
 		{"Key-Value store", "Clique snapshots", cliqueSnaps.Size(), cliqueSnaps.Count()},
 		{"Key-Value store", "Singleton metadata", metadata.Size(), metadata.Count()},

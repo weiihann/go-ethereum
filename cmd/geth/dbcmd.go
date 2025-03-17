@@ -71,6 +71,7 @@ Remove blockchain and state databases`,
 		ArgsUsage: "",
 		Subcommands: []*cli.Command{
 			dbInspectCmd,
+			dbCheckMetaCmd,
 			dbStatCmd,
 			dbCompactCmd,
 			dbGetCmd,
@@ -94,6 +95,16 @@ Remove blockchain and state databases`,
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Usage:       "Inspect the storage size for each type of data in the database",
 		Description: `This commands iterates the entire database. If the optional 'prefix' and 'start' arguments are provided, then the iteration is limited to the given subset of data.`,
+	}
+	dbCheckMetaCmd = &cli.Command{
+		Action:    checkMeta,
+		Name:      "check-meta",
+		ArgsUsage: "",
+		Flags: slices.Concat([]cli.Flag{
+			utils.SyncModeFlag,
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "Check the meta data of the database",
+		Description: `TODO: add description`,
 	}
 	dbCheckStateContentCmd = &cli.Command{
 		Action:    checkStateContent,
@@ -352,6 +363,42 @@ func inspect(ctx *cli.Context) error {
 	defer db.Close()
 
 	return rawdb.InspectDatabase(db, prefix, start)
+}
+
+func checkMeta(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	it := db.NewIterator(rawdb.SnapshotAccountPrefix, nil)
+	defer it.Release()
+
+	for it.Next() {
+		key := it.Key()
+		addrHash := common.BytesToHash(key[1:])
+		addrBn := rawdb.ReadAccountSnapshotMeta(db, addrHash)
+		fmt.Printf("account %x, meta %d\n", addrHash, addrBn)
+
+		storageIt := db.NewIterator(append(rawdb.SnapshotStoragePrefix, addrHash.Bytes()...), nil)
+		for storageIt.Next() {
+			storageKey := storageIt.Key()
+			if len(storageKey) != 1+2*common.HashLength {
+				log.Crit("Invalid storage key", "key", storageKey)
+			}
+			storageHash := common.BytesToHash(storageKey[1+common.HashLength:])
+			// Remember that the storage slot we write in the meta is the preimage
+			// But the storage slot we write in the data is the hash
+			// So need to get the preimage first
+			preImageStorage := rawdb.ReadPreimage(db, storageHash)
+			storageBn := rawdb.ReadStorageSnapshotMeta(db, addrHash, common.BytesToHash(preImageStorage))
+			fmt.Printf("account %x, storage %x, meta %d\n", addrHash, storageHash, storageBn)
+		}
+		storageIt.Release()
+	}
+
+	return nil
 }
 
 func checkStateContent(ctx *cli.Context) error {

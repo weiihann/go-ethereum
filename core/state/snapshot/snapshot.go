@@ -429,7 +429,80 @@ func (t *Tree) Cap(root common.Hash, layers int) error {
 		t.layers = map[common.Hash]snapshot{base.root: base}
 		return nil
 	}
-	persisted := t.cap(diff, layers)
+	persisted := t.cap(diff, layers, false)
+
+	// Remove any layer that is stale or links into a stale layer
+	children := make(map[common.Hash][]common.Hash)
+	for root, snap := range t.layers {
+		if diff, ok := snap.(*diffLayer); ok {
+			parent := diff.parent.Root()
+			children[parent] = append(children[parent], root)
+		}
+	}
+	var remove func(root common.Hash)
+	remove = func(root common.Hash) {
+		delete(t.layers, root)
+		for _, child := range children[root] {
+			remove(child)
+		}
+		delete(children, root)
+	}
+	for root, snap := range t.layers {
+		if snap.Stale() {
+			remove(root)
+		}
+	}
+	// If the disk layer was modified, regenerate all the cumulative blooms
+	if persisted != nil {
+		var rebloom func(root common.Hash)
+		rebloom = func(root common.Hash) {
+			if diff, ok := t.layers[root].(*diffLayer); ok {
+				diff.rebloom(persisted)
+			}
+			for _, child := range children[root] {
+				rebloom(child)
+			}
+		}
+		rebloom(persisted.root)
+	}
+	return nil
+}
+
+func (t *Tree) CapWithForce(root common.Hash, layers int) error {
+	// Retrieve the head snapshot to cap from
+	snap := t.Snapshot(root)
+	if snap == nil {
+		return fmt.Errorf("snapshot [%#x] missing", root)
+	}
+	diff, ok := snap.(*diffLayer)
+	if !ok {
+		return fmt.Errorf("snapshot [%#x] is disk layer", root)
+	}
+	// If the generator is still running, use a more aggressive cap
+	diff.origin.lock.RLock()
+	if diff.origin.genMarker != nil && layers > 8 {
+		layers = 8
+	}
+	diff.origin.lock.RUnlock()
+
+	// Run the internal capping and discard all stale layers
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	// Flattening the bottom-most diff layer requires special casing since there's
+	// no child to rewire to the grandparent. In that case we can fake a temporary
+	// child for the capping and then remove it.
+	if layers == 0 {
+		// If full commit was requested, flatten the diffs and merge onto disk
+		diff.lock.RLock()
+		base := diffToDisk(diff.flatten().(*diffLayer))
+		diff.lock.RUnlock()
+
+		// Replace the entire snapshot tree with the flat base
+		t.layers = map[common.Hash]snapshot{base.root: base}
+		return nil
+	}
+	persisted := t.cap(diff, layers, true)
 
 	// Remove any layer that is stale or links into a stale layer
 	children := make(map[common.Hash][]common.Hash)
@@ -479,7 +552,7 @@ func (t *Tree) Cap(root common.Hash, layers int) error {
 // which may or may not overflow and cascade to disk. Since this last layer's
 // survival is only known *after* capping, we need to omit it from the count if
 // we want to ensure that *at least* the requested number of diff layers remain.
-func (t *Tree) cap(diff *diffLayer, layers int) *diskLayer {
+func (t *Tree) cap(diff *diffLayer, layers int, force bool) *diskLayer {
 	// Dive until we run out of layers or reach the persistent database
 	for i := 0; i < layers-1; i++ {
 		// If we still have diff layers below, continue down
@@ -513,7 +586,7 @@ func (t *Tree) cap(diff *diffLayer, layers int) *diskLayer {
 			t.onFlatten()
 		}
 		diff.parent = flattened
-		if flattened.memory < aggregatorMemoryLimit {
+		if !force && flattened.memory < aggregatorMemoryLimit {
 			// Accumulator layer is smaller than the limit, so we can abort, unless
 			// there's a snapshot being generated currently. In that case, the trie
 			// will move from underneath the generator so we **must** merge all the
@@ -578,6 +651,7 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 			snapshotCleanAccountWriteMeter.Mark(int64(len(data)))
 		} else {
 			rawdb.DeleteAccountSnapshot(batch, hash)
+			rawdb.DeleteAccountSnapshotMeta(batch, hash)
 			base.cache.Set(hash[:], nil)
 		}
 		snapshotFlushAccountItemMeter.Mark(1)
@@ -619,6 +693,7 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 				snapshotCleanStorageWriteMeter.Mark(int64(len(data)))
 			} else {
 				rawdb.DeleteStorageSnapshot(batch, accountHash, storageHash)
+				rawdb.DeleteStorageSnapshotMeta(batch, accountHash, storageHash)
 				base.cache.Set(append(accountHash[:], storageHash[:]...), nil)
 			}
 			snapshotFlushStorageItemMeter.Mark(1)
@@ -636,8 +711,8 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 		}
 	}
 	// Write the storage meta data
-	for accountHash, block := range bottom.storageMeta {
-		for storageHash, block := range block {
+	for accountHash, slots := range bottom.storageMeta {
+		for storageHash, block := range slots {
 			rawdb.WriteStorageSnapshotMeta(batch, accountHash, storageHash, block)
 		}
 	}

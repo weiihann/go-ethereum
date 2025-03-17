@@ -95,7 +95,7 @@ func DeleteAccountSnapshot(db ethdb.KeyValueWriter, hash common.Hash) {
 func ReadAccountSnapshotMeta(db ethdb.KeyValueReader, hash common.Hash) uint64 {
 	data, _ := db.Get(accountSnapshotMetaKey(hash))
 	if len(data) != 8 {
-		return 0
+		log.Crit("Failed to read account snapshot meta")
 	}
 	return binary.BigEndian.Uint64(data)
 }
@@ -133,8 +133,9 @@ func DeleteStorageSnapshot(db ethdb.KeyValueWriter, accountHash, storageHash com
 }
 
 func ReadStorageSnapshotMeta(db ethdb.KeyValueReader, accountHash, storageHash common.Hash) uint64 {
-	data, _ := db.Get(storageSnapshotMetaKey(accountHash, storageHash))
-	if len(data) != 8 {
+	data, err := db.Get(storageSnapshotMetaKey(accountHash, storageHash))
+	if err != nil {
+		log.Info("Failed to read storage snapshot meta", "err", err)
 		return 0
 	}
 	return binary.BigEndian.Uint64(data)

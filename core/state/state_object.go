@@ -59,7 +59,9 @@ type stateObject struct {
 	dirtyStorage   Storage // Storage entries that have been modified within the current transaction
 	pendingStorage Storage // Storage entries that have been modified within the current block
 
-	storageMeta map[common.Hash]uint64 // Storage entries that have been modified/accessed at given any time
+	// Storage entries that have been modified/accessed at given any time
+	// The slot key is the actual slot key, not the hash.
+	storageMeta map[common.Hash]uint64
 
 	// uncommittedStorage tracks a set of storage entries that have been modified
 	// but not yet committed since the "last commit operation", along with their
@@ -407,7 +409,7 @@ func (s *stateObject) commitStorage(op *accountUpdate) {
 		if val == s.originStorage[key] {
 			continue
 		}
-		hash := crypto.HashData(buf, key[:])
+		hash := crypto.HashData(buf, key[:]) // weiihann: this thing here hashes the slot before committing
 		if op.storages == nil {
 			op.storages = make(map[common.Hash][]byte)
 		}

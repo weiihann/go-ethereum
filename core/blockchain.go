@@ -1116,6 +1116,10 @@ func (bc *BlockChain) Stop() {
 	var snapBase common.Hash
 	if bc.snaps != nil {
 		var err error
+		if err := bc.snaps.CapWithForce(bc.CurrentBlock().Root, 128); err != nil {
+			log.Error("Failed to cap state snapshot", "err", err)
+		}
+
 		if snapBase, err = bc.snaps.Journal(bc.CurrentBlock().Root); err != nil {
 			log.Error("Failed to journal state snapshot", "err", err)
 		}
