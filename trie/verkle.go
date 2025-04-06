@@ -32,9 +32,7 @@ import (
 	"github.com/holiman/uint256"
 )
 
-var (
-	errInvalidRootType = errors.New("invalid node type for root")
-)
+var errInvalidRootType = errors.New("invalid node type for root")
 
 // VerkleTrie is a wrapper around VerkleNode that implements the trie.Trie
 // interface so that Verkle trees can be reused verbatim.
@@ -90,7 +88,7 @@ func (t *VerkleTrie) GetAccount(addr common.Address) (*types.StateAccount, error
 	)
 	switch n := t.root.(type) {
 	case *verkle.InternalNode:
-		values, err = n.GetValuesAtStem(t.cache.GetStem(addr[:]), t.nodeResolver)
+		values, err = n.GetValuesAtStem(t.cache.GetStem(addr[:]), 0, t.nodeResolver)
 		if err != nil {
 			return nil, fmt.Errorf("GetAccount (%x) error: %v", addr, err)
 		}
@@ -114,7 +112,7 @@ func (t *VerkleTrie) GetAccount(addr common.Address) (*types.StateAccount, error
 // nil will be returned. If the tree is corrupted, an error will be returned.
 func (t *VerkleTrie) GetStorage(addr common.Address, key []byte) ([]byte, error) {
 	k := utils.StorageSlotKeyWithEvaluatedAddress(t.cache.Get(addr.Bytes()), key)
-	val, err := t.root.Get(k, t.nodeResolver)
+	val, err := t.root.Get(k, 0, t.nodeResolver)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +143,7 @@ func (t *VerkleTrie) UpdateAccount(addr common.Address, acc *types.StateAccount,
 
 	switch root := t.root.(type) {
 	case *verkle.InternalNode:
-		err = root.InsertValuesAtStem(stem, values, t.nodeResolver)
+		err = root.InsertValuesAtStem(stem, values, 0, true, t.nodeResolver)
 	default:
 		return errInvalidRootType
 	}
@@ -167,7 +165,7 @@ func (t *VerkleTrie) UpdateStorage(address common.Address, key, value []byte) er
 		copy(v[32-len(value):], value[:])
 	}
 	k := utils.StorageSlotKeyWithEvaluatedAddress(t.cache.Get(address.Bytes()), key)
-	return t.root.Insert(k, v[:], t.nodeResolver)
+	return t.root.Insert(k, v[:], 0, t.nodeResolver)
 }
 
 // DeleteAccount leaves the account untouched, as no account deletion can happen
@@ -179,7 +177,7 @@ func (t *VerkleTrie) UpdateStorage(address common.Address, key, value []byte) er
 // the balance with 0. This will be removed once the spec has been clarified.
 func (t *VerkleTrie) DeleteAccount(addr common.Address) error {
 	k := utils.BasicDataKeyWithEvaluatedAddress(t.cache.Get(addr.Bytes()))
-	values, err := t.root.(*verkle.InternalNode).GetValuesAtStem(k, t.nodeResolver)
+	values, err := t.root.(*verkle.InternalNode).GetValuesAtStem(k, 0, t.nodeResolver)
 	if err != nil {
 		return fmt.Errorf("Error getting data at %x in delete: %w", k, err)
 	}
@@ -198,7 +196,7 @@ func (t *VerkleTrie) DeleteAccount(addr common.Address) error {
 		}
 	}
 	if prefunded {
-		t.root.Insert(k, common.Hash{}.Bytes(), t.nodeResolver)
+		t.root.Insert(k, common.Hash{}.Bytes(), 0, t.nodeResolver)
 	}
 	return nil
 }
@@ -210,7 +208,7 @@ func (t *VerkleTrie) RollBackAccount(addr common.Address) error {
 		evaluatedAddr = t.cache.Get(addr.Bytes())
 		basicDataKey  = utils.BasicDataKeyWithEvaluatedAddress(evaluatedAddr)
 	)
-	basicDataBytes, err := t.root.Get(basicDataKey, t.nodeResolver)
+	basicDataBytes, err := t.root.Get(basicDataKey, 0, t.nodeResolver)
 	if err != nil {
 		return fmt.Errorf("rollback: error finding code size: %w", err)
 	}
@@ -223,7 +221,7 @@ func (t *VerkleTrie) RollBackAccount(addr common.Address) error {
 	codeSize := binary.BigEndian.Uint32(basicDataBytes[utils.BasicDataCodeSizeOffset-1:])
 
 	// Delete the account header + first 64 slots + first 128 code chunks
-	_, err = t.root.(*verkle.InternalNode).DeleteAtStem(basicDataKey[:31], t.nodeResolver)
+	_, err = t.root.(*verkle.InternalNode).DeleteAtStem(basicDataKey[:31], 0, t.nodeResolver)
 	if err != nil {
 		return fmt.Errorf("error rolling back account header: %w", err)
 	}
@@ -234,7 +232,7 @@ func (t *VerkleTrie) RollBackAccount(addr common.Address) error {
 		offset := uint256.NewInt(chunknr)
 		key := utils.CodeChunkKeyWithEvaluatedAddress(evaluatedAddr, offset)
 
-		if _, err = t.root.(*verkle.InternalNode).DeleteAtStem(key[:], t.nodeResolver); err != nil {
+		if _, err = t.root.(*verkle.InternalNode).DeleteAtStem(key[:], 0, t.nodeResolver); err != nil {
 			return fmt.Errorf("error deleting code chunk stem (addr=%x, offset=%d) error: %w", addr[:], offset, err)
 		}
 	}
@@ -247,7 +245,7 @@ func (t *VerkleTrie) RollBackAccount(addr common.Address) error {
 func (t *VerkleTrie) DeleteStorage(addr common.Address, key []byte) error {
 	var zero [32]byte
 	k := utils.StorageSlotKeyWithEvaluatedAddress(t.cache.Get(addr.Bytes()), key)
-	return t.root.Insert(k, zero[:], t.nodeResolver)
+	return t.root.Insert(k, zero[:], 0, t.nodeResolver)
 }
 
 // Hash returns the root hash of the tree. It does not write to the database and
@@ -317,7 +315,7 @@ func (t *VerkleTrie) Proof(posttrie *VerkleTrie, keys [][]byte) (*verkle.VerkleP
 	if posttrie != nil {
 		postroot = posttrie.root
 	}
-	proof, _, _, _, err := verkle.MakeVerkleMultiProof(t.root, postroot, keys, t.FlatdbNodeResolver)
+	proof, _, _, _, err := verkle.MakeVerkleMultiProof(t.root, postroot, keys, 0, t.FlatdbNodeResolver)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -404,7 +402,7 @@ func (t *VerkleTrie) UpdateContractCode(addr common.Address, codeHash common.Has
 		if groupOffset == 255 || len(chunks)-i <= 32 {
 			switch root := t.root.(type) {
 			case *verkle.InternalNode:
-				err = root.InsertValuesAtStem(key[:31], values, t.nodeResolver)
+				err = root.InsertValuesAtStem(key[:31], values, 0, true, t.nodeResolver)
 				if err != nil {
 					return fmt.Errorf("UpdateContractCode (addr=%x) error: %w", addr[:], err)
 				}

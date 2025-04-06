@@ -19,9 +19,11 @@ package rawdb
 import (
 	"encoding/binary"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/syndtr/goleveldb/leveldb"
 )
 
 // ReadSnapshotDisabled retrieves if the snapshot maintenance is disabled.
@@ -93,9 +95,12 @@ func DeleteAccountSnapshot(db ethdb.KeyValueWriter, hash common.Hash) {
 }
 
 func ReadAccountSnapshotMeta(db ethdb.KeyValueReader, hash common.Hash) uint64 {
-	data, _ := db.Get(accountSnapshotMetaKey(hash))
-	if len(data) != 8 {
-		log.Crit("Failed to read account snapshot meta")
+	data, err := db.Get(accountSnapshotMetaKey(hash))
+	if err != nil {
+		if err == leveldb.ErrNotFound || err == pebble.ErrNotFound {
+			return 0
+		}
+		log.Crit("Failed to read account snapshot meta", "err", err)
 	}
 	return binary.BigEndian.Uint64(data)
 }
@@ -118,6 +123,11 @@ func ReadStorageSnapshot(db ethdb.KeyValueReader, accountHash, storageHash commo
 	return data
 }
 
+func HasStorageSnapshot(db ethdb.KeyValueReader, accountHash, storageHash common.Hash) bool {
+	has, _ := db.Has(storageSnapshotKey(accountHash, storageHash))
+	return has
+}
+
 // WriteStorageSnapshot stores the snapshot entry of a storage trie leaf.
 func WriteStorageSnapshot(db ethdb.KeyValueWriter, accountHash, storageHash common.Hash, entry []byte) {
 	if err := db.Put(storageSnapshotKey(accountHash, storageHash), entry); err != nil {
@@ -135,8 +145,10 @@ func DeleteStorageSnapshot(db ethdb.KeyValueWriter, accountHash, storageHash com
 func ReadStorageSnapshotMeta(db ethdb.KeyValueReader, accountHash, storageHash common.Hash) uint64 {
 	data, err := db.Get(storageSnapshotMetaKey(accountHash, storageHash))
 	if err != nil {
-		log.Info("Failed to read storage snapshot meta", "err", err)
-		return 0
+		if err == leveldb.ErrNotFound || err == pebble.ErrNotFound {
+			return 0
+		}
+		log.Crit("Failed to read storage snapshot meta", "err", err)
 	}
 	return binary.BigEndian.Uint64(data)
 }

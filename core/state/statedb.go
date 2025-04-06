@@ -1129,7 +1129,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 		}
 
 		accountsMeta[obj.addrHash] = s.block
-		storagesMeta[obj.addrHash] = obj.storageMeta
+		storagesMeta[obj.addrHash] = maps.Clone(obj.storageMeta)
 	}
 
 	// Commit objects to the trie, measuring the elapsed time
@@ -1220,6 +1220,9 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 	// more expensive than it should be, so let's fix that and revisit this todo.
 	for addr, op := range s.mutations {
 		if op.isDelete() {
+			addrHash := common.BytesToHash(addr.Bytes())
+			delete(accountsMeta, addrHash)
+			delete(storagesMeta, addrHash)
 			continue
 		}
 		// Write any contract code associated with the state object

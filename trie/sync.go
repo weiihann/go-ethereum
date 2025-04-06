@@ -537,6 +537,7 @@ func (s *Sync) scheduleCodeRequest(req *codeRequest) {
 
 // children retrieves all the missing children of a state trie entry for future
 // retrieval scheduling.
+// TODO(weiihann): this is where it determines what trie nodes are missing!
 func (s *Sync) children(req *nodeRequest, object node) ([]*nodeRequest, error) {
 	// Gather all the children of the node, irrelevant whether known or not
 	type childNode struct {

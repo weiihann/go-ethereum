@@ -278,6 +278,10 @@ func pointToHash(evaluated *verkle.Point, suffix byte) []byte {
 	return retb[:]
 }
 
+func EvaluateAddressPoint(address []byte) *verkle.Point {
+	return evaluateAddressPoint(address)
+}
+
 func evaluateAddressPoint(address []byte) *verkle.Point {
 	if len(address) < 32 {
 		var aligned [32]byte
