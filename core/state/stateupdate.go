@@ -165,6 +165,23 @@ func newStateUpdate(rawStorageKey bool, originRoot common.Hash, root common.Hash
 			}
 		}
 	}
+
+	// weiihann:
+	// instead of using the original storage slot key, we use the hash of the storage slot key
+	// remember to change in the analysis code too
+	// newStoragesMeta := make(map[common.Hash]map[common.Hash]uint64, len(storagesMeta))
+	// buf := crypto.NewKeccakState()
+	// for addrHash, slots := range storagesMeta {
+	// 	for slotHash, bn := range slots {
+	// 		hash := crypto.HashData(buf, slotHash[:])
+	// 		if _, exist := newStoragesMeta[addrHash]; !exist {
+	// 			newStoragesMeta[addrHash] = make(map[common.Hash]uint64)
+	// 		}
+	// 		newStoragesMeta[addrHash][hash] = bn
+	// 	}
+	// }
+	// storagesMeta = newStoragesMeta
+
 	return &stateUpdate{
 		originRoot:     originRoot,
 		root:           root,

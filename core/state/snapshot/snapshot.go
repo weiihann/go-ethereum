@@ -652,6 +652,7 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 		} else {
 			rawdb.DeleteAccountSnapshot(batch, hash)
 			rawdb.DeleteAccountSnapshotMeta(batch, hash)
+			delete(bottom.accountMeta, hash) // ensure it wont be written again
 			base.cache.Set(hash[:], nil)
 		}
 		snapshotFlushAccountItemMeter.Mark(1)
@@ -693,7 +694,6 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 				snapshotCleanStorageWriteMeter.Mark(int64(len(data)))
 			} else {
 				rawdb.DeleteStorageSnapshot(batch, accountHash, storageHash)
-				rawdb.DeleteStorageSnapshotMeta(batch, accountHash, storageHash)
 				base.cache.Set(append(accountHash[:], storageHash[:]...), nil)
 			}
 			snapshotFlushStorageItemMeter.Mark(1)
