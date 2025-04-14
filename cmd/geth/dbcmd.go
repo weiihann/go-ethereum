@@ -87,6 +87,7 @@ Remove blockchain and state databases`,
 			dbSlotExpiryAnalysisV2Cmd,
 			dbSlotExpiryAnalysisV3Cmd,
 			dbSlotExpiryAnalysisV3DebugCmd,
+			dbStemAnalysisCmd,
 			dbTurnSlottoHashCmd,
 			dbStatCmd,
 			dbCompactCmd,
@@ -161,6 +162,14 @@ Remove blockchain and state databases`,
 	dbSlotExpiryAnalysisV2Cmd = &cli.Command{
 		Action:      slotExpiryAnalysisV2,
 		Name:        "slot-expiry-v2",
+		ArgsUsage:   "<start> <periodLength>",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "TODO: add this",
+		Description: `TODO: add description`,
+	}
+	dbStemAnalysisCmd = &cli.Command{
+		Action:      stemAnalysis,
+		Name:        "stem-analysis",
 		ArgsUsage:   "<start> <periodLength>",
 		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 		Usage:       "TODO: add this",
@@ -1248,6 +1257,92 @@ func slotExpiryAnalysis(ctx *cli.Context) error {
 	return nil
 }
 
+func stemAnalysis(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	count := 0
+	logged := time.Now()
+	startTime := time.Now()
+	logProgress := func() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			logged = time.Now()
+		}
+	}
+
+	getGroup := func(slotNum *uint256.Int) *uint256.Int {
+		// If slot number <= 64, return group 0
+		if slotNum.Cmp(_uint64) <= 0 {
+			return _uint0
+		}
+
+		group := new(uint256.Int).Sub(slotNum, _uint64)
+		quotient := new(uint256.Int).Div(group, _uint256)
+		remainder := new(uint256.Int).Mod(group, _uint256)
+		// If there's any remainder, add 1 to round up to next group
+		if remainder.Cmp(_uint0) > 0 {
+			return new(uint256.Int).Add(quotient, _uint1)
+		}
+		return quotient
+	}
+
+	stemCount := 0
+	slotHashCache := fastcache.New(1 * 1024 * 1024 * 1024)
+	curGroup := make(map[uint256.Int]struct{})
+	curAddr := common.Hash{}
+
+	prefix := rawdb.SnapshotStoragePrefix
+	it := db.NewIterator(prefix, nil)
+	defer it.Release()
+	for it.Next() {
+		rawSlotKey := it.Key()
+
+		if len(rawSlotKey) != len(prefix)+2*common.HashLength {
+			continue
+		}
+
+		addrHash := common.BytesToHash(rawSlotKey[len(prefix) : len(prefix)+common.HashLength])
+		if !bytes.Equal(addrHash[:], curAddr[:]) { // we are on a new address
+			for range curGroup {
+				stemCount++
+			}
+
+			curAddr = addrHash
+			curGroup = make(map[uint256.Int]struct{})
+		}
+
+		slotHash := common.BytesToHash(rawSlotKey[len(prefix)+common.HashLength : len(prefix)+2*common.HashLength])
+
+		var slot []byte
+		slot = slotHashCache.Get(nil, slotHash[:])
+		if len(slot) == 0 {
+			slot = rawdb.ReadPreimage(db, slotHash)
+			slotHashCache.Set(slotHash[:], slot)
+		}
+
+		uSlot := new(uint256.Int).SetBytes32(slot)
+		group := getGroup(uSlot)
+		if _, ok := curGroup[*group]; !ok {
+			curGroup[*group] = struct{}{}
+		}
+		logProgress()
+	}
+
+	for range curGroup {
+		stemCount++
+	}
+
+	log.Info("Stem count", "count", stemCount)
+
+	return nil
+}
+
+// Meta slot is stored in the database as hash instead of the original slot
 func slotExpiryAnalysisV2(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
