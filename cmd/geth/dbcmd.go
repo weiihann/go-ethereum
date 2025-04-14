@@ -86,9 +86,7 @@ Remove blockchain and state databases`,
 			dbSlotExpiryAnalysisCmd,
 			dbSlotExpiryAnalysisV2Cmd,
 			dbSlotExpiryAnalysisV3Cmd,
-			dbSlotExpiryAnalysisV3DebugCmd,
 			dbStemAnalysisCmd,
-			dbTurnSlottoHashCmd,
 			dbStatCmd,
 			dbCompactCmd,
 			dbGetCmd,
@@ -179,22 +177,6 @@ Remove blockchain and state databases`,
 		Action:      slotExpiryAnalysisV3,
 		Name:        "slot-expiry-v3",
 		ArgsUsage:   "<start> <periodLength>",
-		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
-		Usage:       "TODO: add this",
-		Description: `TODO: add description`,
-	}
-	dbSlotExpiryAnalysisV3DebugCmd = &cli.Command{
-		Action:      slotExpiryAnalysisV3Debug,
-		Name:        "slot-expiry-v3-debug",
-		ArgsUsage:   "<start> <periodLength>",
-		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
-		Usage:       "TODO: add this",
-		Description: `TODO: add description`,
-	}
-	dbTurnSlottoHashCmd = &cli.Command{
-		Action:      turnSlottoHash,
-		Name:        "turn-slot-to-hash",
-		ArgsUsage:   "",
 		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 		Usage:       "TODO: add this",
 		Description: `TODO: add description`,
@@ -485,7 +467,6 @@ func checkMeta(ctx *cli.Context) error {
 	it = db.NewIterator(append(rawdb.SnapshotStorageMetaPrefix, accHash.Bytes()...), nil)
 	defer it.Release()
 
-	fmt.Println("Meta iterator")
 	for it.Next() {
 		key := it.Key()
 		val := it.Value()
@@ -877,7 +858,7 @@ func accExpiryAnalysis(ctx *cli.Context) error {
 			buckets[-1]++
 			return
 		}
-		bucket := int((bn - start) / blockRange)
+		bucket := int((bn-start)/blockRange) + 1
 		buckets[bucket]++
 	}
 
@@ -1079,7 +1060,7 @@ func slotExpiryAnalysis(ctx *cli.Context) error {
 			buckets[-1]++
 			return
 		}
-		bucket := int((bn - start) / blockRange)
+		bucket := int((bn-start)/blockRange) + 1
 		buckets[bucket]++
 	}
 
@@ -1408,7 +1389,7 @@ func slotExpiryAnalysisV2(ctx *cli.Context) error {
 			buckets[-1]++
 			return
 		}
-		bucket := int((bn - start) / blockRange)
+		bucket := int((bn-start)/blockRange) + 1
 		buckets[bucket]++
 	}
 
@@ -1539,9 +1520,11 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 		return fmt.Errorf("max 2 argument: %v", ctx.Command.ArgsUsage)
 	}
 
+	head := rawdb.ReadHeadHeader(db)
+	headNumber := head.Number.Uint64()
+
 	var start uint64
 	var periodLength uint64
-	blockRange := uint64(219000) // 1 month worth of blocks
 	switch ctx.NArg() {
 	case 2:
 		s, err := strconv.ParseUint(ctx.Args().First(), 10, 64)
@@ -1583,6 +1566,7 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 		}
 	}
 
+	blockRange := uint64(219000)
 	slotBuckets := make(map[int]int)
 	addBucket := func(bn uint64, buckets map[int]int) {
 		if bn == 0 {
@@ -1593,7 +1577,7 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 			buckets[-1]++
 			return
 		}
-		bucket := int((bn - start) / blockRange)
+		bucket := int((bn-start)/blockRange) + 1
 		buckets[bucket]++
 	}
 
@@ -1656,6 +1640,7 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 			default:
 				bucketStart := start + uint64(bucket-1)*blockRange
 				bucketEnd := bucketStart + blockRange - 1
+				bucketEnd = min(bucketEnd, headNumber)
 				rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
 			}
 			count := slotBuckets[bucket]
@@ -1756,353 +1741,7 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
 	table.Render()
 
-	// Display slot in block range
-	table = tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Block Range", "Slot Count"})
-	total = 0
-
-	// Get sorted bucket numbers
-	var bucketNums []int
-	for bucket := range slotBuckets {
-		bucketNums = append(bucketNums, bucket)
-	}
-	slices.Sort(bucketNums)
-
-	// Display results with proper block ranges
-	for _, bucket := range bucketNums {
-		var rangeStr string
-		switch bucket {
-		case -1:
-			rangeStr = fmt.Sprintf("< %d", start)
-		case 0:
-			rangeStr = "Empty/Zero"
-		default:
-			bucketStart := start + uint64(bucket-1)*blockRange
-			bucketEnd := bucketStart + blockRange - 1
-			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
-		}
-		count := slotBuckets[bucket]
-		table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
-		total += count
-	}
-	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
-	table.Render()
-
-	return nil
-}
-
-func slotExpiryAnalysisV3Debug(ctx *cli.Context) error {
-	stack, _ := makeConfigNode(ctx)
-	defer stack.Close()
-
-	db := utils.MakeChainDatabase(ctx, stack, true)
-	defer db.Close()
-
-	if ctx.NArg() > 2 {
-		return fmt.Errorf("max 2 argument: %v", ctx.Command.ArgsUsage)
-	}
-
-	var start uint64
-	var periodLength uint64
-	blockRange := uint64(219000) // 1 month worth of blocks
-	switch ctx.NArg() {
-	case 2:
-		s, err := strconv.ParseUint(ctx.Args().First(), 10, 64)
-		if err != nil {
-			return fmt.Errorf("failed to parse period: %v", err)
-		}
-		start = s
-
-		p, err := strconv.ParseUint(ctx.Args().Get(1), 10, 64)
-		if err != nil {
-			return fmt.Errorf("failed to parse period: %v", err)
-		}
-		periodLength = p
-	case 1:
-		s, err := strconv.ParseUint(ctx.Args().First(), 10, 64)
-		if err != nil {
-			return fmt.Errorf("failed to parse period: %v", err)
-		}
-		start = s
-		periodLength = 1314000
-	default:
-		start = 17165429 // This is the starting block number of the node snapshot
-
-		// 1314000 = About 6 months worth of blocks.
-		// 6 months = 15768000s
-		// number of blocks = 15768000 / 12s = 1314000
-		// 12s is the average block time.
-		periodLength = 1314000
-	}
-
-	count := 0
-	logged := time.Now()
-	startTime := time.Now()
-	logProgress := func() {
-		count++
-		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
-			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
-			logged = time.Now()
-		}
-	}
-
-	slotBuckets := make(map[int]int)
-	addBucket := func(bn uint64, buckets map[int]int) {
-		if bn == 0 {
-			buckets[0]++
-			return
-		}
-		if bn < start {
-			buckets[-1]++
-			return
-		}
-		bucket := int((bn - start) / blockRange)
-		buckets[bucket]++
-	}
-
-	getGroup := func(slotNum *uint256.Int) *uint256.Int {
-		// If slot number <= 64, return group 0
-		if slotNum.Cmp(_uint64) <= 0 {
-			return _uint0
-		}
-
-		group := new(uint256.Int).Sub(slotNum, _uint64)
-		quotient := new(uint256.Int).Div(group, _uint256)
-		remainder := new(uint256.Int).Mod(group, _uint256)
-		// If there's any remainder, add 1 to round up to next group
-		if remainder.Cmp(_uint0) > 0 {
-			return new(uint256.Int).Add(quotient, _uint1)
-		}
-		return quotient
-	}
-
-	checkPoint := 100000000 // print every 100 million slots
-	printResult := func(periodCount map[verkle.StatePeriod]int) {
-		table := tablewriter.NewWriter(os.Stdout)
-		table.SetHeader([]string{"Slot Period", "Stem Count"})
-		total := 0
-		// Create a sorted slice of periods
-		periods := make([]verkle.StatePeriod, 0, len(periodCount))
-		for period := range periodCount {
-			periods = append(periods, period)
-		}
-		slices.Sort(periods)
-
-		for _, period := range periods {
-			count := periodCount[period]
-			table.Append([]string{fmt.Sprintf("%d", period), fmt.Sprintf("%d", count)})
-			total += count
-		}
-		table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
-		table.Render()
-
-		// Display slot in block range
-		table = tablewriter.NewWriter(os.Stdout)
-		table.SetHeader([]string{"Block Range", "Slot Count"})
-		total = 0
-
-		// Get sorted bucket numbers
-		var bucketNums []int
-		for bucket := range slotBuckets {
-			bucketNums = append(bucketNums, bucket)
-		}
-		slices.Sort(bucketNums)
-
-		// Display results with proper block ranges
-		for _, bucket := range bucketNums {
-			var rangeStr string
-			switch bucket {
-			case -1:
-				rangeStr = fmt.Sprintf("< %d", start)
-			case 0:
-				rangeStr = "Empty/Zero"
-			default:
-				bucketStart := start + uint64(bucket-1)*blockRange
-				bucketEnd := bucketStart + blockRange - 1
-				rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
-			}
-			count := slotBuckets[bucket]
-			table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
-			total += count
-		}
-		table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
-		table.Render()
-	}
-
-	buf := crypto.NewKeccakState()
-	periodCount := make(map[verkle.StatePeriod]int)
-	curGroup := make(map[uint256.Int]verkle.StatePeriod)
-	curAddr := common.Hash{}
-
-	prefix := rawdb.SnapshotStorageMetaPrefix
-	it := db.NewIterator(prefix, nil)
-	defer it.Release()
-	for it.Next() {
-		rawSlotKey := it.Key()
-		rawBlockNum := it.Value()
-
-		if len(rawSlotKey) != len(prefix)+2*common.HashLength {
-			continue
-		}
-
-		addrHash := common.BytesToHash(rawSlotKey[len(prefix) : len(prefix)+common.HashLength])
-		if !bytes.Equal(addrHash[:], curAddr[:]) { // we are on a new address
-			for _, period := range curGroup {
-				periodCount[period]++
-			}
-
-			curAddr = addrHash
-			curGroup = make(map[uint256.Int]verkle.StatePeriod)
-		}
-
-		slot := rawSlotKey[len(prefix)+common.HashLength : len(prefix)+2*common.HashLength]
-		slotBn := binary.BigEndian.Uint64(rawBlockNum)
-		slotPeriod := getPeriod(slotBn, start, periodLength)
-		uSlot := new(uint256.Int).SetBytes32(slot)
-
-		slotHash := crypto.HashData(buf, slot)
-
-		// Check if the main storge snapshot has this slot
-		has := rawdb.HasStorageSnapshot(db, addrHash, slotHash)
-		if !has {
-			logProgress()
-			if count%checkPoint == 0 {
-				log.Info("Checkpoint reached", "count", count, "addrHash", addrHash.Hex(), "slot", uSlot.String())
-				printResult(periodCount)
-			}
-			continue
-		}
-
-		group := getGroup(uSlot)
-		if prev, ok := curGroup[*group]; !ok {
-			curGroup[*group] = slotPeriod
-		} else if slotPeriod > prev {
-			curGroup[*group] = slotPeriod
-		}
-		addBucket(slotBn, slotBuckets)
-		logProgress()
-
-		if count%checkPoint == 0 {
-			log.Info("Checkpoint reached", "count", count, "addrHash", addrHash.Hex(), "slot", uSlot.String())
-			printResult(periodCount)
-		}
-	}
-
-	// Add the last group
-	for _, period := range curGroup {
-		periodCount[period]++
-	}
-
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Slot Period", "Stem Count"})
-	total := 0
-	// Create a sorted slice of periods
-	var periods []verkle.StatePeriod
-	for period := range periodCount {
-		periods = append(periods, period)
-	}
-	slices.Sort(periods)
-
-	for _, period := range periods {
-		count := periodCount[period]
-		table.Append([]string{fmt.Sprintf("%d", period), fmt.Sprintf("%d", count)})
-		total += count
-	}
-	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
-	table.Render()
-
-	// Display slot in block range
-	table = tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Block Range", "Slot Count"})
-	total = 0
-
-	// Get sorted bucket numbers
-	var bucketNums []int
-	for bucket := range slotBuckets {
-		bucketNums = append(bucketNums, bucket)
-	}
-	slices.Sort(bucketNums)
-
-	// Display results with proper block ranges
-	for _, bucket := range bucketNums {
-		var rangeStr string
-		switch bucket {
-		case -1:
-			rangeStr = fmt.Sprintf("< %d", start)
-		case 0:
-			rangeStr = "Empty/Zero"
-		default:
-			bucketStart := start + uint64(bucket-1)*blockRange
-			bucketEnd := bucketStart + blockRange - 1
-			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
-		}
-		count := slotBuckets[bucket]
-		table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
-		total += count
-	}
-	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
-	table.Render()
-
-	return nil
-}
-
-func turnSlottoHash(ctx *cli.Context) error {
-	stack, _ := makeConfigNode(ctx)
-	defer stack.Close()
-
-	db := utils.MakeChainDatabase(ctx, stack, false)
-	defer db.Close()
-
-	it := db.NewIterator(rawdb.SnapshotStorageMetaPrefix, nil)
-	defer it.Release()
-
-	count := 0
-	logged := time.Now()
-	startTime := time.Now()
-	logProgress := func() {
-		count++
-		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
-			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
-			logged = time.Now()
-		}
-	}
-
-	buf := crypto.NewKeccakState()
-	batch := db.NewBatch()
-	for it.Next() {
-		rawSlotKey := it.Key()
-		rawSlotValue := it.Value()
-		if len(rawSlotKey) != len(rawdb.SnapshotStorageMetaPrefix)+2*common.HashLength {
-			continue
-		}
-
-		addrHash := rawSlotKey[len(rawdb.SnapshotStorageMetaPrefix) : len(rawdb.SnapshotStorageMetaPrefix)+common.HashLength]
-		slot := common.BytesToHash(rawSlotKey[len(rawdb.SnapshotStorageMetaPrefix)+common.HashLength : len(rawdb.SnapshotStorageMetaPrefix)+2*common.HashLength])
-		slotHash := crypto.HashData(buf, slot[:])
-
-		slotKey := make([]byte, 0, len(rawdb.SnapshotStoragePrefix)+common.HashLength+2*common.HashLength)
-		slotKey = append(slotKey, rawdb.SnapshotStoragePrefix...)
-		slotKey = append(slotKey, addrHash...)
-		slotKey = append(slotKey, slotHash[:]...)
-		batch.Put(slotKey, rawSlotValue)
-
-		if batch.ValueSize() > 1*1024*1024*1024 {
-			log.Info("Writing batch", "size", batch.ValueSize())
-			if err := batch.Write(); err != nil {
-				return fmt.Errorf("failed to write batch: %v", err)
-			}
-			batch.Reset()
-		}
-
-		logProgress()
-	}
-
-	if batch.ValueSize() > 0 {
-		log.Info("Writing final batch", "size", batch.ValueSize())
-		if err := batch.Write(); err != nil {
-			return fmt.Errorf("failed to write batch: %v", err)
-		}
-	}
+	printResult(periodCount)
 
 	return nil
 }
