@@ -1104,10 +1104,9 @@ func accBucketsAnalysis(ctx *cli.Context) error {
 
 func slotBucketsAnalysis(ctx *cli.Context) error {
 	var start uint64
-	// blockRange := uint64(219000) // 1 month worth of blocks
-	// start = 17165429             // This is the starting block number of the node snapshot
-	blockRange := uint64(100000) // 1 month worth of blocks
-	start = 0                    // This is the starting block number of the node snapshot
+	blockRange := uint64(219000) // 1 month worth of blocks
+	start = 17165429             // This is the starting block number of the node snapshot
+	end := uint64(21000000)
 
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
@@ -1199,7 +1198,7 @@ func slotBucketsAnalysis(ctx *cli.Context) error {
 			rangeStr = "Empty/Zero"
 		default:
 			bucketStart := start + uint64(bucket-1)*blockRange
-			bucketEnd := bucketStart + blockRange - 1
+			bucketEnd := min(end, bucketStart+blockRange-1)
 			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
 		}
 		count := buckets[bucket]
