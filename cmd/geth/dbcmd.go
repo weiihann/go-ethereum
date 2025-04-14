@@ -1604,6 +1604,7 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 		// Check if the main storge snapshot has this slot
 		has := rawdb.HasStorageSnapshot(db, addrHash, slotHash)
 		if !has {
+			log.Warn("Slot not found", "addrHash", addrHash.Hex(), "slot", uSlot.String())
 			logProgress()
 			if count%checkPoint == 0 {
 				log.Info("Checkpoint reached", "count", count, "addrHash", addrHash.Hex(), "slot", uSlot.String())
