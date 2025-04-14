@@ -1567,17 +1567,19 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 	slotHashCache := fastcache.New(1 * 1024 * 1024 * 1024)
 	curGroup := make(map[uint256.Int]verkle.StatePeriod)
 	curAddr := common.Hash{}
-	it := db.NewIterator(rawdb.SnapshotStorageMetaPrefix, nil)
+
+	prefix := rawdb.SnapshotStorageMetaPrefix
+	it := db.NewIterator(prefix, nil)
 	defer it.Release()
 	for it.Next() {
 		rawSlotKey := it.Key()
 		rawBlockNum := it.Value()
 
-		if len(rawSlotKey) != len(rawdb.SnapshotStorageMetaPrefix)+2*common.HashLength {
+		if len(rawSlotKey) != len(prefix)+2*common.HashLength {
 			continue
 		}
 
-		addrHash := common.BytesToHash(rawSlotKey[len(rawdb.SnapshotStorageMetaPrefix) : len(rawdb.SnapshotStorageMetaPrefix)+common.HashLength])
+		addrHash := common.BytesToHash(rawSlotKey[len(prefix) : len(prefix)+common.HashLength])
 		if !bytes.Equal(addrHash[:], curAddr[:]) { // we are on a new address
 			for _, period := range curGroup {
 				periodCount[period]++
@@ -1587,7 +1589,7 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 			curGroup = make(map[uint256.Int]verkle.StatePeriod)
 		}
 
-		slot := rawSlotKey[len(rawdb.SnapshotStorageMetaPrefix)+common.HashLength : len(rawdb.SnapshotStorageMetaPrefix)+2*common.HashLength]
+		slot := rawSlotKey[len(prefix)+common.HashLength : len(prefix)+2*common.HashLength]
 		slotBn := binary.BigEndian.Uint64(rawBlockNum)
 		slotPeriod := getPeriod(slotBn, start, periodLength)
 		uSlot := new(uint256.Int).SetBytes32(slot)
@@ -1604,7 +1606,6 @@ func slotExpiryAnalysisV3(ctx *cli.Context) error {
 		// Check if the main storge snapshot has this slot
 		has := rawdb.HasStorageSnapshot(db, addrHash, slotHash)
 		if !has {
-			log.Warn("Slot not found", "addrHash", addrHash.Hex(), "slot", uSlot.String())
 			logProgress()
 			if count%checkPoint == 0 {
 				log.Info("Checkpoint reached", "count", count, "addrHash", addrHash.Hex(), "slot", uSlot.String())
