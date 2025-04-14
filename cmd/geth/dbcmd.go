@@ -84,6 +84,7 @@ Remove blockchain and state databases`,
 			dbExpiryAnalysisCmd,
 			dbAccExpiryAnalysisCmd,
 			dbAccBucketsAnalysisCmd,
+			dbSlotBucketsAnalysisCmd,
 			dbSlotExpiryAnalysisCmd,
 			dbSlotExpiryAnalysisV2Cmd,
 			dbSlotExpiryAnalysisV3Cmd,
@@ -153,6 +154,14 @@ Remove blockchain and state databases`,
 	dbAccBucketsAnalysisCmd = &cli.Command{
 		Action:      accBucketsAnalysis,
 		Name:        "acc-buckets",
+		ArgsUsage:   "",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "TODO: add this",
+		Description: `TODO: add description`,
+	}
+	dbSlotBucketsAnalysisCmd = &cli.Command{
+		Action:      slotBucketsAnalysis,
+		Name:        "slot-buckets",
 		ArgsUsage:   "",
 		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 		Usage:       "TODO: add this",
@@ -1005,6 +1014,7 @@ func accBucketsAnalysis(ctx *cli.Context) error {
 	var start uint64
 	blockRange := uint64(219000) // 1 month worth of blocks
 	start = 17165429             // This is the starting block number of the node snapshot
+	end := uint64(21000000)
 
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
@@ -1079,10 +1089,120 @@ func accBucketsAnalysis(ctx *cli.Context) error {
 			rangeStr = "Empty/Zero"
 		default:
 			bucketStart := start + uint64(bucket-1)*blockRange
-			bucketEnd := bucketStart + blockRange - 1
+			bucketEnd := min(end, bucketStart+blockRange-1)
 			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
 		}
 		count := accBuckets[bucket]
+		table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
+		total += count
+	}
+	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
+	table.Render()
+
+	return nil
+}
+
+func slotBucketsAnalysis(ctx *cli.Context) error {
+	var start uint64
+	// blockRange := uint64(219000) // 1 month worth of blocks
+	// start = 17165429             // This is the starting block number of the node snapshot
+	blockRange := uint64(100000) // 1 month worth of blocks
+	start = 0                    // This is the starting block number of the node snapshot
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	prefix := rawdb.SnapshotStorageMetaPrefix
+	it := db.NewIterator(prefix, nil)
+	defer it.Release()
+
+	buckets := make(map[int]int)
+	addBucket := func(bn uint64, buckets map[int]int) {
+		if bn == 0 {
+			buckets[0]++
+			return
+		}
+		if bn < start {
+			buckets[-1]++
+			return
+		}
+		bucket := int((bn-start)/blockRange) + 1
+		buckets[bucket]++
+	}
+
+	count := 0
+	logged := time.Now()
+	startTime := time.Now()
+	logProgress := func() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			logged = time.Now()
+		}
+	}
+
+	buf := crypto.NewKeccakState()
+	hashCache := fastcache.New(1 * 1024 * 1024 * 1024)
+	for it.Next() {
+		rawKey := it.Key()
+		rawBn := it.Value()
+
+		// ...So because we are using hash-based, where the hash node isn't prefixed,
+		// we might get some false positives here...
+		// Therefore, we need to ensure that the expected snapshot key length is correct.
+		if len(rawKey) != len(prefix)+2*common.HashLength {
+			continue
+		}
+
+		addrHash := common.BytesToHash(rawKey[len(prefix) : len(prefix)+common.HashLength])
+		slot := common.BytesToHash(rawKey[len(prefix)+common.HashLength : len(prefix)+2*common.HashLength])
+
+		var slotHash common.Hash
+		rawHash := hashCache.Get(nil, slot[:])
+		if len(rawHash) == 0 {
+			slotHash = crypto.HashData(buf, slot[:])
+			hashCache.Set(slot[:], slotHash[:])
+		} else {
+			slotHash = common.BytesToHash(rawHash)
+		}
+
+		has := rawdb.HasStorageSnapshot(db, addrHash, slotHash)
+		if has {
+			addBucket(binary.BigEndian.Uint64(rawBn), buckets)
+		}
+
+		logProgress()
+	}
+
+	// Display account in block range
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Block Range", "Slot Count"})
+	total := 0
+
+	// Get sorted bucket numbers
+	var bucketNums []int
+	for bucket := range buckets {
+		bucketNums = append(bucketNums, bucket)
+	}
+	slices.Sort(bucketNums)
+
+	// Display results with proper block ranges
+	for _, bucket := range bucketNums {
+		var rangeStr string
+		switch bucket {
+		case -1:
+			rangeStr = fmt.Sprintf("< %d", start)
+		case 0:
+			rangeStr = "Empty/Zero"
+		default:
+			bucketStart := start + uint64(bucket-1)*blockRange
+			bucketEnd := bucketStart + blockRange - 1
+			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
+		}
+		count := buckets[bucket]
 		table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
 		total += count
 	}
