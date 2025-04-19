@@ -575,11 +575,11 @@ func expiryAnalysis(ctx *cli.Context) error {
 	headNumber := head.Number.Uint64()
 
 	// Initialize data structures for analysis
-	accBuckets := make(map[int]int)
-	slotBuckets := make(map[int]int)
-	accPeriodCount := make(map[verkle.StatePeriod]int)
-	codePeriodCount := make(map[verkle.StatePeriod]int)
-	slotPeriodCount := make(map[verkle.StatePeriod]int)
+	accBuckets := make(map[int]*rawdb.Stat)
+	slotBuckets := make(map[int]*rawdb.Stat)
+	accPeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
+	codePeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
+	slotPeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
 
 	// Process accounts and their storage
 	processAccountsAndStorage(db, start, periodLength, blockRange, headNumber,
@@ -626,10 +626,11 @@ func parseExpiryAnalysisArgs(ctx *cli.Context) (start, periodLength, blockRange 
 
 // processAccountsAndStorage processes all accounts and their storage slots
 func processAccountsAndStorage(db ethdb.Database, start, periodLength, blockRange, headNumber uint64,
-	accBuckets, slotBuckets map[int]int,
-	accPeriodCount, codePeriodCount, slotPeriodCount map[verkle.StatePeriod]int,
+	accBuckets, slotBuckets map[int]*rawdb.Stat,
+	accPeriodCount, codePeriodCount, slotPeriodCount map[verkle.StatePeriod]*rawdb.Stat,
 ) {
 	// Initialize progress tracking
+	checkpoint := 100000000
 	count := 0
 	logged := time.Now()
 	startTime := time.Now()
@@ -638,6 +639,14 @@ func processAccountsAndStorage(db ethdb.Database, start, periodLength, blockRang
 		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
 			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
 			logged = time.Now()
+		}
+
+		if count%checkpoint == 0 {
+			renderPeriodCountTable("Account Period", accPeriodCount)
+			renderPeriodCountTable("Code Period", codePeriodCount)
+			renderPeriodCountTable("Slot Period", slotPeriodCount)
+			renderBucketTable("Account", accBuckets, start, blockRange, headNumber)
+			renderBucketTable("Slot", slotBuckets, start, blockRange, headNumber)
 		}
 	}
 
@@ -653,6 +662,7 @@ func processAccountsAndStorage(db ethdb.Database, start, periodLength, blockRang
 	for accIt.Next() {
 		rawAccKey := accIt.Key()
 		rawAccVal := accIt.Value()
+		bVal := common.StorageSize(len(rawAccVal))
 
 		if len(rawAccKey) != len(accPrefix)+common.HashLength {
 			continue
@@ -674,29 +684,44 @@ func processAccountsAndStorage(db ethdb.Database, start, periodLength, blockRang
 		if !bytes.Equal(acc.CodeHash, types.EmptyCodeHash[:]) {
 			code := rawdb.ReadCode(db, common.BytesToHash(acc.CodeHash))
 			codeStems := getCodeStem(addrPoint, code)
-			for range codeStems {
-				codePeriodCount[accPeriod]++
+			for _, chunk := range codeStems {
+				if _, ok := codePeriodCount[accPeriod]; !ok {
+					codePeriodCount[accPeriod] = new(rawdb.Stat)
+				}
+				codePeriodCount[accPeriod].Add(common.StorageSize(len(chunk)))
 			}
 		}
 
 		// Add account to bucket
-		addBucket(addrBn, accBuckets, start, blockRange)
+		addBucket(addrBn, bVal, accBuckets, start, blockRange)
 
 		// Process storage slots
-		curGroup := processStorageSlots(db, addrHash, start, periodLength, blockRange, slotBuckets, hashCache, buf, logProgress)
+		groupPeriod, groupStat := processStorageSlots(db, addrHash, start, periodLength, blockRange, slotBuckets, hashCache, buf, logProgress)
 
 		// Update period counts
-		for _, period := range curGroup {
-			slotPeriodCount[period]++
-		}
-
-		// The first 64 slots are included in the account header stems
 		group0 := new(uint256.Int).SetUint64(0)
-		if period, ok := curGroup[*group0]; ok && period > accPeriod {
-			accPeriod = period
+		for group, period := range groupPeriod {
+			if group.Eq(group0) { // The first 64 slots are included in the account header stems
+				continue
+			}
+			if _, ok := slotPeriodCount[period]; !ok {
+				slotPeriodCount[period] = new(rawdb.Stat)
+			}
+			slotPeriodCount[period].Add(groupStat[group].RawSize())
 		}
 
-		accPeriodCount[accPeriod]++
+		gp, hasGroup := groupPeriod[*group0]
+		if hasGroup && gp > accPeriod {
+			accPeriod = gp
+		}
+
+		if _, ok := accPeriodCount[accPeriod]; !ok {
+			accPeriodCount[accPeriod] = new(rawdb.Stat)
+		}
+		accPeriodCount[accPeriod].Add(bVal)
+		if hasGroup {
+			accPeriodCount[gp].AddSize(groupStat[*group0].RawSize())
+		}
 		logProgress()
 	}
 }
@@ -720,10 +745,11 @@ func processAccount(db ethdb.Database, rawAccKey, rawAccVal []byte, accPrefix []
 
 // processStorageSlots processes all storage slots for an account
 func processStorageSlots(db ethdb.Database, addrHash common.Hash, start, periodLength, blockRange uint64,
-	slotBuckets map[int]int, hashCache *fastcache.Cache, buf crypto.KeccakState,
+	slotBuckets map[int]*rawdb.Stat, hashCache *fastcache.Cache, buf crypto.KeccakState,
 	logProgress func(),
-) map[uint256.Int]verkle.StatePeriod {
-	curGroup := make(map[uint256.Int]verkle.StatePeriod)
+) (map[uint256.Int]verkle.StatePeriod, map[uint256.Int]*rawdb.Stat) {
+	groupPeriod := make(map[uint256.Int]verkle.StatePeriod)
+	groupStat := make(map[uint256.Int]*rawdb.Stat)
 
 	stPrefix := rawdb.SnapshotStorageMetaPrefix
 	stIt := db.NewIterator(append(stPrefix, addrHash.Bytes()...), nil)
@@ -753,53 +779,52 @@ func processStorageSlots(db ethdb.Database, addrHash common.Hash, start, periodL
 		}
 
 		// Check if the main storage snapshot has this slot
-		has := rawdb.HasStorageSnapshot(db, addrHash, slotHash)
-		if !has {
+		slotVal := rawdb.ReadStorageSnapshot(db, addrHash, slotHash)
+		if len(slotVal) == 0 {
 			logProgress()
 			continue
 		}
+		bVal := common.StorageSize(len(slotVal))
 
-		addBucket(slotBn, slotBuckets, start, blockRange)
+		addBucket(slotBn, bVal, slotBuckets, start, blockRange)
 
 		group := getGroup(uSlot)
-		if prev, ok := curGroup[*group]; !ok {
-			curGroup[*group] = slotPeriod
+		if prev, ok := groupPeriod[*group]; !ok {
+			groupPeriod[*group] = slotPeriod
 		} else if slotPeriod > prev {
-			curGroup[*group] = slotPeriod
+			groupPeriod[*group] = slotPeriod
 		}
+
+		if _, ok := groupStat[*group]; !ok {
+			groupStat[*group] = &rawdb.Stat{}
+		}
+		groupStat[*group].Add(bVal)
 
 		logProgress()
 	}
 
-	return curGroup
+	return groupPeriod, groupStat
 }
 
 // addBucket adds a block number to the appropriate bucket
-func addBucket(bn uint64, buckets map[int]int, start, blockRange uint64) {
+func addBucket(bn uint64, val common.StorageSize, buckets map[int]*rawdb.Stat, start, blockRange uint64) {
+	var bucket int
 	if bn == 0 {
-		buckets[0]++
-		return
+		bucket = 0
+	} else if bn < start {
+		bucket = -1
+	} else {
+		bucket = int((bn-start)/blockRange) + 1
 	}
-	if bn < start {
-		buckets[-1]++
-		return
+	if buckets[bucket] == nil {
+		buckets[bucket] = new(rawdb.Stat)
 	}
-	bucket := int((bn-start)/blockRange) + 1
-	buckets[bucket]++
-}
 
-// getSortedPeriods returns a sorted slice of periods
-func getSortedPeriods(periodCount map[verkle.StatePeriod]int) []verkle.StatePeriod {
-	var periods []verkle.StatePeriod
-	for period := range periodCount {
-		periods = append(periods, period)
-	}
-	slices.Sort(periods)
-	return periods
+	buckets[bucket].Add(val)
 }
 
 // renderPeriodCountTable renders a table showing period counts
-func renderPeriodCountTable(title string, periodCount map[verkle.StatePeriod]int) {
+func renderPeriodCountTable(title string, periodCount map[verkle.StatePeriod]*rawdb.Stat) {
 	var periods []verkle.StatePeriod
 	for period := range periodCount {
 		periods = append(periods, period)
@@ -807,23 +832,23 @@ func renderPeriodCountTable(title string, periodCount map[verkle.StatePeriod]int
 	slices.Sort(periods)
 
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{title, "Stem Count"})
-	total := 0
+	table.SetHeader([]string{title, "Stem Count", "Size"})
+	total := new(rawdb.Stat)
 
 	for _, period := range periods {
 		count := periodCount[period]
-		table.Append([]string{fmt.Sprintf("%d", period), fmt.Sprintf("%d", count)})
-		total += count
+		table.Append([]string{fmt.Sprintf("%d", period), count.Count(), count.Size()})
+		total.Merge(count)
 	}
-	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
+	table.SetFooter([]string{"Total", total.Count(), total.Size()})
 	table.Render()
 }
 
 // renderBucketTable renders a table showing bucket counts
-func renderBucketTable(title string, buckets map[int]int, start, blockRange, headNumber uint64) {
+func renderBucketTable(title string, buckets map[int]*rawdb.Stat, start, blockRange, headNumber uint64) {
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Block Range", title + " Count"})
-	total := 0
+	table.SetHeader([]string{"Block Range", title + " Count", "Size"})
+	total := new(rawdb.Stat)
 
 	// Get sorted bucket numbers
 	var bucketNums []int
@@ -847,10 +872,10 @@ func renderBucketTable(title string, buckets map[int]int, start, blockRange, hea
 			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
 		}
 		count := buckets[bucket]
-		table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
-		total += count
+		table.Append([]string{rangeStr, count.Count(), count.Size()})
+		total.Merge(count)
 	}
-	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
+	table.SetFooter([]string{"Total", total.Count(), total.Size()})
 	table.Render()
 }
 
