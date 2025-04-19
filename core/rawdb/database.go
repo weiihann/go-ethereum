@@ -329,23 +329,36 @@ func (c counter) Percentage(current uint64) string {
 }
 
 // stat stores sizes and count for a parameter
-type stat struct {
+type Stat struct {
 	size  common.StorageSize
 	count counter
 }
 
 // Add size to the stat and increase the counter by 1
-func (s *stat) Add(size common.StorageSize) {
+func (s *Stat) Add(size common.StorageSize) {
 	s.size += size
 	s.count++
 }
 
-func (s *stat) Size() string {
+func (s *Stat) AddSize(size common.StorageSize) {
+	s.size += size
+}
+
+func (s *Stat) RawSize() common.StorageSize {
+	return s.size
+}
+
+func (s *Stat) Size() string {
 	return s.size.String()
 }
 
-func (s *stat) Count() string {
+func (s *Stat) Count() string {
 	return s.count.String()
+}
+
+func (s *Stat) Merge(other *Stat) {
+	s.size += other.size
+	s.count += other.count
 }
 
 // InspectDatabase traverses the entire database and checks the size
@@ -360,38 +373,38 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		logged = time.Now()
 
 		// Key-value store statistics
-		headers         stat
-		bodies          stat
-		receipts        stat
-		tds             stat
-		numHashPairings stat
-		hashNumPairings stat
-		legacyTries     stat
-		stateLookups    stat
-		accountTries    stat
-		storageTries    stat
-		codes           stat
-		txLookups       stat
-		accountSnaps    stat
-		storageSnaps    stat
-		accountMeta     stat
-		storageMeta     stat
-		preimages       stat
-		bloomBits       stat
-		beaconHeaders   stat
-		cliqueSnaps     stat
+		headers         Stat
+		bodies          Stat
+		receipts        Stat
+		tds             Stat
+		numHashPairings Stat
+		hashNumPairings Stat
+		legacyTries     Stat
+		stateLookups    Stat
+		accountTries    Stat
+		storageTries    Stat
+		codes           Stat
+		txLookups       Stat
+		accountSnaps    Stat
+		storageSnaps    Stat
+		accountMeta     Stat
+		storageMeta     Stat
+		preimages       Stat
+		bloomBits       Stat
+		beaconHeaders   Stat
+		cliqueSnaps     Stat
 
 		// Verkle statistics
-		verkleTries        stat
-		verkleStateLookups stat
+		verkleTries        Stat
+		verkleStateLookups Stat
 
 		// Les statistic
-		chtTrieNodes   stat
-		bloomTrieNodes stat
+		chtTrieNodes   Stat
+		bloomTrieNodes Stat
 
 		// Meta- and unaccounted data
-		metadata    stat
-		unaccounted stat
+		metadata    Stat
+		unaccounted Stat
 
 		// Totals
 		total common.StorageSize
