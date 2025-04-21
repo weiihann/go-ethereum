@@ -134,7 +134,7 @@ func (t *TransitionTrie) DeleteAccount(key common.Address) error {
 // Hash returns the root hash of the trie. It does not write to the database and
 // can be used even if the trie doesn't have one.
 func (t *TransitionTrie) Hash() common.Hash {
-	fmt.Println("TransitionTrie.Hash")
+	// fmt.Println("TransitionTrie.Hash")
 	return t.overlay.Hash()
 }
 
