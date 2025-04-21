@@ -295,6 +295,7 @@ type ChainOverrides struct {
 	OverrideCancun        *uint64
 	OverrideVerkle        *uint64
 	OverrideStateExpiry   *uint64
+	OverrideStateExpiryPeriod *uint64
 	OverrideProofInBlock  *bool
 	OverrideOverlayStride *uint64
 }
@@ -330,6 +331,9 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *trie.Database, gen
 			}
 			if overrides != nil && overrides.OverrideStateExpiry != nil {
 				config.StateExpiryTime = overrides.OverrideStateExpiry
+			}
+			if overrides != nil && overrides.OverrideStateExpiryPeriod != nil {
+				config.StateExpiryPeriod = overrides.OverrideStateExpiryPeriod
 			}
 		}
 	}

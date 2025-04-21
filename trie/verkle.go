@@ -241,7 +241,7 @@ func (trie *VerkleTrie) DeleteStorage(addr common.Address, key []byte) error {
 // Hash returns the root hash of the trie. It does not write to the database and
 // can be used even if the trie doesn't have one.
 func (trie *VerkleTrie) Hash() common.Hash {
-	fmt.Println("VerkleTrie.Hash")
+	// fmt.Println("VerkleTrie.Hash")
 	return trie.root.Commit().Bytes()
 }
 
@@ -312,7 +312,7 @@ func (trie *VerkleTrie) SetPeriod(period verkle.StatePeriod) {
 }
 
 func ProveAndSerialize(pretrie, posttrie *VerkleTrie, keys [][]byte, resolver verkle.NodeResolverFn) (*verkle.VerkleProof, verkle.StateDiff, error) {
-	fmt.Println("ProveAndSerialize")
+	// fmt.Println("ProveAndSerialize")
 	var postroot verkle.VerkleNode
 	if posttrie != nil {
 		postroot = posttrie.root
