@@ -37,8 +37,8 @@ func TestBurn(t *testing.T) {
 	// 2. contract A is destructed
 	// 3. contract B sends ether to A
 
-	var burned = new(uint256.Int)
-	s, _ := New(types.EmptyRootHash, NewDatabaseForTesting())
+	burned := new(uint256.Int)
+	s, _ := New(types.EmptyRootHash, NewDatabaseForTesting(), 0)
 	hooked := NewHookedState(s, &tracing.Hooks{
 		OnBalanceChange: func(addr common.Address, prev, new *big.Int, reason tracing.BalanceChangeReason) {
 			if reason == tracing.BalanceDecreaseSelfdestructBurn {
@@ -79,10 +79,10 @@ func TestBurn(t *testing.T) {
 
 // TestHooks is a basic sanity-check of all hooks
 func TestHooks(t *testing.T) {
-	inner, _ := New(types.EmptyRootHash, NewDatabaseForTesting())
+	inner, _ := New(types.EmptyRootHash, NewDatabaseForTesting(), 0)
 	inner.SetTxContext(common.Hash{0x11}, 100) // For the log
 	var result []string
-	var wants = []string{
+	wants := []string{
 		"0xaa00000000000000000000000000000000000000.balance: 0->100 (Unspecified)",
 		"0xaa00000000000000000000000000000000000000.balance: 100->50 (Transfer)",
 		"0xaa00000000000000000000000000000000000000.nonce: 0->1337",

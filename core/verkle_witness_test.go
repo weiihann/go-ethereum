@@ -172,7 +172,8 @@ func TestProcessVerkle(t *testing.T) {
 
 		// Add two contract creations in block #2
 		if i == 1 {
-			tx, _ = types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 6,
+			tx, _ = types.SignNewTx(testKey, signer, &types.LegacyTx{
+				Nonce:    6,
 				Value:    big.NewInt(16),
 				Gas:      3000000,
 				GasPrice: big.NewInt(875000000),
@@ -180,7 +181,8 @@ func TestProcessVerkle(t *testing.T) {
 			})
 			gen.AddTx(tx)
 
-			tx, _ = types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 7,
+			tx, _ = types.SignNewTx(testKey, signer, &types.LegacyTx{
+				Nonce:    7,
 				Value:    big.NewInt(0),
 				Gas:      3000000,
 				GasPrice: big.NewInt(875000000),
@@ -191,11 +193,11 @@ func TestProcessVerkle(t *testing.T) {
 	})
 
 	// Check proof for both blocks
-	err := verkle.Verify(proofs[0], gspec.ToBlock().Root().Bytes(), chain[0].Root().Bytes(), statediffs[0])
+	err := verkle.Verify(proofs[0], gspec.ToBlock().Root().Bytes(), chain[0].Root().Bytes(), statediffs[0], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = verkle.Verify(proofs[1], chain[0].Root().Bytes(), chain[1].Root().Bytes(), statediffs[1])
+	err = verkle.Verify(proofs[1], chain[0].Root().Bytes(), chain[1].Root().Bytes(), statediffs[1], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +232,7 @@ func TestProcessParentBlockHash(t *testing.T) {
 		statedb.SetNonce(params.HistoryStorageAddress, 1, tracing.NonceChangeUnspecified)
 		statedb.SetCode(params.HistoryStorageAddress, params.HistoryStorageCode)
 		// Process n blocks, from 1 .. num
-		var num = 2
+		num := 2
 		for i := 1; i <= num; i++ {
 			header := &types.Header{ParentHash: common.Hash{byte(i)}, Number: big.NewInt(int64(i)), Difficulty: new(big.Int)}
 			chainConfig := params.MergedTestChainConfig
@@ -250,7 +252,7 @@ func TestProcessParentBlockHash(t *testing.T) {
 		}
 	}
 	t.Run("MPT", func(t *testing.T) {
-		statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+		statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 		checkBlockHashes(statedb, false)
 	})
 	t.Run("Verkle", func(t *testing.T) {
@@ -258,7 +260,7 @@ func TestProcessParentBlockHash(t *testing.T) {
 		cacheConfig := DefaultCacheConfigWithScheme(rawdb.PathScheme)
 		cacheConfig.SnapshotLimit = 0
 		triedb := triedb.NewDatabase(db, cacheConfig.triedbConfig(true))
-		statedb, _ := state.New(types.EmptyVerkleHash, state.NewDatabase(triedb, nil))
+		statedb, _ := state.New(types.EmptyVerkleHash, state.NewDatabase(triedb, nil), 0)
 		checkBlockHashes(statedb, true)
 	})
 }
@@ -305,14 +307,14 @@ func TestProcessVerkleInvalidContractCreation(t *testing.T) {
 				// this one is a simple transfer that succeeds, necessary to get the correct nonce in the other block.
 				"f8e80184479c2c18830186a094bbbbde4ca27f83fc18aa108170547ff57675936a80b8807ff71f7c15faadb969a76a5f54a81a0117e1e743cb7f24e378eda28442ea4c6eb6604a527fb5409e5718d44e23bfffac926e5ea726067f772772e7e19446acba0c853f62f5606a526020608a536088608b536039608c536004608d5360af608e537f7f7675d9f210e0a61564e6d11e7cd75f5bc9009ac9f6b94a0fc63035441a83021e7ba04a4a172d81ebb02847829b76a387ac09749c8b65668083699abe20c887fb9efca07c5b1a990702ec7b31a5e8e3935cd9a77649f8c25a84131229e24ab61aec6093",
 			} {
-				var tx = new(types.Transaction)
+				tx := new(types.Transaction)
 				if err := tx.UnmarshalBinary(common.Hex2Bytes(rlpData)); err != nil {
 					t.Fatal(err)
 				}
 				gen.AddTx(tx)
 			}
 		} else {
-			var tx = new(types.Transaction)
+			tx := new(types.Transaction)
 			// immediately reverts
 			if err := tx.UnmarshalBinary(common.Hex2Bytes("01f8d683010f2c028443ad7d0e830186a08080b880b00e7fa3c849dce891cce5fae8a4c46cbb313d6aec0c0ffe7863e05fb7b22d4807674c6055527ffbfcb0938f3e18f7937aa8fa95d880afebd5c4cec0d85186095832d03c85cf8a60755260ab60955360cf6096536066609753606e60985360fa609953609e609a53608e609b536024609c5360f6609d536072609e5360a4609fc080a08fc6f7101f292ff1fb0de8ac69c2d320fbb23bfe61cf327173786ea5daee6e37a044c42d91838ef06646294bf4f9835588aee66243b16a66a2da37641fae4c045f")); err != nil {
 				t.Fatal(err)
@@ -551,7 +553,8 @@ func TestProcessVerkleExtCodeHashOpcode(t *testing.T) {
 
 		if i == 0 {
 			// Create dummy contract.
-			tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 0,
+			tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{
+				Nonce:    0,
 				Value:    big.NewInt(0),
 				Gas:      100_000,
 				GasPrice: big.NewInt(875000000),
@@ -560,11 +563,13 @@ func TestProcessVerkleExtCodeHashOpcode(t *testing.T) {
 			gen.AddTx(tx)
 
 			// Create contract with EXTCODEHASH opcode.
-			tx, _ = types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 1,
+			tx, _ = types.SignNewTx(testKey, signer, &types.LegacyTx{
+				Nonce:    1,
 				Value:    big.NewInt(0),
 				Gas:      100_000,
 				GasPrice: big.NewInt(875000000),
-				Data:     extCodeHashContract})
+				Data:     extCodeHashContract,
+			})
 			gen.AddTx(tx)
 		} else {
 			tx, _ := types.SignTx(types.NewTransaction(2, extCodeHashContractAddr, big.NewInt(0), 100_000, big.NewInt(875000000), nil), signer, testKey)
@@ -574,7 +579,7 @@ func TestProcessVerkleExtCodeHashOpcode(t *testing.T) {
 
 	contractKeccakTreeKey := utils.CodeHashKey(dummyContractAddr[:])
 
-	var stateDiffIdx = -1
+	stateDiffIdx := -1
 	for i, stemStateDiff := range statediffs[1] {
 		if bytes.Equal(stemStateDiff.Stem[:], contractKeccakTreeKey[:31]) {
 			stateDiffIdx = i
@@ -626,17 +631,19 @@ func TestProcessVerkleBalanceOpcode(t *testing.T) {
 			common.HexToAddress("0x6177843db3138ae69679A54b95cf345ED759450d").Bytes(),
 			[]byte{byte(vm.BALANCE)})
 
-		tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 0,
+		tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{
+			Nonce:    0,
 			Value:    big.NewInt(0),
 			Gas:      100_000,
 			GasPrice: big.NewInt(875000000),
-			Data:     txData})
+			Data:     txData,
+		})
 		gen.AddTx(tx)
 	})
 
 	account2BalanceTreeKey := utils.BasicDataKey(account2[:])
 
-	var stateDiffIdx = -1
+	stateDiffIdx := -1
 	for i, stemStateDiff := range statediffs[0] {
 		if bytes.Equal(stemStateDiff.Stem[:], account2BalanceTreeKey[:31]) {
 			stateDiffIdx = i
@@ -683,7 +690,7 @@ func TestProcessVerkleSelfDestructInSeparateTx(t *testing.T) {
 		account2.Bytes(),
 		[]byte{byte(vm.SELFDESTRUCT)})
 
-	//The goal of this test is to test SELFDESTRUCT that happens in a contract
+	// The goal of this test is to test SELFDESTRUCT that happens in a contract
 	// execution which is created in a previous transaction.
 	selfDestructContract := slices.Concat([]byte{
 		byte(vm.PUSH1), byte(len(runtimeCode)),
@@ -705,7 +712,8 @@ func TestProcessVerkleSelfDestructInSeparateTx(t *testing.T) {
 
 		if i == 0 {
 			// Create selfdestruct contract, sending 42 wei.
-			tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 0,
+			tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{
+				Nonce:    0,
 				Value:    big.NewInt(42),
 				Gas:      100_000,
 				GasPrice: big.NewInt(875000000),
@@ -723,7 +731,7 @@ func TestProcessVerkleSelfDestructInSeparateTx(t *testing.T) {
 	{ // Check self-destructed contract in the witness
 		selfDestructContractTreeKey := utils.CodeHashKey(contract[:])
 
-		var stateDiffIdx = -1
+		stateDiffIdx := -1
 		for i, stemStateDiff := range statediffs[1] {
 			if bytes.Equal(stemStateDiff.Stem[:], selfDestructContractTreeKey[:31]) {
 				stateDiffIdx = i
@@ -754,7 +762,7 @@ func TestProcessVerkleSelfDestructInSeparateTx(t *testing.T) {
 	{ // Check self-destructed target in the witness.
 		selfDestructTargetTreeKey := utils.CodeHashKey(account2[:])
 
-		var stateDiffIdx = -1
+		stateDiffIdx := -1
 		for i, stemStateDiff := range statediffs[1] {
 			if bytes.Equal(stemStateDiff.Stem[:], selfDestructTargetTreeKey[:31]) {
 				stateDiffIdx = i
@@ -810,7 +818,8 @@ func TestProcessVerkleSelfDestructInSameTx(t *testing.T) {
 
 	_, _, _, _, _, statediffs := GenerateVerkleChainWithGenesis(gspec, beacon.New(ethash.NewFaker()), 1, func(i int, gen *BlockGen) {
 		gen.SetPoS()
-		tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 0,
+		tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{
+			Nonce:    0,
 			Value:    big.NewInt(42),
 			Gas:      100_000,
 			GasPrice: big.NewInt(875000000),
@@ -822,7 +831,7 @@ func TestProcessVerkleSelfDestructInSameTx(t *testing.T) {
 	{ // Check self-destructed contract in the witness
 		selfDestructContractTreeKey := utils.CodeHashKey(contract[:])
 
-		var stateDiffIdx = -1
+		stateDiffIdx := -1
 		for i, stemStateDiff := range statediffs[0] {
 			if bytes.Equal(stemStateDiff.Stem[:], selfDestructContractTreeKey[:31]) {
 				stateDiffIdx = i
@@ -849,7 +858,7 @@ func TestProcessVerkleSelfDestructInSameTx(t *testing.T) {
 	{ // Check self-destructed target in the witness.
 		selfDestructTargetTreeKey := utils.CodeHashKey(account2[:])
 
-		var stateDiffIdx = -1
+		stateDiffIdx := -1
 		for i, stemStateDiff := range statediffs[0] {
 			if bytes.Equal(stemStateDiff.Stem[:], selfDestructTargetTreeKey[:31]) {
 				stateDiffIdx = i
@@ -915,7 +924,8 @@ func TestProcessVerkleSelfDestructInSeparateTxWithSelfBeneficiary(t *testing.T) 
 		gen.SetPoS()
 		if i == 0 {
 			// Create self-destruct contract, sending 42 wei.
-			tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 0,
+			tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{
+				Nonce:    0,
 				Value:    big.NewInt(42),
 				Gas:      100_000,
 				GasPrice: big.NewInt(875000000),
@@ -937,7 +947,7 @@ func TestProcessVerkleSelfDestructInSeparateTxWithSelfBeneficiary(t *testing.T) 
 
 		selfDestructContractTreeKey := utils.CodeHashKey(contract[:])
 
-		var stateDiffIdx = -1
+		stateDiffIdx := -1
 		for i, stemStateDiff := range statediffs[1] {
 			if bytes.Equal(stemStateDiff.Stem[:], selfDestructContractTreeKey[:31]) {
 				stateDiffIdx = i
@@ -993,7 +1003,8 @@ func TestProcessVerkleSelfDestructInSameTxWithSelfBeneficiary(t *testing.T) {
 
 	_, _, _, _, _, stateDiffs := GenerateVerkleChainWithGenesis(gspec, beacon.New(ethash.NewFaker()), 1, func(i int, gen *BlockGen) {
 		gen.SetPoS()
-		tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 0,
+		tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{
+			Nonce:    0,
 			Value:    big.NewInt(42),
 			Gas:      100_000,
 			GasPrice: big.NewInt(875000000),
@@ -1006,7 +1017,7 @@ func TestProcessVerkleSelfDestructInSameTxWithSelfBeneficiary(t *testing.T) {
 	{ // Check self-destructed contract in the witness
 		selfDestructContractTreeKey := utils.CodeHashKey(contract[:])
 
-		var stateDiffIdx = -1
+		stateDiffIdx := -1
 		for i, stemStateDiff := range stateDiff {
 			if bytes.Equal(stemStateDiff.Stem[:], selfDestructContractTreeKey[:31]) {
 				stateDiffIdx = i
@@ -1059,7 +1070,8 @@ func TestProcessVerkleSelfDestructInSameTxWithSelfBeneficiaryAndPrefundedAccount
 
 	_, _, _, _, _, stateDiffs := GenerateVerkleChainWithGenesis(gspec, beacon.New(ethash.NewFaker()), 1, func(i int, gen *BlockGen) {
 		gen.SetPoS()
-		tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{Nonce: 0,
+		tx, _ := types.SignNewTx(testKey, signer, &types.LegacyTx{
+			Nonce:    0,
 			Value:    big.NewInt(42),
 			Gas:      100_000,
 			GasPrice: big.NewInt(875000000),
@@ -1072,7 +1084,7 @@ func TestProcessVerkleSelfDestructInSameTxWithSelfBeneficiaryAndPrefundedAccount
 	{ // Check self-destructed contract in the witness
 		selfDestructContractTreeKey := utils.CodeHashKey(contract[:])
 
-		var stateDiffIdx = -1
+		stateDiffIdx := -1
 		for i, stemStateDiff := range stateDiff {
 			if bytes.Equal(stemStateDiff.Stem[:], selfDestructContractTreeKey[:31]) {
 				stateDiffIdx = i

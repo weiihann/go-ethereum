@@ -117,7 +117,7 @@ func TestDiskMerge(t *testing.T) {
 	base.Storage(conNukeCache, conNukeCacheSlot)
 
 	// Modify or delete some accounts, flatten everything onto disk
-	if err := snaps.Update(diffRoot, baseRoot,
+	if err := snaps.Update(diffRoot, 0, baseRoot,
 		map[common.Hash][]byte{
 			accDelNoCache:  nil,
 			accDelCache:    nil,
@@ -342,7 +342,7 @@ func TestDiskPartialMerge(t *testing.T) {
 		assertStorage(conNukeCache, conNukeCacheSlot, conNukeCacheSlot[:])
 
 		// Modify or delete some accounts, flatten everything onto disk
-		if err := snaps.Update(diffRoot, baseRoot,
+		if err := snaps.Update(diffRoot, 0, baseRoot,
 			map[common.Hash][]byte{
 				accDelNoCache:  nil,
 				accDelCache:    nil,
@@ -471,7 +471,7 @@ func TestDiskGeneratorPersistence(t *testing.T) {
 		},
 	}
 	// Modify or delete some accounts, flatten everything onto disk
-	if err := snaps.Update(diffRoot, baseRoot,
+	if err := snaps.Update(diffRoot, 0, baseRoot,
 		map[common.Hash][]byte{
 			accTwo: accTwo[:],
 		}, nil,
@@ -491,7 +491,7 @@ func TestDiskGeneratorPersistence(t *testing.T) {
 	}
 	// Test scenario 2, the disk layer is fully generated
 	// Modify or delete some accounts, flatten everything onto disk
-	if err := snaps.Update(diffTwoRoot, diffRoot,
+	if err := snaps.Update(diffTwoRoot, 0, diffRoot,
 		map[common.Hash][]byte{
 			accThree: accThree.Bytes(),
 		},
@@ -557,7 +557,7 @@ func TestDiskSeek(t *testing.T) {
 		pos    byte
 		expkey byte
 	}
-	var cases = []testcase{
+	cases := []testcase{
 		{0xff, 0x55}, // this should exit immediately without checking key
 		{0x01, 0x02},
 		{0xfe, 0xfe},

@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/signal"
@@ -28,9 +29,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	// "github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/console/prompt"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -40,7 +43,10 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
+	trieutils "github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/ethereum/go-ethereum/triedb"
+	"github.com/ethereum/go-verkle"
+	"github.com/holiman/uint256"
 	"github.com/olekukonko/tablewriter"
 	"github.com/urfave/cli/v2"
 )
@@ -71,6 +77,13 @@ Remove blockchain and state databases`,
 		ArgsUsage: "",
 		Subcommands: []*cli.Command{
 			dbInspectCmd,
+			dbCheckMetaCmd,
+			dbDebugSnapshotAccCmd,
+			dbExpiryAnalysisCmd,
+			dbAccExpiryAnalysisCmd,
+			dbAccBucketsAnalysisCmd,
+			dbSlotBucketsAnalysisCmd,
+			dbSlotExpiryAnalysisCmd,
 			dbStatCmd,
 			dbCompactCmd,
 			dbGetCmd,
@@ -94,6 +107,66 @@ Remove blockchain and state databases`,
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Usage:       "Inspect the storage size for each type of data in the database",
 		Description: `This commands iterates the entire database. If the optional 'prefix' and 'start' arguments are provided, then the iteration is limited to the given subset of data.`,
+	}
+	dbCheckMetaCmd = &cli.Command{
+		Action:    checkMeta,
+		Name:      "check-meta",
+		ArgsUsage: "",
+		Flags: slices.Concat([]cli.Flag{
+			utils.SyncModeFlag,
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "Check the meta data of the database",
+		Description: `TODO: add description`,
+	}
+	dbDebugSnapshotAccCmd = &cli.Command{
+		Action:    debugSnapshotAcc,
+		Name:      "debug-acc",
+		ArgsUsage: "",
+		Flags: slices.Concat([]cli.Flag{
+			utils.SyncModeFlag,
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "Check the meta data of the database",
+		Description: `TODO: add description`,
+	}
+	dbExpiryAnalysisCmd = &cli.Command{
+		Action:      expiryAnalysis,
+		Name:        "expiry",
+		ArgsUsage:   "<start> <periodLength> <blockRange>",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "TODO: add this",
+		Description: `TODO: add description`,
+	}
+	dbAccExpiryAnalysisCmd = &cli.Command{
+		Action:      accExpiryAnalysis,
+		Name:        "acc-expiry",
+		ArgsUsage:   "<start> <periodLength> <blockRange>",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "TODO: add this",
+		Description: `TODO: add description`,
+	}
+	dbAccBucketsAnalysisCmd = &cli.Command{
+		Action:      accBucketsAnalysis,
+		Name:        "acc-buckets",
+		ArgsUsage:   "",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "TODO: add this",
+		Description: `TODO: add description`,
+	}
+	dbSlotBucketsAnalysisCmd = &cli.Command{
+		Action:      slotBucketsAnalysis,
+		Name:        "slot-buckets",
+		ArgsUsage:   "",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "TODO: add this",
+		Description: `TODO: add description`,
+	}
+	dbSlotExpiryAnalysisCmd = &cli.Command{
+		Action:      slotExpiryAnalysis,
+		Name:        "slot-expiry",
+		ArgsUsage:   "<start> <periodLength>",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "TODO: add this",
+		Description: `TODO: add description`,
 	}
 	dbCheckStateContentCmd = &cli.Command{
 		Action:    checkStateContent,
@@ -181,7 +254,7 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 	dbImportCmd = &cli.Command{
 		Action:    importLDBdata,
 		Name:      "import",
-		Usage:     "Imports leveldb-data from an exported RLP dump.",
+		Usage:     "Imports leveldb-ata from an exported RLP dump.",
 		ArgsUsage: "<dumpfile> <start (optional)",
 		Flags: slices.Concat([]cli.Flag{
 			utils.SyncModeFlag,
@@ -352,6 +425,1058 @@ func inspect(ctx *cli.Context) error {
 	defer db.Close()
 
 	return rawdb.InspectDatabase(db, prefix, start)
+}
+
+func checkMeta(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	accHash := common.HexToHash("0x0059a771a6fa49af4b0778f7d1053619d98f129e8ccfb055477f65e0ccb89b0c")
+	it := db.NewIterator(append(rawdb.SnapshotStoragePrefix, accHash.Bytes()...), nil)
+	defer it.Release()
+
+	fmt.Println("Normal iterator")
+	for it.Next() {
+		key := it.Key()
+
+		if len(key) != len(rawdb.SnapshotStoragePrefix)+common.HashLength+common.HashLength {
+			log.Crit("Invalid storage key", "key", key)
+		}
+
+		addrHash := common.BytesToHash(key[len(rawdb.SnapshotAccountPrefix) : len(rawdb.SnapshotAccountPrefix)+common.HashLength])
+		storageHash := common.BytesToHash(key[len(rawdb.SnapshotAccountPrefix)+common.HashLength : len(rawdb.SnapshotAccountPrefix)+common.HashLength+common.HashLength])
+		fmt.Printf("account %s, storage %s\n", addrHash.String(), storageHash.String())
+	}
+
+	it = db.NewIterator(append(rawdb.SnapshotStorageMetaPrefix, accHash.Bytes()...), nil)
+	defer it.Release()
+
+	for it.Next() {
+		key := it.Key()
+		val := it.Value()
+
+		if len(key) != len(rawdb.SnapshotStorageMetaPrefix)+common.HashLength+common.HashLength {
+			log.Crit("Invalid storage meta key", "key", key)
+		}
+
+		addrHash := common.BytesToHash(key[len(rawdb.SnapshotStorageMetaPrefix) : len(rawdb.SnapshotStorageMetaPrefix)+common.HashLength])
+		storageHash := common.BytesToHash(key[len(rawdb.SnapshotStorageMetaPrefix)+common.HashLength : len(rawdb.SnapshotStorageMetaPrefix)+common.HashLength+common.HashLength])
+
+		fmt.Printf("account %s, storage %s, meta %d\n", addrHash.String(), storageHash.String(), binary.BigEndian.Uint64(val))
+	}
+	return nil
+}
+
+func debugSnapshotAcc(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	it := db.NewIterator(rawdb.SnapshotAccountPrefix, nil)
+	defer it.Release()
+
+	for it.Next() {
+		key := it.Key()
+		val := it.Value()
+		addrHash := common.BytesToHash(key[1:])
+		addr := common.BytesToAddress(rawdb.ReadPreimage(db, addrHash))
+		log.Info("account", "addr", addr.Hex())
+		var slim types.SlimAccount
+		if err := rlp.DecodeBytes(val, &slim); err != nil {
+			log.Error("failed to decode account", "error", err)
+		}
+		acc := types.StateAccount{
+			Nonce:    slim.Nonce,
+			Balance:  slim.Balance,
+			Root:     common.BytesToHash(slim.Root),
+			CodeHash: slim.CodeHash,
+		}
+		fmt.Printf("(%d) account %x, nonce %d, balance %s\n", len(val), addr.Hex(), acc.Nonce, acc.Balance)
+	}
+
+	return nil
+}
+
+func getSlotStem(addrPoint *verkle.Point, slotNum []byte) []byte {
+	key := trieutils.StorageSlotKeyWithEvaluatedAddress(addrPoint, slotNum)
+	return key[:verkle.StemSize]
+}
+
+func getPeriod(blockNum uint64, start uint64, periodLength uint64) verkle.StatePeriod {
+	/*
+		+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------+
+		|          FIELD          |                                                                       VALUE                                                                        |
+		+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------+
+		| databaseVersion         | 8 (0x8)                                                                                                                                            |
+		| headBlockHash           | 0xc4232ce7ab40d61b7fae4bd1f3e74b4da5b724fcb13fcb30d10411020c2d19f9                                                                                 |
+		| headFastBlockHash       | 0xc4232ce7ab40d61b7fae4bd1f3e74b4da5b724fcb13fcb30d10411020c2d19f9                                                                                 |
+		| headHeaderHash          | 0xc4232ce7ab40d61b7fae4bd1f3e74b4da5b724fcb13fcb30d10411020c2d19f9                                                                                 |
+		| lastPivotNumber         | <nil>                                                                                                                                              |
+		| len(snapshotSyncStatus) | 0 bytes                                                                                                                                            |
+		| snapshotDisabled        | false                                                                                                                                              |
+		| snapshotJournal         | 34 bytes                                                                                                                                           |
+		| snapshotRecoveryNumber  | <nil>                                                                                                                                              |
+		| snapshotRoot            | 0xef3bcc645cbffd57f1b827100ec7db04a2ead9fe47d409b6c6f1336237987836                                                                                 |
+		| txIndexTail             | 14815430 (0xe210c6)                                                                                                                                |
+		| SkeletonSyncStatus      | {"Subchains":[{"Head":19838928,"Tail":17165430,"Next":"0xc4232ce7ab40d61b7fae4bd1f3e74b4da5b724fcb13fcb30d10411020c2d19f9"}],"Finalized":17427632} |
+		| frozen                  | 17075430 items                                                                                                                                     |
+		| snapshotGenerator       | Done: true, Accounts: 0,                                                                                                                           |
+		|                         | Slots: 0, Storage: 0, Marker:                                                                                                                      |
+		| headBlock.Hash          | 0xc4232ce7ab40d61b7fae4bd1f3e74b4da5b724fcb13fcb30d10411020c2d19f9                                                                                 |
+		| headBlock.Root          | 0x17cb88baed411c0ff15b0550c1b7471985a3c8fb733e2f5fb83229b44be405fe                                                                                 |
+		| headBlock.Number        | 17165429 (0x105ec75)                                                                                                                               |
+		| headHeader.Hash         | 0xc4232ce7ab40d61b7fae4bd1f3e74b4da5b724fcb13fcb30d10411020c2d19f9                                                                                 |
+		| headHeader.Root         | 0x17cb88baed411c0ff15b0550c1b7471985a3c8fb733e2f5fb83229b44be405fe                                                                                 |
+		| headHeader.Number       | 17165429 (0x105ec75)                                                                                                                               |
+		+-------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------+
+	*/
+	if blockNum == 0 {
+		return verkle.StatePeriod(0)
+	}
+	if blockNum < start { // this should not happen
+		log.Warn("block number is less than the starting block number", "blockNum", blockNum)
+		return verkle.StatePeriod(0)
+	}
+	return verkle.StatePeriod((blockNum - start) / periodLength)
+}
+
+type stem [31]byte
+
+func getCodeStem(addrPoint *verkle.Point, code []byte) (uint64, map[stem]uint64) {
+	// Split code into 32-byte chunks
+	chunks := trie.ChunkifyCode(code)
+	numChunks := len(chunks) / 32
+
+	// Calculate size of chunks included in account header (first 128 chunks)
+	accChunk := uint64(min(128, numChunks) * 32)
+
+	// Pre-allocate map with estimated size to avoid reallocations
+	// Formula: (total chunks - header chunks + 255) / 256 gives number of groups
+	chunkStems := make(map[stem]uint64, (numChunks-128+255)/256)
+
+	// Process remaining chunks in groups of 256
+	for i := 128; i < numChunks; {
+		// Calculate chunk key and stem
+		chunkKey := trieutils.CodeChunkKeyWithEvaluatedAddress(addrPoint, uint256.NewInt(uint64(i)))
+		chunkStem := stem(chunkKey[:verkle.StemSize])
+
+		// Calculate size of current group (up to 256 chunks)
+		groupSize := min(256, numChunks-i)
+		chunkStems[chunkStem] = uint64(groupSize * 32)
+
+		// Move to next group
+		i += groupSize
+	}
+
+	return accChunk, chunkStems
+}
+
+func expiryAnalysis(ctx *cli.Context) error {
+	if ctx.NArg() > 3 {
+		return fmt.Errorf("max 3 arguments: %v", ctx.Command.ArgsUsage)
+	}
+
+	// Parse command line arguments
+	start, periodLength, blockRange := parseExpiryAnalysisArgs(ctx)
+
+	// Initialize database connection
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	head := rawdb.ReadHeadHeader(db)
+	headNumber := head.Number.Uint64()
+
+	// Initialize data structures for analysis
+	accBuckets := make(map[int]*rawdb.Stat)
+	slotBuckets := make(map[int]*rawdb.Stat)
+	accPeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
+	codePeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
+	slotPeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
+
+	// Process accounts and their storage
+	processAccountsAndStorage(db, start, periodLength, blockRange, headNumber,
+		accBuckets, slotBuckets, accPeriodCount, codePeriodCount, slotPeriodCount)
+
+	// Render results
+	renderPeriodCountTable("Account Period", accPeriodCount)
+	renderPeriodCountTable("Code Period", codePeriodCount)
+	renderPeriodCountTable("Slot Period", slotPeriodCount)
+	renderBucketTable("Account", accBuckets, start, blockRange, headNumber)
+	renderBucketTable("Slot", slotBuckets, start, blockRange, headNumber)
+
+	return nil
+}
+
+// parseExpiryAnalysisArgs parses command line arguments for expiry analysis
+func parseExpiryAnalysisArgs(ctx *cli.Context) (start, periodLength, blockRange uint64) {
+	switch ctx.NArg() {
+	case 3:
+		s, err := strconv.ParseUint(ctx.Args().First(), 10, 64)
+		if err != nil {
+			utils.Fatalf("failed to parse start: %v", err)
+		}
+		start = s
+
+		p, err := strconv.ParseUint(ctx.Args().Get(1), 10, 64)
+		if err != nil {
+			utils.Fatalf("failed to parse period length: %v", err)
+		}
+		periodLength = p
+
+		b, err := strconv.ParseUint(ctx.Args().Get(2), 10, 64)
+		if err != nil {
+			utils.Fatalf("failed to parse block range: %v", err)
+		}
+		blockRange = b
+	default:
+		start = 17165429
+		periodLength = 1314000
+		blockRange = 219000
+	}
+	return
+}
+
+// processAccountsAndStorage processes all accounts and their storage slots
+func processAccountsAndStorage(db ethdb.Database, start, periodLength, blockRange, headNumber uint64,
+	accBuckets, slotBuckets map[int]*rawdb.Stat,
+	accPeriodCount, codePeriodCount, slotPeriodCount map[verkle.StatePeriod]*rawdb.Stat,
+) {
+	// Initialize progress tracking
+	checkpoint := 100000000
+	count := 0
+	logged := time.Now()
+	startTime := time.Now()
+	logProgress := func() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			logged = time.Now()
+		}
+
+		if count%checkpoint == 0 {
+			renderPeriodCountTable("Account Period", accPeriodCount)
+			renderPeriodCountTable("Code Period", codePeriodCount)
+			renderPeriodCountTable("Slot Period", slotPeriodCount)
+			renderBucketTable("Account", accBuckets, start, blockRange, headNumber)
+			renderBucketTable("Slot", slotBuckets, start, blockRange, headNumber)
+		}
+	}
+
+	// Initialize caches
+	buf := crypto.NewKeccakState()
+	hashCache := fastcache.New(1 * 1024 * 1024 * 1024)
+
+	// Process accounts
+	accPrefix := rawdb.SnapshotAccountPrefix
+	accIt := db.NewIterator(accPrefix, nil)
+	defer accIt.Release()
+
+	for accIt.Next() {
+		rawAccKey := accIt.Key()
+		rawAccVal := accIt.Value()
+		bVal := common.StorageSize(len(rawAccVal))
+
+		if len(rawAccKey) != len(accPrefix)+common.HashLength {
+			continue
+		}
+
+		// Process account
+		addrHash, addr, acc, err := processAccount(db, rawAccKey, rawAccVal, accPrefix)
+		if err != nil {
+			log.Error("failed to process account", "error", err)
+			continue
+		}
+
+		// Get account block number and period
+		addrBn := rawdb.ReadAccountSnapshotMeta(db, addrHash)
+		accPeriod := getPeriod(addrBn, start, periodLength)
+
+		// Process account code if it exists
+		var accChunk uint64
+		var chunkStems map[stem]uint64
+		var code []byte
+		addrPoint := trieutils.EvaluateAddressPoint(addr[:])
+		if !bytes.Equal(acc.CodeHash, types.EmptyCodeHash[:]) {
+			code = rawdb.ReadCode(db, common.BytesToHash(acc.CodeHash))
+			accChunk, chunkStems = getCodeStem(addrPoint, code)
+			for _, chunkSize := range chunkStems {
+				if _, ok := codePeriodCount[accPeriod]; !ok {
+					codePeriodCount[accPeriod] = new(rawdb.Stat)
+				}
+				codePeriodCount[accPeriod].Add(common.StorageSize(chunkSize))
+			}
+		}
+
+		// Add account to bucket (includes the code)
+		addBucket(addrBn, bVal+common.StorageSize(len(code)), accBuckets, start, blockRange)
+
+		// Process storage slots
+		groupPeriod, groupStat := processStorageSlots(db, addrHash, start, periodLength, blockRange, slotBuckets, hashCache, buf, logProgress)
+
+		// Update period counts
+		group0 := new(uint256.Int).SetUint64(0)
+		for group, period := range groupPeriod {
+			if group.Eq(group0) { // The first 64 slots are included in the account header stems
+				continue
+			}
+			if _, ok := slotPeriodCount[period]; !ok {
+				slotPeriodCount[period] = new(rawdb.Stat)
+			}
+			slotPeriodCount[period].Add(groupStat[group].RawSize())
+		}
+
+		gp, hasGroup := groupPeriod[*group0]
+		if hasGroup && gp > accPeriod {
+			accPeriod = gp
+		}
+
+		if _, ok := accPeriodCount[accPeriod]; !ok {
+			accPeriodCount[accPeriod] = new(rawdb.Stat)
+		}
+		accPeriodCount[accPeriod].Add(bVal)
+		accPeriodCount[accPeriod].AddSize(common.StorageSize(accChunk))
+		if hasGroup {
+			accPeriodCount[gp].AddSize(groupStat[*group0].RawSize())
+		}
+		logProgress()
+	}
+}
+
+// processAccountsAndStorage processes all accounts and their storage slots
+func processAccounts(db ethdb.Database, start, periodLength, blockRange, headNumber uint64,
+	accBuckets map[int]*rawdb.Stat, accPeriodCount, codePeriodCount map[verkle.StatePeriod]*rawdb.Stat,
+) {
+	// Initialize progress tracking
+	checkpoint := 100000000
+	count := 0
+	logged := time.Now()
+	startTime := time.Now()
+	logProgress := func() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			logged = time.Now()
+		}
+
+		if count%checkpoint == 0 {
+			renderPeriodCountTable("Account Period", accPeriodCount)
+			renderPeriodCountTable("Code Period", codePeriodCount)
+			renderBucketTable("Account", accBuckets, start, blockRange, headNumber)
+		}
+	}
+
+	// Process accounts
+	accPrefix := rawdb.SnapshotAccountPrefix
+	accIt := db.NewIterator(accPrefix, nil)
+	defer accIt.Release()
+
+	for accIt.Next() {
+		rawAccKey := accIt.Key()
+		rawAccVal := accIt.Value()
+		bVal := common.StorageSize(len(rawAccVal))
+
+		if len(rawAccKey) != len(accPrefix)+common.HashLength {
+			continue
+		}
+
+		// Process account
+		addrHash, addr, acc, err := processAccount(db, rawAccKey, rawAccVal, accPrefix)
+		if err != nil {
+			log.Error("failed to process account", "error", err)
+			continue
+		}
+
+		// Get account block number and period
+		addrBn := rawdb.ReadAccountSnapshotMeta(db, addrHash)
+		accPeriod := getPeriod(addrBn, start, periodLength)
+
+		// Process account code if it exists
+		var accChunk uint64
+		var chunkStems map[stem]uint64
+		var code []byte
+		addrPoint := trieutils.EvaluateAddressPoint(addr[:])
+		if !bytes.Equal(acc.CodeHash, types.EmptyCodeHash[:]) {
+			code = rawdb.ReadCode(db, common.BytesToHash(acc.CodeHash))
+			accChunk, chunkStems = getCodeStem(addrPoint, code)
+			for _, chunkSize := range chunkStems {
+				if _, ok := codePeriodCount[accPeriod]; !ok {
+					codePeriodCount[accPeriod] = new(rawdb.Stat)
+				}
+				codePeriodCount[accPeriod].Add(common.StorageSize(chunkSize))
+			}
+		}
+
+		// Add account to bucket (includes the code)
+		addBucket(addrBn, bVal+common.StorageSize(len(code)), accBuckets, start, blockRange)
+
+		if _, ok := accPeriodCount[accPeriod]; !ok {
+			accPeriodCount[accPeriod] = new(rawdb.Stat)
+		}
+		accPeriodCount[accPeriod].Add(bVal)
+		accPeriodCount[accPeriod].AddSize(common.StorageSize(accChunk))
+		logProgress()
+	}
+}
+
+// processAccount extracts account information from raw data
+func processAccount(db ethdb.Database, rawAccKey, rawAccVal []byte, accPrefix []byte) (common.Hash, common.Address, *types.StateAccount, error) {
+	addrHash := common.BytesToHash(rawAccKey[len(accPrefix) : len(accPrefix)+common.HashLength])
+	addrPre := rawdb.ReadPreimage(db, addrHash)
+	addr := common.BytesToAddress(addrPre)
+	if len(addrPre) != common.AddressLength {
+		return common.Hash{}, common.Address{}, nil, fmt.Errorf("failed to read preimage for %s", addrHash.Hex())
+	}
+
+	acc, err := types.FullAccount(rawAccVal)
+	if err != nil {
+		return common.Hash{}, common.Address{}, nil, fmt.Errorf("failed to decode account %s: %v", addrHash.Hex(), err)
+	}
+
+	return addrHash, addr, acc, nil
+}
+
+// processStorageSlots processes all storage slots for an account
+func processStorageSlots(db ethdb.Database, addrHash common.Hash, start, periodLength, blockRange uint64,
+	slotBuckets map[int]*rawdb.Stat, hashCache *fastcache.Cache, buf crypto.KeccakState,
+	logProgress func(),
+) (map[uint256.Int]verkle.StatePeriod, map[uint256.Int]*rawdb.Stat) {
+	groupPeriod := make(map[uint256.Int]verkle.StatePeriod)
+	groupStat := make(map[uint256.Int]*rawdb.Stat)
+
+	stPrefix := rawdb.SnapshotStorageMetaPrefix
+	stIt := db.NewIterator(append(stPrefix, addrHash.Bytes()...), nil)
+	defer stIt.Release()
+
+	for stIt.Next() {
+		rawStKey := stIt.Key()
+		rawBlockNum := stIt.Value()
+
+		if len(rawStKey) != len(stPrefix)+2*common.HashLength {
+			continue
+		}
+
+		slot := rawStKey[len(stPrefix)+common.HashLength : len(stPrefix)+2*common.HashLength]
+		slotBn := binary.BigEndian.Uint64(rawBlockNum)
+		slotPeriod := getPeriod(slotBn, start, periodLength)
+		uSlot := new(uint256.Int).SetBytes(slot)
+
+		// Get or compute slot hash
+		var slotHash common.Hash
+		rawHash := hashCache.Get(nil, slot)
+		if len(rawHash) == 0 {
+			slotHash = crypto.HashData(buf, slot)
+			hashCache.Set(slot[:], slotHash[:])
+		} else {
+			slotHash = common.BytesToHash(rawHash)
+		}
+
+		// Check if the main storage snapshot has this slot
+		slotVal := rawdb.ReadStorageSnapshot(db, addrHash, slotHash)
+		if len(slotVal) == 0 {
+			logProgress()
+			continue
+		}
+		bVal := common.StorageSize(len(slotVal))
+
+		addBucket(slotBn, bVal, slotBuckets, start, blockRange)
+
+		group := getGroup(uSlot)
+		if prev, ok := groupPeriod[*group]; !ok {
+			groupPeriod[*group] = slotPeriod
+		} else if slotPeriod > prev {
+			groupPeriod[*group] = slotPeriod
+		}
+
+		if _, ok := groupStat[*group]; !ok {
+			groupStat[*group] = &rawdb.Stat{}
+		}
+		groupStat[*group].Add(bVal)
+
+		logProgress()
+	}
+
+	return groupPeriod, groupStat
+}
+
+// addBucket adds a block number to the appropriate bucket
+func addBucket(bn uint64, val common.StorageSize, buckets map[int]*rawdb.Stat, start, blockRange uint64) {
+	var bucket int
+	if bn == 0 {
+		bucket = 0
+	} else if bn < start {
+		bucket = -1
+	} else {
+		bucket = int((bn-start)/blockRange) + 1
+	}
+	if buckets[bucket] == nil {
+		buckets[bucket] = new(rawdb.Stat)
+	}
+
+	buckets[bucket].Add(val)
+}
+
+// renderPeriodCountTable renders a table showing period counts
+func renderPeriodCountTable(title string, periodCount map[verkle.StatePeriod]*rawdb.Stat) {
+	var periods []verkle.StatePeriod
+	for period := range periodCount {
+		periods = append(periods, period)
+	}
+	slices.Sort(periods)
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{title, "Stem Count", "Size"})
+	total := new(rawdb.Stat)
+
+	for _, period := range periods {
+		count := periodCount[period]
+		table.Append([]string{fmt.Sprintf("%d", period), count.Count(), count.Size()})
+		total.Merge(count)
+	}
+	table.SetFooter([]string{"Total", total.Count(), total.Size()})
+	table.Render()
+}
+
+// renderBucketTable renders a table showing bucket counts
+func renderBucketTable(title string, buckets map[int]*rawdb.Stat, start, blockRange, headNumber uint64) {
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Block Range", title + " Count", "Size"})
+	total := new(rawdb.Stat)
+
+	// Get sorted bucket numbers
+	var bucketNums []int
+	for bucket := range buckets {
+		bucketNums = append(bucketNums, bucket)
+	}
+	slices.Sort(bucketNums)
+
+	// Display results with proper block ranges
+	for _, bucket := range bucketNums {
+		var rangeStr string
+		switch bucket {
+		case -1:
+			rangeStr = fmt.Sprintf("< %d", start)
+		case 0:
+			rangeStr = "Empty/Zero"
+		default:
+			bucketStart := start + uint64(bucket-1)*blockRange
+			bucketEnd := bucketStart + blockRange - 1
+			bucketEnd = min(bucketEnd, headNumber)
+			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
+		}
+		count := buckets[bucket]
+		table.Append([]string{rangeStr, count.Count(), count.Size()})
+		total.Merge(count)
+	}
+	table.SetFooter([]string{"Total", total.Count(), total.Size()})
+	table.Render()
+}
+
+func accExpiryAnalysis(ctx *cli.Context) error {
+	if ctx.NArg() > 3 {
+		return fmt.Errorf("max 3 arguments: %v", ctx.Command.ArgsUsage)
+	}
+
+	// Parse command line arguments
+	start, periodLength, blockRange := parseExpiryAnalysisArgs(ctx)
+
+	// Initialize database connection
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	head := rawdb.ReadHeadHeader(db)
+	headNumber := head.Number.Uint64()
+
+	// Initialize data structures for analysis
+	accBuckets := make(map[int]*rawdb.Stat)
+	accPeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
+	codePeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
+
+	// Process accounts and their storage
+	processAccounts(db, start, periodLength, blockRange, headNumber,
+		accBuckets, accPeriodCount, codePeriodCount)
+
+	// Render results
+	renderPeriodCountTable("Account Period", accPeriodCount)
+	renderPeriodCountTable("Code Period", codePeriodCount)
+	renderBucketTable("Account", accBuckets, start, blockRange, headNumber)
+
+	return nil
+}
+
+func accBucketsAnalysis(ctx *cli.Context) error {
+	if ctx.NArg() > 2 {
+		return fmt.Errorf("max 2 argument: %v", ctx.Command.ArgsUsage)
+	}
+
+	var start uint64
+	blockRange := uint64(219000) // 1 month worth of blocks
+	start = 17165429             // This is the starting block number of the node snapshot
+	end := uint64(21000000)
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	it := db.NewIterator(rawdb.SnapshotAccountPrefix, nil)
+	defer it.Release()
+
+	accBuckets := make(map[int]int)
+	addBucket := func(bn uint64, buckets map[int]int) {
+		if bn == 0 {
+			buckets[0]++
+			return
+		}
+		if bn < start {
+			buckets[-1]++
+			return
+		}
+		bucket := int((bn-start)/blockRange) + 1
+		buckets[bucket]++
+	}
+
+	count := 0
+	logged := time.Now()
+	startTime := time.Now()
+	logProgress := func() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			logged = time.Now()
+		}
+	}
+
+	for it.Next() {
+		rawAccKey := it.Key()
+
+		// ...So because we are using hash-based, where the hash node isn't prefixed,
+		// we might get some false positives here...
+		// Therefore, we need to ensure that the expected snapshot key length is correct.
+		if len(rawAccKey) != len(rawdb.SnapshotAccountPrefix)+common.HashLength {
+			continue
+		}
+
+		addrHash := common.BytesToHash(rawAccKey[len(rawdb.SnapshotAccountPrefix) : len(rawdb.SnapshotAccountPrefix)+common.HashLength])
+		addrBn := rawdb.ReadAccountSnapshotMeta(db, addrHash)
+		addBucket(addrBn, accBuckets)
+
+		logProgress()
+	}
+
+	// Display account in block range
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Block Range", "Account Count"})
+	total := 0
+
+	// Get sorted bucket numbers
+	var bucketNums []int
+	for bucket := range accBuckets {
+		bucketNums = append(bucketNums, bucket)
+	}
+	slices.Sort(bucketNums)
+
+	// Display results with proper block ranges
+	for _, bucket := range bucketNums {
+		var rangeStr string
+		switch bucket {
+		case -1:
+			rangeStr = fmt.Sprintf("< %d", start)
+		case 0:
+			rangeStr = "Empty/Zero"
+		default:
+			bucketStart := start + uint64(bucket-1)*blockRange
+			bucketEnd := min(end, bucketStart+blockRange-1)
+			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
+		}
+		count := accBuckets[bucket]
+		table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
+		total += count
+	}
+	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
+	table.Render()
+
+	return nil
+}
+
+func getGroup(slotNum *uint256.Int) *uint256.Int {
+	// If slot number <= 64, return group 0
+	if slotNum.Cmp(_uint64) <= 0 {
+		return _uint0
+	}
+
+	group := new(uint256.Int).Sub(slotNum, _uint64)
+	quotient := new(uint256.Int).Div(group, _uint256)
+	remainder := new(uint256.Int).Mod(group, _uint256)
+	// If there's any remainder, add 1 to round up to next group
+	if remainder.Cmp(_uint0) > 0 {
+		return new(uint256.Int).Add(quotient, _uint1)
+	}
+	return quotient
+}
+
+func slotBucketsAnalysis(ctx *cli.Context) error {
+	var start uint64
+	blockRange := uint64(219000) // 1 month worth of blocks
+	start = 17165429             // This is the starting block number of the node snapshot
+	end := uint64(21000000)
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	prefix := rawdb.SnapshotStorageMetaPrefix
+	it := db.NewIterator(prefix, nil)
+	defer it.Release()
+
+	buckets := make(map[int]int)
+	addBucket := func(bn uint64, buckets map[int]int) {
+		if bn == 0 {
+			buckets[0]++
+			return
+		}
+		if bn < start {
+			buckets[-1]++
+			return
+		}
+		bucket := int((bn-start)/blockRange) + 1
+		buckets[bucket]++
+	}
+
+	count := 0
+	logged := time.Now()
+	startTime := time.Now()
+	logProgress := func() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			logged = time.Now()
+		}
+	}
+
+	buf := crypto.NewKeccakState()
+	hashCache := fastcache.New(1 * 1024 * 1024 * 1024)
+	for it.Next() {
+		rawKey := it.Key()
+		rawBn := it.Value()
+
+		// ...So because we are using hash-based, where the hash node isn't prefixed,
+		// we might get some false positives here...
+		// Therefore, we need to ensure that the expected snapshot key length is correct.
+		if len(rawKey) != len(prefix)+2*common.HashLength {
+			continue
+		}
+
+		addrHash := common.BytesToHash(rawKey[len(prefix) : len(prefix)+common.HashLength])
+		slot := common.BytesToHash(rawKey[len(prefix)+common.HashLength : len(prefix)+2*common.HashLength])
+
+		var slotHash common.Hash
+		rawHash := hashCache.Get(nil, slot[:])
+		if len(rawHash) == 0 {
+			slotHash = crypto.HashData(buf, slot[:])
+			hashCache.Set(slot[:], slotHash[:])
+		} else {
+			slotHash = common.BytesToHash(rawHash)
+		}
+
+		has := rawdb.HasStorageSnapshot(db, addrHash, slotHash)
+		if has {
+			addBucket(binary.BigEndian.Uint64(rawBn), buckets)
+		}
+
+		logProgress()
+	}
+
+	// Display account in block range
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Block Range", "Slot Count"})
+	total := 0
+
+	// Get sorted bucket numbers
+	var bucketNums []int
+	for bucket := range buckets {
+		bucketNums = append(bucketNums, bucket)
+	}
+	slices.Sort(bucketNums)
+
+	// Display results with proper block ranges
+	for _, bucket := range bucketNums {
+		var rangeStr string
+		switch bucket {
+		case -1:
+			rangeStr = fmt.Sprintf("< %d", start)
+		case 0:
+			rangeStr = "Empty/Zero"
+		default:
+			bucketStart := start + uint64(bucket-1)*blockRange
+			bucketEnd := min(end, bucketStart+blockRange-1)
+			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
+		}
+		count := buckets[bucket]
+		table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
+		total += count
+	}
+	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
+	table.Render()
+
+	return nil
+}
+
+var (
+	_uint64  = new(uint256.Int).SetUint64(64)
+	_uint256 = new(uint256.Int).SetUint64(256)
+	_uint0   = new(uint256.Int).SetUint64(0)
+	_uint1   = new(uint256.Int).SetUint64(1)
+)
+
+func slotExpiryAnalysis(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	if ctx.NArg() > 2 {
+		return fmt.Errorf("max 2 argument: %v", ctx.Command.ArgsUsage)
+	}
+
+	head := rawdb.ReadHeadHeader(db)
+	headNumber := head.Number.Uint64()
+
+	var start uint64
+	var periodLength uint64
+	switch ctx.NArg() {
+	case 2:
+		s, err := strconv.ParseUint(ctx.Args().First(), 10, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse period: %v", err)
+		}
+		start = s
+
+		p, err := strconv.ParseUint(ctx.Args().Get(1), 10, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse period: %v", err)
+		}
+		periodLength = p
+	case 1:
+		s, err := strconv.ParseUint(ctx.Args().First(), 10, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse period: %v", err)
+		}
+		start = s
+		periodLength = 1314000
+	default:
+		start = 17165429 // This is the starting block number of the node snapshot
+
+		// 1314000 = About 6 months worth of blocks.
+		// 6 months = 15768000s
+		// number of blocks = 15768000 / 12s = 1314000
+		// 12s is the average block time.
+		periodLength = 1314000
+	}
+
+	count := 0
+	logged := time.Now()
+	startTime := time.Now()
+	logProgress := func() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			logged = time.Now()
+		}
+	}
+
+	blockRange := uint64(219000)
+	slotBuckets := make(map[int]int)
+	addBucket := func(bn uint64, buckets map[int]int) {
+		if bn == 0 {
+			buckets[0]++
+			return
+		}
+		if bn < start {
+			buckets[-1]++
+			return
+		}
+		bucket := int((bn-start)/blockRange) + 1
+		buckets[bucket]++
+	}
+
+	getGroup := func(slotNum *uint256.Int) *uint256.Int {
+		// If slot number <= 64, return group 0
+		if slotNum.Cmp(_uint64) <= 0 {
+			return _uint0
+		}
+
+		group := new(uint256.Int).Sub(slotNum, _uint64)
+		quotient := new(uint256.Int).Div(group, _uint256)
+		remainder := new(uint256.Int).Mod(group, _uint256)
+		// If there's any remainder, add 1 to round up to next group
+		if remainder.Cmp(_uint0) > 0 {
+			return new(uint256.Int).Add(quotient, _uint1)
+		}
+		return quotient
+	}
+
+	checkPoint := 100000000 // print every 100 million slots
+	printResult := func(periodCount map[verkle.StatePeriod]int) {
+		table := tablewriter.NewWriter(os.Stdout)
+		table.SetHeader([]string{"Slot Period", "Stem Count"})
+		total := 0
+		// Create a sorted slice of periods
+		periods := make([]verkle.StatePeriod, 0, len(periodCount))
+		for period := range periodCount {
+			periods = append(periods, period)
+		}
+		slices.Sort(periods)
+
+		for _, period := range periods {
+			count := periodCount[period]
+			table.Append([]string{fmt.Sprintf("%d", period), fmt.Sprintf("%d", count)})
+			total += count
+		}
+		table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
+		table.Render()
+
+		// Display slot in block range
+		table = tablewriter.NewWriter(os.Stdout)
+		table.SetHeader([]string{"Block Range", "Slot Count"})
+		total = 0
+
+		// Get sorted bucket numbers
+		var bucketNums []int
+		for bucket := range slotBuckets {
+			bucketNums = append(bucketNums, bucket)
+		}
+		slices.Sort(bucketNums)
+
+		// Display results with proper block ranges
+		for _, bucket := range bucketNums {
+			var rangeStr string
+			switch bucket {
+			case -1:
+				rangeStr = fmt.Sprintf("< %d", start)
+			case 0:
+				rangeStr = "Empty/Zero"
+			default:
+				bucketStart := start + uint64(bucket-1)*blockRange
+				bucketEnd := bucketStart + blockRange - 1
+				bucketEnd = min(bucketEnd, headNumber)
+				rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
+			}
+			count := slotBuckets[bucket]
+			table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
+			total += count
+		}
+		table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
+		table.Render()
+	}
+
+	buf := crypto.NewKeccakState()
+	periodCount := make(map[verkle.StatePeriod]int)
+	slotHashCache := fastcache.New(1 * 1024 * 1024 * 1024)
+	curGroup := make(map[uint256.Int]verkle.StatePeriod) // represents the slot stem
+	curAddr := common.Hash{}
+
+	prefix := rawdb.SnapshotStorageMetaPrefix
+	it := db.NewIterator(prefix, nil)
+	defer it.Release()
+	for it.Next() {
+		rawSlotKey := it.Key()
+		rawBlockNum := it.Value()
+
+		if len(rawSlotKey) != len(prefix)+2*common.HashLength {
+			continue
+		}
+
+		addrHash := common.BytesToHash(rawSlotKey[len(prefix) : len(prefix)+common.HashLength])
+		if !bytes.Equal(addrHash[:], curAddr[:]) { // we are on a new address
+			for _, period := range curGroup {
+				periodCount[period]++
+			}
+
+			curAddr = addrHash
+			curGroup = make(map[uint256.Int]verkle.StatePeriod)
+		}
+
+		slot := rawSlotKey[len(prefix)+common.HashLength : len(prefix)+2*common.HashLength]
+		slotBn := binary.BigEndian.Uint64(rawBlockNum)
+		slotPeriod := getPeriod(slotBn, start, periodLength)
+		uSlot := new(uint256.Int).SetBytes32(slot)
+
+		var slotHash common.Hash
+		rawHash := slotHashCache.Get(nil, slot)
+		if len(rawHash) == 0 {
+			slotHash = crypto.HashData(buf, slot)
+			slotHashCache.Set(slot, slotHash[:])
+		} else {
+			slotHash = common.BytesToHash(rawHash)
+		}
+
+		// Check if the main storge snapshot has this slot
+		has := rawdb.HasStorageSnapshot(db, addrHash, slotHash)
+		if !has {
+			logProgress()
+			if count%checkPoint == 0 {
+				log.Info("Checkpoint reached", "count", count, "addrHash", addrHash.Hex(), "slot", uSlot.String())
+				printResult(periodCount)
+			}
+			continue
+		}
+
+		group := getGroup(uSlot)
+		if prev, ok := curGroup[*group]; !ok {
+			curGroup[*group] = slotPeriod
+		} else if slotPeriod > prev {
+			curGroup[*group] = slotPeriod
+		}
+		addBucket(slotBn, slotBuckets)
+		logProgress()
+
+		if count%checkPoint == 0 {
+			log.Info("Checkpoint reached", "count", count, "addrHash", addrHash.Hex(), "slot", uSlot.String())
+			printResult(periodCount)
+		}
+	}
+
+	// Add the last group
+	for _, period := range curGroup {
+		periodCount[period]++
+	}
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Slot Period", "Stem Count"})
+	total := 0
+	// Create a sorted slice of periods
+	var periods []verkle.StatePeriod
+	for period := range periodCount {
+		periods = append(periods, period)
+	}
+	slices.Sort(periods)
+
+	for _, period := range periods {
+		count := periodCount[period]
+		table.Append([]string{fmt.Sprintf("%d", period), fmt.Sprintf("%d", count)})
+		total += count
+	}
+	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
+	table.Render()
+
+	printResult(periodCount)
+
+	return nil
 }
 
 func checkStateContent(ctx *cli.Context) error {

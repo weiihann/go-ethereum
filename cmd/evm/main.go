@@ -289,7 +289,7 @@ func collectFiles(path string) []string {
 // dump returns a state dump for the most current trie.
 func dump(s *state.StateDB) *state.Dump {
 	root := s.IntermediateRoot(false)
-	cpy, _ := state.New(root, s.Database())
+	cpy, _ := state.New(root, s.Database(), 0)
 	dump := cpy.RawDump(nil)
 	return &dump
 }

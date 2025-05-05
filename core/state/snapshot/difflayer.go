@@ -96,12 +96,20 @@ type diffLayer struct {
 	memory uint64     // Approximate guess as to how much memory we use
 
 	root  common.Hash // Root hash to which this snapshot diff belongs to
+	block uint64      // Block number to which this snapshot diff belongs to
 	stale atomic.Bool // Signals that the layer became stale (state progressed)
 
 	accountData map[common.Hash][]byte                 // Keyed accounts for direct retrieval (nil means deleted)
 	storageData map[common.Hash]map[common.Hash][]byte // Keyed storage slots for direct retrieval. one per account (nil means deleted)
 	accountList []common.Hash                          // List of account for iteration. If it exists, it's sorted, otherwise it's nil
 	storageList map[common.Hash][]common.Hash          // List of storage slots for iterated retrievals, one per account. Any existing lists are sorted if non-nil
+
+	// The following two maps are used to track the block number of the latest modification
+	// of an account or a storage slot. Upon creating a new diff layer, the maps are filled
+	// with the block number of this diff layer.
+	// If a key is accessed, it will be updated with the block number of the access.
+	accountMeta map[common.Hash]uint64
+	storageMeta map[common.Hash]map[common.Hash]uint64
 
 	diffed *bloomfilter.Filter // Bloom filter tracking all the diffed items up to the disk layer
 
@@ -121,13 +129,55 @@ func storageBloomHash(h0, h1 common.Hash) uint64 {
 
 // newDiffLayer creates a new diff on top of an existing snapshot, whether that's a low
 // level persistent database or a hierarchical diff already.
-func newDiffLayer(parent snapshot, root common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
+func newDiffLayer(parent snapshot, root common.Hash, block uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
 	// Create the new layer with some pre-allocated data segments
 	dl := &diffLayer{
 		parent:      parent,
 		root:        root,
+		block:       block,
 		accountData: accounts,
 		storageData: storage,
+		accountMeta: make(map[common.Hash]uint64),
+		storageMeta: make(map[common.Hash]map[common.Hash]uint64),
+		storageList: make(map[common.Hash][]common.Hash),
+	}
+	switch parent := parent.(type) {
+	case *diskLayer:
+		dl.rebloom(parent)
+	case *diffLayer:
+		dl.rebloom(parent.origin)
+	default:
+		panic("unknown parent type")
+	}
+	// Sanity check that accounts or storage slots are never nil
+	for _, blob := range accounts {
+		// Determine memory size and track the dirty writes
+		dl.memory += uint64(common.HashLength + len(blob))
+		snapshotDirtyAccountWriteMeter.Mark(int64(len(blob)))
+	}
+	for accountHash, slots := range storage {
+		if slots == nil {
+			panic(fmt.Sprintf("storage %#x nil", accountHash))
+		}
+		// Determine memory size and track the dirty writes
+		for _, data := range slots {
+			dl.memory += uint64(common.HashLength + len(data))
+			snapshotDirtyStorageWriteMeter.Mark(int64(len(data)))
+		}
+	}
+	return dl
+}
+
+func newDiffLayerWithMeta(parent snapshot, root common.Hash, block uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte, accountMeta map[common.Hash]uint64, storageMeta map[common.Hash]map[common.Hash]uint64) *diffLayer {
+	// Create the new layer with some pre-allocated data segments
+	dl := &diffLayer{
+		parent:      parent,
+		root:        root,
+		block:       block,
+		accountData: accounts,
+		storageData: storage,
+		accountMeta: accountMeta,
+		storageMeta: storageMeta,
 		storageList: make(map[common.Hash][]common.Hash),
 	}
 	switch parent := parent.(type) {
@@ -362,8 +412,14 @@ func (dl *diffLayer) storage(accountHash, storageHash common.Hash, depth int) ([
 
 // Update creates a new layer on top of the existing snapshot diff tree with
 // the specified data items.
-func (dl *diffLayer) Update(blockRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
-	return newDiffLayer(dl, blockRoot, accounts, storage)
+func (dl *diffLayer) Update(blockRoot common.Hash, blockNum uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer {
+	return newDiffLayer(dl, blockRoot, blockNum, accounts, storage)
+}
+
+func (dl *diffLayer) UpdateWithMeta(blockRoot common.Hash, blockNum uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte,
+	accountsMeta map[common.Hash]uint64, storagesMeta map[common.Hash]map[common.Hash]uint64,
+) *diffLayer {
+	return newDiffLayerWithMeta(dl, blockRoot, blockNum, accounts, storage, accountsMeta, storagesMeta)
 }
 
 // flatten pushes all data from this point downwards, flattening everything into
@@ -390,7 +446,20 @@ func (dl *diffLayer) flatten() snapshot {
 	}
 	for hash, data := range dl.accountData {
 		parent.accountData[hash] = data
+
+		// If the account is not present in the parent, copy the block number directly
+		if _, ok := parent.accountMeta[hash]; !ok {
+			parent.accountMeta[hash] = dl.block
+		} else {
+			// Otherwise, compare the block numbers and keep the highest
+			childMeta := dl.accountMeta[hash]
+			parentMeta := parent.accountMeta[hash]
+			if childMeta > parentMeta {
+				parent.accountMeta[hash] = childMeta
+			}
+		}
 	}
+
 	// Overwrite all the updated storage slots (individually)
 	for accountHash, storage := range dl.storageData {
 		// If storage didn't exist (or was deleted) in the parent, overwrite blindly
@@ -401,6 +470,31 @@ func (dl *diffLayer) flatten() snapshot {
 		// Storage exists in both parent and child, merge the slots
 		maps.Copy(parent.storageData[accountHash], storage)
 	}
+
+	for accountHash, slots := range dl.storageMeta {
+		// If the account is not present in the parent, copy the entire storage meta
+		// from the child.
+		if _, ok := parent.storageMeta[accountHash]; !ok {
+			parent.storageMeta[accountHash] = slots
+			continue
+		}
+
+		for storageHash := range slots {
+			// If the storage slot is not present in the parent, copy directly
+			if _, ok := parent.storageMeta[accountHash][storageHash]; !ok {
+				parent.storageMeta[accountHash][storageHash] = dl.block
+				continue
+			}
+
+			// Otherwise, compare the block numbers and keep the highest
+			childMeta := dl.storageMeta[accountHash][storageHash]
+			parentMeta := parent.storageMeta[accountHash][storageHash]
+			if childMeta > parentMeta {
+				parent.storageMeta[accountHash][storageHash] = childMeta
+			}
+		}
+	}
+
 	// Return the combo parent
 	return &diffLayer{
 		parent:      parent.parent,
@@ -408,6 +502,8 @@ func (dl *diffLayer) flatten() snapshot {
 		root:        dl.root,
 		accountData: parent.accountData,
 		storageData: parent.storageData,
+		accountMeta: parent.accountMeta,
+		storageMeta: parent.storageMeta,
 		storageList: make(map[common.Hash][]common.Hash),
 		diffed:      dl.diffed,
 		memory:      parent.memory + dl.memory,

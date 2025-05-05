@@ -130,7 +130,8 @@ type snapshot interface {
 	// the specified data items.
 	//
 	// Note, the maps are retained by the method to avoid copying everything.
-	Update(blockRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer
+	Update(blockRoot common.Hash, blockNum uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) *diffLayer
+	UpdateWithMeta(blockRoot common.Hash, blockNum uint64, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte, accountsMeta map[common.Hash]uint64, storagesMeta map[common.Hash]map[common.Hash]uint64) *diffLayer
 
 	// Journal commits an entire diff hierarchy to disk into a single journal entry.
 	// This is meant to be used during shutdown to persist the snapshot without
@@ -335,7 +336,7 @@ func (t *Tree) Snapshots(root common.Hash, limits int, nodisk bool) []Snapshot {
 
 // Update adds a new snapshot into the tree, if that can be linked to an existing
 // old parent. It is disallowed to insert a disk layer (the origin of all).
-func (t *Tree) Update(blockRoot common.Hash, parentRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) error {
+func (t *Tree) Update(blockRoot common.Hash, blockNum uint64, parentRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte) error {
 	// Reject noop updates to avoid self-loops in the snapshot tree. This is a
 	// special case that can only happen for Clique networks where empty blocks
 	// don't modify the state (0 block subsidy).
@@ -350,7 +351,32 @@ func (t *Tree) Update(blockRoot common.Hash, parentRoot common.Hash, accounts ma
 	if parent == nil {
 		return fmt.Errorf("parent [%#x] snapshot missing", parentRoot)
 	}
-	snap := parent.(snapshot).Update(blockRoot, accounts, storage)
+	snap := parent.(snapshot).Update(blockRoot, blockNum, accounts, storage)
+
+	// Save the new snapshot for later
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	t.layers[snap.root] = snap
+	return nil
+}
+
+func (t *Tree) UpdateWithMeta(blockRoot common.Hash, blockNum uint64, parentRoot common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte, accountsMeta map[common.Hash]uint64, storagesMeta map[common.Hash]map[common.Hash]uint64) error {
+	// Reject noop updates to avoid self-loops in the snapshot tree. This is a
+	// special case that can only happen for Clique networks where empty blocks
+	// don't modify the state (0 block subsidy).
+	//
+	// Although we could silently ignore this internally, it should be the caller's
+	// responsibility to avoid even attempting to insert such a snapshot.
+	if blockRoot == parentRoot {
+		return errSnapshotCycle
+	}
+	// Generate a new snapshot on top of the parent
+	parent := t.Snapshot(parentRoot)
+	if parent == nil {
+		return fmt.Errorf("parent [%#x] snapshot missing", parentRoot)
+	}
+	snap := parent.(snapshot).UpdateWithMeta(blockRoot, blockNum, accounts, storage, accountsMeta, storagesMeta)
 
 	// Save the new snapshot for later
 	t.lock.Lock()
@@ -403,7 +429,80 @@ func (t *Tree) Cap(root common.Hash, layers int) error {
 		t.layers = map[common.Hash]snapshot{base.root: base}
 		return nil
 	}
-	persisted := t.cap(diff, layers)
+	persisted := t.cap(diff, layers, false)
+
+	// Remove any layer that is stale or links into a stale layer
+	children := make(map[common.Hash][]common.Hash)
+	for root, snap := range t.layers {
+		if diff, ok := snap.(*diffLayer); ok {
+			parent := diff.parent.Root()
+			children[parent] = append(children[parent], root)
+		}
+	}
+	var remove func(root common.Hash)
+	remove = func(root common.Hash) {
+		delete(t.layers, root)
+		for _, child := range children[root] {
+			remove(child)
+		}
+		delete(children, root)
+	}
+	for root, snap := range t.layers {
+		if snap.Stale() {
+			remove(root)
+		}
+	}
+	// If the disk layer was modified, regenerate all the cumulative blooms
+	if persisted != nil {
+		var rebloom func(root common.Hash)
+		rebloom = func(root common.Hash) {
+			if diff, ok := t.layers[root].(*diffLayer); ok {
+				diff.rebloom(persisted)
+			}
+			for _, child := range children[root] {
+				rebloom(child)
+			}
+		}
+		rebloom(persisted.root)
+	}
+	return nil
+}
+
+func (t *Tree) CapWithForce(root common.Hash, layers int) error {
+	// Retrieve the head snapshot to cap from
+	snap := t.Snapshot(root)
+	if snap == nil {
+		return fmt.Errorf("snapshot [%#x] missing", root)
+	}
+	diff, ok := snap.(*diffLayer)
+	if !ok {
+		return fmt.Errorf("snapshot [%#x] is disk layer", root)
+	}
+	// If the generator is still running, use a more aggressive cap
+	diff.origin.lock.RLock()
+	if diff.origin.genMarker != nil && layers > 8 {
+		layers = 8
+	}
+	diff.origin.lock.RUnlock()
+
+	// Run the internal capping and discard all stale layers
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	// Flattening the bottom-most diff layer requires special casing since there's
+	// no child to rewire to the grandparent. In that case we can fake a temporary
+	// child for the capping and then remove it.
+	if layers == 0 {
+		// If full commit was requested, flatten the diffs and merge onto disk
+		diff.lock.RLock()
+		base := diffToDisk(diff.flatten().(*diffLayer))
+		diff.lock.RUnlock()
+
+		// Replace the entire snapshot tree with the flat base
+		t.layers = map[common.Hash]snapshot{base.root: base}
+		return nil
+	}
+	persisted := t.cap(diff, layers, true)
 
 	// Remove any layer that is stale or links into a stale layer
 	children := make(map[common.Hash][]common.Hash)
@@ -453,7 +552,7 @@ func (t *Tree) Cap(root common.Hash, layers int) error {
 // which may or may not overflow and cascade to disk. Since this last layer's
 // survival is only known *after* capping, we need to omit it from the count if
 // we want to ensure that *at least* the requested number of diff layers remain.
-func (t *Tree) cap(diff *diffLayer, layers int) *diskLayer {
+func (t *Tree) cap(diff *diffLayer, layers int, force bool) *diskLayer {
 	// Dive until we run out of layers or reach the persistent database
 	for i := 0; i < layers-1; i++ {
 		// If we still have diff layers below, continue down
@@ -487,7 +586,7 @@ func (t *Tree) cap(diff *diffLayer, layers int) *diskLayer {
 			t.onFlatten()
 		}
 		diff.parent = flattened
-		if flattened.memory < aggregatorMemoryLimit {
+		if !force && flattened.memory < aggregatorMemoryLimit {
 			// Accumulator layer is smaller than the limit, so we can abort, unless
 			// there's a snapshot being generated currently. In that case, the trie
 			// will move from underneath the generator so we **must** merge all the
@@ -552,6 +651,8 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 			snapshotCleanAccountWriteMeter.Mark(int64(len(data)))
 		} else {
 			rawdb.DeleteAccountSnapshot(batch, hash)
+			rawdb.DeleteAccountSnapshotMeta(batch, hash)
+			delete(bottom.accountMeta, hash) // ensure it wont be written again
 			base.cache.Set(hash[:], nil)
 		}
 		snapshotFlushAccountItemMeter.Mark(1)
@@ -566,6 +667,12 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 			}
 			batch.Reset()
 		}
+	}
+	// Write the account meta data
+	// This is separated from the account data write because the data might only be read but not
+	// modified, so it doesn't exist in the account state diff.
+	for accountHash, block := range bottom.accountMeta {
+		rawdb.WriteAccountSnapshotMeta(batch, accountHash, block)
 	}
 	// Push all the storage slots into the database
 	for accountHash, storage := range bottom.storageData {
@@ -601,6 +708,12 @@ func diffToDisk(bottom *diffLayer) *diskLayer {
 				}
 				batch.Reset()
 			}
+		}
+	}
+	// Write the storage meta data
+	for accountHash, slots := range bottom.storageMeta {
+		for storageHash, block := range slots {
+			rawdb.WriteStorageSnapshotMeta(batch, accountHash, storageHash, block)
 		}
 	}
 	// Update the snapshot block marker and write any remainder data
@@ -774,7 +887,6 @@ func (t *Tree) Verify(root common.Hash) error {
 		}
 		return hash, nil
 	}, newGenerateStats(), true)
-
 	if err != nil {
 		return err
 	}
