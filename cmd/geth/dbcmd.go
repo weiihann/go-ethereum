@@ -139,7 +139,7 @@ Remove blockchain and state databases`,
 	dbAccExpiryAnalysisCmd = &cli.Command{
 		Action:      accExpiryAnalysis,
 		Name:        "acc-expiry",
-		ArgsUsage:   "<start> <periodLength>",
+		ArgsUsage:   "<start> <periodLength> <blockRange>",
 		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 		Usage:       "TODO: add this",
 		Description: `TODO: add description`,
@@ -545,15 +545,35 @@ func getPeriod(blockNum uint64, start uint64, periodLength uint64) verkle.StateP
 	return verkle.StatePeriod((blockNum - start) / periodLength)
 }
 
-func getCodeStem(addrPoint *verkle.Point, code []byte) [][]byte {
-	var chunkStems [][]byte
+type stem [31]byte
+
+func getCodeStem(addrPoint *verkle.Point, code []byte) (uint64, map[stem]uint64) {
+	// Split code into 32-byte chunks
 	chunks := trie.ChunkifyCode(code)
-	for i := 128; i < len(chunks)/32; {
+	numChunks := len(chunks) / 32
+
+	// Calculate size of chunks included in account header (first 128 chunks)
+	accChunk := uint64(min(128, numChunks) * 32)
+
+	// Pre-allocate map with estimated size to avoid reallocations
+	// Formula: (total chunks - header chunks + 255) / 256 gives number of groups
+	chunkStems := make(map[stem]uint64, (numChunks-128+255)/256)
+
+	// Process remaining chunks in groups of 256
+	for i := 128; i < numChunks; {
+		// Calculate chunk key and stem
 		chunkKey := trieutils.CodeChunkKeyWithEvaluatedAddress(addrPoint, uint256.NewInt(uint64(i)))
-		chunkStems = append(chunkStems, chunkKey[:verkle.StemSize])
-		i += 256
+		chunkStem := stem(chunkKey[:verkle.StemSize])
+
+		// Calculate size of current group (up to 256 chunks)
+		groupSize := min(256, numChunks-i)
+		chunkStems[chunkStem] = uint64(groupSize * 32)
+
+		// Move to next group
+		i += groupSize
 	}
-	return chunkStems
+
+	return accChunk, chunkStems
 }
 
 func expiryAnalysis(ctx *cli.Context) error {
@@ -680,20 +700,23 @@ func processAccountsAndStorage(db ethdb.Database, start, periodLength, blockRang
 		accPeriod := getPeriod(addrBn, start, periodLength)
 
 		// Process account code if it exists
+		var accChunk uint64
+		var chunkStems map[stem]uint64
+		var code []byte
 		addrPoint := trieutils.EvaluateAddressPoint(addr[:])
 		if !bytes.Equal(acc.CodeHash, types.EmptyCodeHash[:]) {
-			code := rawdb.ReadCode(db, common.BytesToHash(acc.CodeHash))
-			codeStems := getCodeStem(addrPoint, code)
-			for _, chunk := range codeStems {
+			code = rawdb.ReadCode(db, common.BytesToHash(acc.CodeHash))
+			accChunk, chunkStems = getCodeStem(addrPoint, code)
+			for _, chunkSize := range chunkStems {
 				if _, ok := codePeriodCount[accPeriod]; !ok {
 					codePeriodCount[accPeriod] = new(rawdb.Stat)
 				}
-				codePeriodCount[accPeriod].Add(common.StorageSize(len(chunk)))
+				codePeriodCount[accPeriod].Add(common.StorageSize(chunkSize))
 			}
 		}
 
-		// Add account to bucket
-		addBucket(addrBn, bVal, accBuckets, start, blockRange)
+		// Add account to bucket (includes the code)
+		addBucket(addrBn, bVal+common.StorageSize(len(code)), accBuckets, start, blockRange)
 
 		// Process storage slots
 		groupPeriod, groupStat := processStorageSlots(db, addrHash, start, periodLength, blockRange, slotBuckets, hashCache, buf, logProgress)
@@ -719,9 +742,86 @@ func processAccountsAndStorage(db ethdb.Database, start, periodLength, blockRang
 			accPeriodCount[accPeriod] = new(rawdb.Stat)
 		}
 		accPeriodCount[accPeriod].Add(bVal)
+		accPeriodCount[accPeriod].AddSize(common.StorageSize(accChunk))
 		if hasGroup {
 			accPeriodCount[gp].AddSize(groupStat[*group0].RawSize())
 		}
+		logProgress()
+	}
+}
+
+// processAccountsAndStorage processes all accounts and their storage slots
+func processAccounts(db ethdb.Database, start, periodLength, blockRange, headNumber uint64,
+	accBuckets map[int]*rawdb.Stat, accPeriodCount, codePeriodCount map[verkle.StatePeriod]*rawdb.Stat,
+) {
+	// Initialize progress tracking
+	checkpoint := 100000000
+	count := 0
+	logged := time.Now()
+	startTime := time.Now()
+	logProgress := func() {
+		count++
+		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
+			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			logged = time.Now()
+		}
+
+		if count%checkpoint == 0 {
+			renderPeriodCountTable("Account Period", accPeriodCount)
+			renderPeriodCountTable("Code Period", codePeriodCount)
+			renderBucketTable("Account", accBuckets, start, blockRange, headNumber)
+		}
+	}
+
+	// Process accounts
+	accPrefix := rawdb.SnapshotAccountPrefix
+	accIt := db.NewIterator(accPrefix, nil)
+	defer accIt.Release()
+
+	for accIt.Next() {
+		rawAccKey := accIt.Key()
+		rawAccVal := accIt.Value()
+		bVal := common.StorageSize(len(rawAccVal))
+
+		if len(rawAccKey) != len(accPrefix)+common.HashLength {
+			continue
+		}
+
+		// Process account
+		addrHash, addr, acc, err := processAccount(db, rawAccKey, rawAccVal, accPrefix)
+		if err != nil {
+			log.Error("failed to process account", "error", err)
+			continue
+		}
+
+		// Get account block number and period
+		addrBn := rawdb.ReadAccountSnapshotMeta(db, addrHash)
+		accPeriod := getPeriod(addrBn, start, periodLength)
+
+		// Process account code if it exists
+		var accChunk uint64
+		var chunkStems map[stem]uint64
+		var code []byte
+		addrPoint := trieutils.EvaluateAddressPoint(addr[:])
+		if !bytes.Equal(acc.CodeHash, types.EmptyCodeHash[:]) {
+			code = rawdb.ReadCode(db, common.BytesToHash(acc.CodeHash))
+			accChunk, chunkStems = getCodeStem(addrPoint, code)
+			for _, chunkSize := range chunkStems {
+				if _, ok := codePeriodCount[accPeriod]; !ok {
+					codePeriodCount[accPeriod] = new(rawdb.Stat)
+				}
+				codePeriodCount[accPeriod].Add(common.StorageSize(chunkSize))
+			}
+		}
+
+		// Add account to bucket (includes the code)
+		addBucket(addrBn, bVal+common.StorageSize(len(code)), accBuckets, start, blockRange)
+
+		if _, ok := accPeriodCount[accPeriod]; !ok {
+			accPeriodCount[accPeriod] = new(rawdb.Stat)
+		}
+		accPeriodCount[accPeriod].Add(bVal)
+		accPeriodCount[accPeriod].AddSize(common.StorageSize(accChunk))
 		logProgress()
 	}
 }
@@ -880,199 +980,36 @@ func renderBucketTable(title string, buckets map[int]*rawdb.Stat, start, blockRa
 }
 
 func accExpiryAnalysis(ctx *cli.Context) error {
-	if ctx.NArg() > 2 {
-		return fmt.Errorf("max 2 argument: %v", ctx.Command.ArgsUsage)
+	if ctx.NArg() > 3 {
+		return fmt.Errorf("max 3 arguments: %v", ctx.Command.ArgsUsage)
 	}
 
-	var start uint64
-	var periodLength uint64
-	blockRange := uint64(219000) // 1 month worth of blocks
-	switch ctx.NArg() {
-	case 2:
-		s, err := strconv.ParseUint(ctx.Args().First(), 10, 64)
-		if err != nil {
-			return fmt.Errorf("failed to parse period: %v", err)
-		}
-		start = s
+	// Parse command line arguments
+	start, periodLength, blockRange := parseExpiryAnalysisArgs(ctx)
 
-		p, err := strconv.ParseUint(ctx.Args().Get(1), 10, 64)
-		if err != nil {
-			return fmt.Errorf("failed to parse period: %v", err)
-		}
-		periodLength = p
-	case 1:
-		s, err := strconv.ParseUint(ctx.Args().First(), 10, 64)
-		if err != nil {
-			return fmt.Errorf("failed to parse period: %v", err)
-		}
-		start = s
-		periodLength = 1314000
-	default:
-		start = 17165429 // This is the starting block number of the node snapshot
-
-		// 1314000 = About 6 months worth of blocks.
-		// 6 months = 15768000s
-		// number of blocks = 15768000 / 12s = 1314000
-		// 12s is the average block time.
-		periodLength = 1314000
-	}
-
-	getCodeStem := func(addrPoint *verkle.Point, code []byte) [][]byte {
-		var chunkStems [][]byte
-		chunks := trie.ChunkifyCode(code)
-		for i := 128; i < len(chunks)/32; {
-			chunkKey := trieutils.CodeChunkKeyWithEvaluatedAddress(addrPoint, uint256.NewInt(uint64(i)))
-			chunkStems = append(chunkStems, chunkKey[:verkle.StemSize])
-			i += 256
-		}
-		return chunkStems
-	}
-
+	// Initialize database connection
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
 
-	it := db.NewIterator(rawdb.SnapshotAccountPrefix, nil)
-	defer it.Release()
+	head := rawdb.ReadHeadHeader(db)
+	headNumber := head.Number.Uint64()
 
-	accBuckets := make(map[int]int)
-	addBucket := func(bn uint64, buckets map[int]int) {
-		if bn == 0 {
-			buckets[0]++
-			return
-		}
-		if bn < start {
-			buckets[-1]++
-			return
-		}
-		bucket := int((bn-start)/blockRange) + 1
-		buckets[bucket]++
-	}
+	// Initialize data structures for analysis
+	accBuckets := make(map[int]*rawdb.Stat)
+	accPeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
+	codePeriodCount := make(map[verkle.StatePeriod]*rawdb.Stat)
 
-	count := 0
-	logged := time.Now()
-	startTime := time.Now()
-	logProgress := func() {
-		count++
-		if count%1000 == 0 && time.Since(logged) > 8*time.Second {
-			log.Info("Inspecting database", "count", count, "elapsed", common.PrettyDuration(time.Since(startTime)))
-			logged = time.Now()
-		}
-	}
+	// Process accounts and their storage
+	processAccounts(db, start, periodLength, blockRange, headNumber,
+		accBuckets, accPeriodCount, codePeriodCount)
 
-	accPeriodCount := make(map[verkle.StatePeriod]int)
-	codePeriodCount := make(map[verkle.StatePeriod]int)
-	for it.Next() {
-		rawAccKey := it.Key()
-		rawAccVal := it.Value()
-
-		// ...So because we are using hash-based, where the hash node isn't prefixed,
-		// we might get some false positives here...
-		// Therefore, we need to ensure that the expected snapshot key length is correct.
-		if len(rawAccKey) != len(rawdb.SnapshotAccountPrefix)+common.HashLength {
-			continue
-		}
-
-		addrHash := common.BytesToHash(rawAccKey[len(rawdb.SnapshotAccountPrefix) : len(rawdb.SnapshotAccountPrefix)+common.HashLength])
-		addrPre := rawdb.ReadPreimage(db, addrHash)
-		addr := common.BytesToAddress(addrPre)
-		if len(addrPre) != common.AddressLength {
-			log.Error("failed to read preimage", "addr", addrHash.Hex())
-			continue
-		}
-		acc, err := types.FullAccount(rawAccVal)
-		if err != nil {
-			log.Error("failed to decode account", "hash", addrHash.Hex(), "addr", addr.Hex(), "error", err)
-			continue
-		}
-		addrBn := rawdb.ReadAccountSnapshotMeta(db, addrHash)
-		accPeriod := getPeriod(addrBn, start, periodLength)
-		addrPoint := trieutils.EvaluateAddressPoint(addr[:])
-		accPeriodCount[accPeriod]++
-		addBucket(addrBn, accBuckets)
-
-		var codeStems [][]byte
-		if !bytes.Equal(acc.CodeHash, types.EmptyCodeHash[:]) {
-			code := rawdb.ReadCode(db, common.BytesToHash(acc.CodeHash))
-			codeStems = getCodeStem(addrPoint, code)
-			for range codeStems { // if code stems present, they are always unique
-				codePeriodCount[accPeriod]++
-			}
-		}
-
-		logProgress()
-	}
-
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Account Period", "Stem Count"})
-	total := 0
-	// Create a sorted slice of periods
-	var periods []verkle.StatePeriod
-	for period := range accPeriodCount {
-		periods = append(periods, period)
-	}
-	slices.Sort(periods)
-
-	// Append to table in sorted order
-	for _, period := range periods {
-		count := accPeriodCount[period]
-		table.Append([]string{fmt.Sprintf("%d", period), fmt.Sprintf("%d", count)})
-		total += count
-	}
-	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
-	table.Render()
-
-	// Display code period count
-	table = tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Code Period", "Stem Count"})
-	total = 0
-	var codePeriods []verkle.StatePeriod
-	for period := range codePeriodCount {
-		codePeriods = append(codePeriods, period)
-	}
-	slices.Sort(codePeriods)
-
-	for _, period := range codePeriods {
-		count := codePeriodCount[period]
-		table.Append([]string{fmt.Sprintf("%d", period), fmt.Sprintf("%d", count)})
-		total += count
-	}
-	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
-	table.Render()
-
-	// Display account in block range
-	table = tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Block Range", "Account Count"})
-	total = 0
-
-	// Get sorted bucket numbers
-	var bucketNums []int
-	for bucket := range accBuckets {
-		bucketNums = append(bucketNums, bucket)
-	}
-	slices.Sort(bucketNums)
-
-	// Display results with proper block ranges
-	for _, bucket := range bucketNums {
-		var rangeStr string
-		switch bucket {
-		case -1:
-			rangeStr = fmt.Sprintf("< %d", start)
-		case 0:
-			rangeStr = "Empty/Zero"
-		default:
-			bucketStart := start + uint64(bucket-1)*blockRange
-			bucketEnd := bucketStart + blockRange - 1
-			rangeStr = fmt.Sprintf("%d - %d", bucketStart, bucketEnd)
-		}
-		count := accBuckets[bucket]
-		table.Append([]string{rangeStr, fmt.Sprintf("%d", count)})
-		total += count
-	}
-	table.SetFooter([]string{"Total", fmt.Sprintf("%d", total)})
-	table.Render()
+	// Render results
+	renderPeriodCountTable("Account Period", accPeriodCount)
+	renderPeriodCountTable("Code Period", codePeriodCount)
+	renderBucketTable("Account", accBuckets, start, blockRange, headNumber)
 
 	return nil
 }
