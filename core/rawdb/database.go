@@ -727,30 +727,67 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, exp
 	}
 
 	expBlock := maxBlock - expiryBlock
+	log.Info("Starting expired data pruning", "maxBlock", maxBlock, "expiryBlock", expiryBlock, "targetBlock", expBlock)
+
+	var accountsProcessed, storageProcessed uint64
+	start := time.Now()
+	lastLog := time.Now()
 
 	onAccounts := func(address string) {
-		fmt.Println("onAccounts", address)
+		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+		DeleteAccountSnapshot(db, addrHash)
+		accountsProcessed++
+
+		if accountsProcessed%100000 == 0 || time.Since(lastLog) > 30*time.Second {
+			log.Info("Processing expired accounts", "processed", accountsProcessed, "elapsed", common.PrettyDuration(time.Since(start)))
+			lastLog = time.Now()
+		}
 	}
 	onStorage := func(address string, slot string) {
-		fmt.Println("onStorage", address, slot)
+		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+		slotHash := crypto.Keccak256Hash(common.HexToHash(slot).Bytes())
+		DeleteStorageSnapshot(db, addrHash, slotHash)
+		storageProcessed++
+
+		if storageProcessed%500000 == 0 || time.Since(lastLog) > 30*time.Second {
+			log.Info("Processing expired storage", "processed", storageProcessed, "elapsed", common.PrettyDuration(time.Since(start)))
+			lastLog = time.Now()
+		}
 	}
 
-	// onAccounts := func(address string) {
-	// 	addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
-	// 	DeleteAccountSnapshot(db, addrHash)
-	// }
-	// onStorage := func(address string, slot string) {
-	// 	addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
-	// 	slotHash := crypto.Keccak256Hash(common.HexToHash(slot).Bytes())
-	// 	DeleteStorageSnapshot(db, addrHash, slotHash)
-	// }
-
+	log.Info("Processing expired accounts...")
 	if err := client.ExecOnExpiredAccounts(ctx, expBlock, onAccounts); err != nil {
 		return err
 	}
+	log.Info("Completed processing expired accounts", "totalProcessed", accountsProcessed)
+
+	log.Info("Processing expired storage slots...")
 	if err := client.ExecOnExpiredSlots(ctx, expBlock, onStorage); err != nil {
 		return err
 	}
+	log.Info("Completed processing expired storage slots", "totalProcessed", storageProcessed)
+
+	log.Info("Counting remaining data...")
+	accIt := db.NewIterator(SnapshotAccountPrefix, nil)
+	accCount := 0
+	for accIt.Next() {
+		accCount++
+	}
+	accIt.Release()
+
+	slotIt := db.NewIterator(SnapshotStoragePrefix, nil)
+	slotCount := 0
+	for slotIt.Next() {
+		slotCount++
+	}
+	slotIt.Release()
+
+	log.Info("Pruning completed",
+		"accountsProcessed", accountsProcessed,
+		"storageProcessed", storageProcessed,
+		"accountsRemaining", accCount,
+		"storageRemaining", slotCount,
+		"totalElapsed", common.PrettyDuration(time.Since(start)))
 
 	return nil
 }
