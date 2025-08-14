@@ -943,7 +943,7 @@ func pruneExpired(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, true)
+	db := utils.MakeChainDatabase(ctx, stack, false)
 	defer db.Close()
 
 	chConfig := ch.Config{
