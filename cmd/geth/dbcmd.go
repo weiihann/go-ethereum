@@ -43,6 +43,7 @@ import (
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/olekukonko/tablewriter"
 	"github.com/urfave/cli/v2"
+	ch "github.com/weiihann/clickhouse-connector/clickhouse"
 )
 
 var (
@@ -83,6 +84,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbPruneExpiredCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -206,6 +208,23 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbPruneExpiredCmd = &cli.Command{
+		Action:    pruneExpired,
+		Name:      "prune-expired",
+		Usage:     "Prune expired state data (requires connection to Clickhouse database server)",
+		ArgsUsage: "<clickhouse-url> <expiry-block>",
+		Flags: slices.Concat([]cli.Flag{
+			&cli.StringFlag{
+				Name:  "clickhouse-url",
+				Usage: "Clickhouse database server URL",
+			},
+			&cli.Uint64Flag{
+				Name:  "expiry-block",
+				Usage: "Expiry block number",
+			},
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Description: "This command prunes the expired state data from the database",
 	}
 )
 
@@ -906,4 +925,35 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+func pruneExpired(ctx *cli.Context) error {
+	// Extract the URL from the command line flags
+	clickhouseURL := ctx.String("clickhouse-url")
+	if clickhouseURL == "" {
+		return fmt.Errorf("clickhouse-url is required")
+	}
+
+	// Extract the expiry block number
+	expiryBlock := ctx.Uint64("expiry-block")
+	if expiryBlock == 0 {
+		return fmt.Errorf("expiry-block is required")
+	}
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	chConfig := ch.Config{
+		DSN: clickhouseURL,
+	}
+	chClient := ch.New(&chConfig)
+	if err := chClient.Start(ctx.Context); err != nil {
+		return fmt.Errorf("failed to start Clickhouse client: %v", err)
+	}
+	defer chClient.Stop()
+
+	return rawdb.PruneExpired(ctx.Context, db, chClient, expiryBlock)
 }
