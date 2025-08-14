@@ -738,7 +738,7 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, exp
 		DeleteAccountSnapshot(db, addrHash)
 		accountsProcessed++
 
-		if accountsProcessed%100000 == 0 || time.Since(lastLog) > 30*time.Second {
+		if accountsProcessed%1000000 == 0 || time.Since(lastLog) > 8*time.Second {
 			log.Info("Processing expired accounts", "processed", accountsProcessed, "elapsed", common.PrettyDuration(time.Since(start)))
 			lastLog = time.Now()
 		}
@@ -749,7 +749,7 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, exp
 		DeleteStorageSnapshot(db, addrHash, slotHash)
 		storageProcessed++
 
-		if storageProcessed%500000 == 0 || time.Since(lastLog) > 30*time.Second {
+		if storageProcessed%5000000 == 0 || time.Since(lastLog) > 8*time.Second {
 			log.Info("Processing expired storage", "processed", storageProcessed, "elapsed", common.PrettyDuration(time.Since(start)))
 			lastLog = time.Now()
 		}
