@@ -18,6 +18,7 @@ package rawdb
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -33,6 +34,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/olekukonko/tablewriter"
+	ch "github.com/weiihann/clickhouse-connector/clickhouse"
 )
 
 var ErrDeleteRangeInterrupted = errors.New("safe delete range operation interrupted")
@@ -716,4 +718,39 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 		}
 	}
 	return batch.Write()
+}
+
+func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, expiryBlock uint64) error {
+	maxBlock, err := client.GetMaxBlock(ctx)
+	if err != nil {
+		return err
+	}
+
+	expBlock := maxBlock - expiryBlock
+
+	onAccounts := func(address string) {
+		fmt.Println("onAccounts", address)
+	}
+	onStorage := func(address string, slot string) {
+		fmt.Println("onStorage", address, slot)
+	}
+
+	// onAccounts := func(address string) {
+	// 	addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+	// 	DeleteAccountSnapshot(db, addrHash)
+	// }
+	// onStorage := func(address string, slot string) {
+	// 	addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+	// 	slotHash := crypto.Keccak256Hash(common.HexToHash(slot).Bytes())
+	// 	DeleteStorageSnapshot(db, addrHash, slotHash)
+	// }
+
+	if err := client.ExecOnExpiredAccounts(ctx, expBlock, onAccounts); err != nil {
+		return err
+	}
+	if err := client.ExecOnExpiredSlots(ctx, expBlock, onStorage); err != nil {
+		return err
+	}
+
+	return nil
 }
