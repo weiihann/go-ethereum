@@ -770,38 +770,42 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, exp
 	log.Info("Counting remaining data...")
 	countStart := time.Now()
 
+	var accountSnaps, storageSnaps stat
+
 	accIt := db.NewIterator(SnapshotAccountPrefix, nil)
-	accCount := 0
 	lastCountLog := time.Now()
 	for accIt.Next() {
-		accCount++
-		if accCount%100000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-			log.Info("Counting remaining accounts", "counted", accCount, "elapsed", common.PrettyDuration(time.Since(countStart)))
+		size := common.StorageSize(len(accIt.Key()) + len(accIt.Value()))
+		accountSnaps.Add(size)
+		if accountSnaps.count%100000 == 0 || time.Since(lastCountLog) > 10*time.Second {
+			log.Info("Counting remaining accounts", "counted", accountSnaps.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
 			lastCountLog = time.Now()
 		}
 	}
 	accIt.Release()
-	log.Info("Finished counting accounts", "total", accCount, "elapsed", common.PrettyDuration(time.Since(countStart)))
+	log.Info("Finished counting accounts", "total", accountSnaps.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
 
 	slotStart := time.Now()
 	slotIt := db.NewIterator(SnapshotStoragePrefix, nil)
-	slotCount := 0
 	lastSlotLog := time.Now()
 	for slotIt.Next() {
-		slotCount++
-		if slotCount%500000 == 0 || time.Since(lastSlotLog) > 10*time.Second {
-			log.Info("Counting remaining storage", "counted", slotCount, "elapsed", common.PrettyDuration(time.Since(slotStart)))
+		size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
+		storageSnaps.Add(size)
+		if storageSnaps.count%500000 == 0 || time.Since(lastSlotLog) > 10*time.Second {
+			log.Info("Counting remaining storage", "counted", storageSnaps.count, "elapsed", common.PrettyDuration(time.Since(slotStart)))
 			lastSlotLog = time.Now()
 		}
 	}
 	slotIt.Release()
-	log.Info("Finished counting storage", "total", slotCount, "elapsed", common.PrettyDuration(time.Since(slotStart)))
+	log.Info("Finished counting storage", "total", storageSnaps.count, "elapsed", common.PrettyDuration(time.Since(slotStart)))
 
 	log.Info("Pruning completed",
 		"accountsProcessed", accountsProcessed,
 		"storageProcessed", storageProcessed,
-		"accountsRemaining", accCount,
-		"storageRemaining", slotCount,
+		"accountsRemaining", accountSnaps.Count(),
+		"storageRemaining", storageSnaps.Count(),
+		"accountsSize", accountSnaps.Size(),
+		"storageSize", storageSnaps.Size(),
 		"totalElapsed", common.PrettyDuration(time.Since(start)))
 
 	return nil
