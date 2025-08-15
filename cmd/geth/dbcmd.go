@@ -220,6 +220,10 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 				Usage: "Clickhouse database server URL",
 			},
 			&cli.Uint64Flag{
+				Name:  "start-block",
+				Usage: "Start block number",
+			},
+			&cli.Uint64Flag{
 				Name:  "expiry-block",
 				Usage: "Expiry block number",
 			},
@@ -934,6 +938,11 @@ func pruneExpired(ctx *cli.Context) error {
 		return fmt.Errorf("clickhouse-url is required")
 	}
 
+	startBlock := ctx.Uint64("start-block")
+	if startBlock == 0 {
+		return fmt.Errorf("start-block is required")
+	}
+
 	// Extract the expiry block number
 	expiryBlock := ctx.Uint64("expiry-block")
 	if expiryBlock == 0 {
@@ -955,5 +964,5 @@ func pruneExpired(ctx *cli.Context) error {
 	}
 	defer chClient.Stop()
 
-	return rawdb.PruneExpired(ctx.Context, db, chClient, expiryBlock)
+	return rawdb.PruneExpired(ctx.Context, db, chClient, startBlock, expiryBlock)
 }

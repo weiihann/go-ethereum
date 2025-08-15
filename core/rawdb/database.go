@@ -720,14 +720,9 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 	return batch.Write()
 }
 
-func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, expiryBlock uint64) error {
-	maxBlock, err := client.GetMaxBlock(ctx)
-	if err != nil {
-		return err
-	}
-
-	expBlock := maxBlock - expiryBlock
-	log.Info("Starting expired data pruning", "maxBlock", maxBlock, "expiryBlock", expiryBlock, "targetBlock", expBlock)
+func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, startBlock, expiryBlock uint64) error {
+	expBlock := startBlock - expiryBlock
+	log.Info("Starting expired data pruning", "startBlock", startBlock, "expiryBlock", expiryBlock, "targetBlock", expBlock)
 
 	var accountsProcessed, storageProcessed uint64
 	start := time.Now()
