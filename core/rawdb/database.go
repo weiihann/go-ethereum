@@ -720,9 +720,10 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 	return batch.Write()
 }
 
-func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, startBlock, expiryBlock uint64) error {
-	expBlock := startBlock - expiryBlock
-	log.Info("Starting expired data pruning", "startBlock", startBlock, "expiryBlock", expiryBlock, "targetBlock", expBlock)
+func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, maxBlock, prevExpiryRange, expiryRange uint64) error {
+	expBlock := maxBlock - expiryRange
+	startExpBlock := maxBlock - prevExpiryRange
+	log.Info("Starting expired data pruning", "maxBlock", maxBlock, "expiryRange", expiryRange, "targetBlock", expBlock, "prevExpiryRange", prevExpiryRange)
 
 	var accountsProcessed, storageProcessed uint64
 	start := time.Now()
@@ -751,13 +752,13 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, sta
 	}
 
 	log.Info("Processing expired accounts...")
-	if err := client.ExecOnExpiredAccounts(ctx, expBlock, onAccounts); err != nil {
+	if err := client.ExecOnExpiredAccounts(ctx, startExpBlock, expBlock, onAccounts); err != nil {
 		return err
 	}
 	log.Info("Completed processing expired accounts", "totalProcessed", accountsProcessed)
 
 	log.Info("Processing expired storage slots...")
-	if err := client.ExecOnExpiredSlots(ctx, expBlock, onStorage); err != nil {
+	if err := client.ExecOnExpiredSlots(ctx, startExpBlock, expBlock, onStorage); err != nil {
 		return err
 	}
 	log.Info("Completed processing expired storage slots", "totalProcessed", storageProcessed)
