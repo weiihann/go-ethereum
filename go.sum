@@ -373,6 +373,8 @@ github.com/weiihann/clickhouse-connector v0.0.0-20250814050503-4389014e3285 h1:6
 github.com/weiihann/clickhouse-connector v0.0.0-20250814050503-4389014e3285/go.mod h1:2M+G8o3+yOD1cltY2Q3TT+/Axk0VvV6ivg0+Ya7QHfE=
 github.com/weiihann/clickhouse-connector v0.0.0-20250815125138-417b4f75b834 h1:gshzhIRHaclnt9YocVJ+d+33OBCw2meOhX/iiokGx4w=
 github.com/weiihann/clickhouse-connector v0.0.0-20250815125138-417b4f75b834/go.mod h1:2M+G8o3+yOD1cltY2Q3TT+/Axk0VvV6ivg0+Ya7QHfE=
+github.com/weiihann/clickhouse-connector v0.0.0-20250816035129-4b0aa56a3c8e h1:aJduwiSLffyXbs9GXCz+sMRqVBPtS7EFj98/IHx/vcw=
+github.com/weiihann/clickhouse-connector v0.0.0-20250816035129-4b0aa56a3c8e/go.mod h1:2M+G8o3+yOD1cltY2Q3TT+/Axk0VvV6ivg0+Ya7QHfE=
 github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 h1:gEOO8jv9F4OT7lGCjxCBTO/36wtF6j2nSip77qHd4x4=
 github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1/go.mod h1:Ohn+xnUBiLI6FVj/9LpzZWtj1/D6lUovWYBkxHVV3aM=
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=

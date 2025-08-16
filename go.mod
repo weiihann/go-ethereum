@@ -62,7 +62,7 @@ require (
 	github.com/supranational/blst v0.3.14
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
 	github.com/urfave/cli/v2 v2.27.5
-	github.com/weiihann/clickhouse-connector v0.0.0-20250815125138-417b4f75b834
+	github.com/weiihann/clickhouse-connector v0.0.0-20250816035129-4b0aa56a3c8e
 	go.uber.org/automaxprocs v1.5.2
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.36.0

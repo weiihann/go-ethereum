@@ -213,19 +213,23 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Action:    pruneExpired,
 		Name:      "prune-expired",
 		Usage:     "Prune expired state data (requires connection to Clickhouse database server)",
-		ArgsUsage: "<clickhouse-url> <expiry-block>",
+		ArgsUsage: "<clickhouse-url> <expiry-range>",
 		Flags: slices.Concat([]cli.Flag{
 			&cli.StringFlag{
 				Name:  "clickhouse-url",
 				Usage: "Clickhouse database server URL",
 			},
 			&cli.Uint64Flag{
-				Name:  "start-block",
-				Usage: "Start block number",
+				Name:  "prev-expiry-range",
+				Usage: "Previous expiry range",
 			},
 			&cli.Uint64Flag{
-				Name:  "expiry-block",
-				Usage: "Expiry block number",
+				Name:  "max-block",
+				Usage: "Max block number",
+			},
+			&cli.Uint64Flag{
+				Name:  "expiry-range",
+				Usage: "Expiry block range",
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command prunes the expired state data from the database",
@@ -938,15 +942,20 @@ func pruneExpired(ctx *cli.Context) error {
 		return fmt.Errorf("clickhouse-url is required")
 	}
 
-	startBlock := ctx.Uint64("start-block")
-	if startBlock == 0 {
-		return fmt.Errorf("start-block is required")
+	prevExpiryRange := ctx.Uint64("prev-expiry-range")
+	if prevExpiryRange == 0 {
+		return fmt.Errorf("prev-expiry-range is required")
+	}
+
+	maxBlock := ctx.Uint64("max-block")
+	if maxBlock == 0 {
+		return fmt.Errorf("max-block is required")
 	}
 
 	// Extract the expiry block number
-	expiryBlock := ctx.Uint64("expiry-block")
-	if expiryBlock == 0 {
-		return fmt.Errorf("expiry-block is required")
+	expiryRange := ctx.Uint64("expiry-range")
+	if expiryRange == 0 {
+		return fmt.Errorf("expiry-range is required")
 	}
 
 	stack, _ := makeConfigNode(ctx)
@@ -964,5 +973,5 @@ func pruneExpired(ctx *cli.Context) error {
 	}
 	defer chClient.Stop()
 
-	return rawdb.PruneExpired(ctx.Context, db, chClient, startBlock, expiryBlock)
+	return rawdb.PruneExpired(ctx.Context, db, chClient, maxBlock, prevExpiryRange, expiryRange)
 }
