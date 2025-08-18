@@ -730,10 +730,11 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 	lastLog := time.Now()
 
 	onAccounts := func(address string) {
+		addrHex := common.HexToAddress(address).Hex()
 		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
 		DeleteAccountSnapshot(db, addrHash)
 		WriteDebugAccountSnapshot(db, addrHash, []byte("0"))
-		WritePreimages(db, map[common.Hash][]byte{addrHash: []byte(address)})
+		WritePreimages(db, map[common.Hash][]byte{addrHash: []byte(addrHex)})
 		accountsProcessed++
 
 		if accountsProcessed%1000000 == 0 || time.Since(lastLog) > 8*time.Second {
@@ -742,11 +743,13 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 		}
 	}
 	onStorage := func(address string, slot string) {
+		addrHex := common.HexToAddress(address).Hex()
 		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+		slotHex := common.HexToHash(slot).Hex()
 		slotHash := crypto.Keccak256Hash(common.HexToHash(slot).Bytes())
 		DeleteStorageSnapshot(db, addrHash, slotHash)
 		WriteDebugStorageSnapshot(db, addrHash, slotHash, []byte("0"))
-		WritePreimages(db, map[common.Hash][]byte{addrHash: []byte(address), slotHash: []byte(slot)})
+		WritePreimages(db, map[common.Hash][]byte{addrHash: []byte(addrHex), slotHash: []byte(slotHex)})
 		storageProcessed++
 
 		if storageProcessed%5000000 == 0 || time.Since(lastLog) > 8*time.Second {
