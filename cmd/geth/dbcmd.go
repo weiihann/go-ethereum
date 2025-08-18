@@ -85,6 +85,7 @@ Remove blockchain and state databases`,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
 			dbPruneExpiredCmd,
+			dbCheckExpiredCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -213,6 +214,31 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Action:    pruneExpired,
 		Name:      "prune-expired",
 		Usage:     "Prune expired state data (requires connection to Clickhouse database server)",
+		ArgsUsage: "<clickhouse-url> <expiry-range>",
+		Flags: slices.Concat([]cli.Flag{
+			&cli.StringFlag{
+				Name:  "clickhouse-url",
+				Usage: "Clickhouse database server URL",
+			},
+			&cli.Uint64Flag{
+				Name:  "prev-expiry-range",
+				Usage: "Previous expiry range",
+			},
+			&cli.Uint64Flag{
+				Name:  "max-block",
+				Usage: "Max block number",
+			},
+			&cli.Uint64Flag{
+				Name:  "expiry-range",
+				Usage: "Expiry block range",
+			},
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Description: "This command prunes the expired state data from the database",
+	}
+	dbCheckExpiredCmd = &cli.Command{
+		Action:    checkExpired,
+		Name:      "check-expired",
+		Usage:     "Check expired state data (requires connection to Clickhouse database server)",
 		ArgsUsage: "<clickhouse-url> <expiry-range>",
 		Flags: slices.Concat([]cli.Flag{
 			&cli.StringFlag{
@@ -974,4 +1000,45 @@ func pruneExpired(ctx *cli.Context) error {
 	defer chClient.Stop()
 
 	return rawdb.PruneExpired(ctx.Context, db, chClient, maxBlock, prevExpiryRange, expiryRange)
+}
+
+func checkExpired(ctx *cli.Context) error {
+	// Extract the URL from the command line flags
+	clickhouseURL := ctx.String("clickhouse-url")
+	if clickhouseURL == "" {
+		return fmt.Errorf("clickhouse-url is required")
+	}
+
+	prevExpiryRange := ctx.Uint64("prev-expiry-range")
+	if prevExpiryRange == 0 {
+		return fmt.Errorf("prev-expiry-range is required")
+	}
+
+	maxBlock := ctx.Uint64("max-block")
+	if maxBlock == 0 {
+		return fmt.Errorf("max-block is required")
+	}
+
+	// Extract the expiry block number
+	expiryRange := ctx.Uint64("expiry-range")
+	if expiryRange == 0 {
+		return fmt.Errorf("expiry-range is required")
+	}
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, false)
+	defer db.Close()
+
+	chConfig := ch.Config{
+		DSN: clickhouseURL,
+	}
+	chClient := ch.New(&chConfig)
+	if err := chClient.Start(ctx.Context); err != nil {
+		return fmt.Errorf("failed to start Clickhouse client: %v", err)
+	}
+	defer chClient.Stop()
+
+	return rawdb.CheckExpired(ctx.Context, db, chClient, maxBlock, prevExpiryRange, expiryRange)
 }

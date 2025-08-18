@@ -733,6 +733,7 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
 		DeleteAccountSnapshot(db, addrHash)
 		WriteDebugAccountSnapshot(db, addrHash, []byte("0"))
+		WritePreimages(db, map[common.Hash][]byte{addrHash: []byte(address)})
 		accountsProcessed++
 
 		if accountsProcessed%1000000 == 0 || time.Since(lastLog) > 8*time.Second {
@@ -745,6 +746,7 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 		slotHash := crypto.Keccak256Hash(common.HexToHash(slot).Bytes())
 		DeleteStorageSnapshot(db, addrHash, slotHash)
 		WriteDebugStorageSnapshot(db, addrHash, slotHash, []byte("0"))
+		WritePreimages(db, map[common.Hash][]byte{addrHash: []byte(address), slotHash: []byte(slot)})
 		storageProcessed++
 
 		if storageProcessed%5000000 == 0 || time.Since(lastLog) > 8*time.Second {
@@ -807,4 +809,94 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 		"totalElapsed", common.PrettyDuration(time.Since(start)))
 
 	return nil
+}
+
+func CheckExpired(ctx context.Context, db ethdb.Database, client *ch.Client, maxBlock, prevExpiryRange, expiryRange uint64) error {
+	// expBlock := maxBlock - expiryRange
+	// startExpBlock := maxBlock - prevExpiryRange
+	// log.Info("Starting expired data pruning", "maxBlock", maxBlock, "expiryRange", expiryRange, "targetBlock", expBlock, "prevExpiryRange", prevExpiryRange)
+
+	// var accountsProcessed, storageProcessed uint64
+	// start := time.Now()
+	// lastLog := time.Now()
+
+	// onAccounts := func(address string) {
+	// 	addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+	// 	addrHex := addrHash.Hex()
+
+	// 	accountsProcessed++
+
+	// 	if accountsProcessed%1000000 == 0 || time.Since(lastLog) > 8*time.Second {
+	// 		log.Info("Processing expired accounts", "processed", accountsProcessed, "elapsed", common.PrettyDuration(time.Since(start)))
+	// 		lastLog = time.Now()
+	// 	}
+	// }
+	// onStorage := func(address string, slot string) {
+	// 	addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+	// 	slotHash := crypto.Keccak256Hash(common.HexToHash(slot).Bytes())
+	// 	DeleteStorageSnapshot(db, addrHash, slotHash)
+	// 	WriteDebugStorageSnapshot(db, addrHash, slotHash, []byte("0"))
+	// 	storageProcessed++
+
+	// 	if storageProcessed%5000000 == 0 || time.Since(lastLog) > 8*time.Second {
+	// 		log.Info("Processing expired storage", "processed", storageProcessed, "elapsed", common.PrettyDuration(time.Since(start)))
+	// 		lastLog = time.Now()
+	// 	}
+	// }
+
+	// log.Info("Processing expired accounts...")
+	// if err := client.ExecOnExpiredAccounts(ctx, startExpBlock, expBlock, onAccounts); err != nil {
+	// 	return err
+	// }
+	// log.Info("Completed processing expired accounts", "totalProcessed", accountsProcessed)
+
+	// log.Info("Processing expired storage slots...")
+	// if err := client.ExecOnExpiredSlots(ctx, startExpBlock, expBlock, onStorage); err != nil {
+	// 	return err
+	// }
+	// log.Info("Completed processing expired storage slots", "totalProcessed", storageProcessed)
+
+	// log.Info("Counting remaining data...")
+	// countStart := time.Now()
+
+	// var accountSnaps, storageSnaps stat
+
+	// accIt := db.NewIterator(SnapshotAccountPrefix, nil)
+	// lastCountLog := time.Now()
+	// for accIt.Next() {
+	// 	size := common.StorageSize(len(accIt.Key()) + len(accIt.Value()))
+	// 	accountSnaps.Add(size)
+	// 	if accountSnaps.count%100000 == 0 || time.Since(lastCountLog) > 10*time.Second {
+	// 		log.Info("Counting remaining accounts", "counted", accountSnaps.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+	// 		lastCountLog = time.Now()
+	// 	}
+	// }
+	// accIt.Release()
+	// log.Info("Finished counting accounts", "total", accountSnaps.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+
+	// slotStart := time.Now()
+	// slotIt := db.NewIterator(SnapshotStoragePrefix, nil)
+	// lastSlotLog := time.Now()
+	// for slotIt.Next() {
+	// 	size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
+	// 	storageSnaps.Add(size)
+	// 	if storageSnaps.count%500000 == 0 || time.Since(lastSlotLog) > 10*time.Second {
+	// 		log.Info("Counting remaining storage", "counted", storageSnaps.count, "elapsed", common.PrettyDuration(time.Since(slotStart)))
+	// 		lastSlotLog = time.Now()
+	// 	}
+	// }
+	// slotIt.Release()
+	// log.Info("Finished counting storage", "total", storageSnaps.count, "elapsed", common.PrettyDuration(time.Since(slotStart)))
+
+	// log.Info("Pruning completed",
+	// 	"accountsProcessed", accountsProcessed,
+	// 	"storageProcessed", storageProcessed,
+	// 	"accountsRemaining", accountSnaps.Count(),
+	// 	"storageRemaining", storageSnaps.Count(),
+	// 	"accountsSize", accountSnaps.Size(),
+	// 	"storageSize", storageSnaps.Size(),
+	// 	"totalElapsed", common.PrettyDuration(time.Since(start)))
+
+	// return nil
+	panic("not implemented")
 }
