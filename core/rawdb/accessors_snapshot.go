@@ -77,7 +77,7 @@ func ReadAccountSnapshot(db ethdb.KeyValueReader, hash common.Hash) []byte {
 	data, _ := db.Get(accountSnapshotKey(hash))
 	d := ReadDebugAccountSnapshot(db, hash)
 	if len(d) > 0 {
-		log.Info("Read expired account", "hash", hash)
+		log.Info("Read expired account", "accHash", hash.Hex())
 	}
 	return data
 }
@@ -123,7 +123,7 @@ func ReadStorageSnapshot(db ethdb.KeyValueReader, accountHash, storageHash commo
 	data, _ := db.Get(storageSnapshotKey(accountHash, storageHash))
 	d := ReadDebugStorageSnapshot(db, accountHash, storageHash)
 	if len(d) > 0 {
-		log.Info("Read expired storage", "accountHash", accountHash, "storageHash", storageHash, "data", d)
+		log.Info("Read expired storage", "accountHash", accountHash.Hex(), "storageHash", storageHash.Hex(), "data", d)
 	}
 	return data
 }
