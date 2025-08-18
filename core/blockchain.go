@@ -252,6 +252,7 @@ func (cfg *BlockChainConfig) triedbConfig(isVerkle bool) *triedb.Config {
 			// TODO(rjl493456442): The write buffer represents the memory limit used
 			// for flushing both trie data and state data to disk. The config name
 			// should be updated to eliminate the confusion.
+			SnapshotNoBuild: true,
 			WriteBufferSize: cfg.TrieDirtyLimit * 1024 * 1024,
 			NoAsyncFlush:    cfg.TrieNoAsyncFlush,
 		}
