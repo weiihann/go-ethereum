@@ -732,6 +732,7 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 	onAccounts := func(address string) {
 		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
 		DeleteAccountSnapshot(db, addrHash)
+		WriteDebugAccountSnapshot(db, addrHash, []byte("0"))
 		accountsProcessed++
 
 		if accountsProcessed%1000000 == 0 || time.Since(lastLog) > 8*time.Second {
@@ -743,6 +744,7 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
 		slotHash := crypto.Keccak256Hash(common.HexToHash(slot).Bytes())
 		DeleteStorageSnapshot(db, addrHash, slotHash)
+		WriteDebugStorageSnapshot(db, addrHash, slotHash, []byte("0"))
 		storageProcessed++
 
 		if storageProcessed%5000000 == 0 || time.Since(lastLog) > 8*time.Second {

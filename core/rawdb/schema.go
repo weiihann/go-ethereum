@@ -113,6 +113,8 @@ var (
 	bloomBitsPrefix       = []byte("B") // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
 	SnapshotAccountPrefix = []byte("a") // SnapshotAccountPrefix + account hash -> account trie value
 	SnapshotStoragePrefix = []byte("o") // SnapshotStoragePrefix + account hash + storage hash -> storage trie value
+	DebugAccountPrefix    = []byte("d") // DebugAccountPrefix + account hash -> account trie value
+	DebugStoragePrefix    = []byte("z") // DebugStoragePrefix + account hash + storage hash -> storage trie value
 	CodePrefix            = []byte("c") // CodePrefix + code hash -> account code
 	skeletonHeaderPrefix  = []byte("S") // skeletonHeaderPrefix + num (uint64 big endian) -> header
 
@@ -213,6 +215,20 @@ func txLookupKey(hash common.Hash) []byte {
 // accountSnapshotKey = SnapshotAccountPrefix + hash
 func accountSnapshotKey(hash common.Hash) []byte {
 	return append(SnapshotAccountPrefix, hash.Bytes()...)
+}
+
+// debugAccountSnapshotKey = DebugAccountPrefix + hash
+func debugAccountSnapshotKey(hash common.Hash) []byte {
+	return append(DebugAccountPrefix, hash.Bytes()...)
+}
+
+// debugStorageSnapshotKey = DebugStoragePrefix + account hash + storage hash
+func debugStorageSnapshotKey(accountHash, storageHash common.Hash) []byte {
+	buf := make([]byte, len(DebugStoragePrefix)+common.HashLength+common.HashLength)
+	n := copy(buf, DebugStoragePrefix)
+	n += copy(buf[n:], accountHash.Bytes())
+	copy(buf[n:], storageHash.Bytes())
+	return buf
 }
 
 // storageSnapshotKey = SnapshotStoragePrefix + account hash + storage hash

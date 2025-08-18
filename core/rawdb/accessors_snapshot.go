@@ -75,6 +75,10 @@ func DeleteSnapshotRoot(db ethdb.KeyValueWriter) {
 // ReadAccountSnapshot retrieves the snapshot entry of an account trie leaf.
 func ReadAccountSnapshot(db ethdb.KeyValueReader, hash common.Hash) []byte {
 	data, _ := db.Get(accountSnapshotKey(hash))
+	d := ReadDebugAccountSnapshot(db, hash)
+	if len(d) > 0 {
+		log.Info("Read expired account", "hash", hash)
+	}
 	return data
 }
 
@@ -83,6 +87,28 @@ func WriteAccountSnapshot(db ethdb.KeyValueWriter, hash common.Hash, entry []byt
 	if err := db.Put(accountSnapshotKey(hash), entry); err != nil {
 		log.Crit("Failed to store account snapshot", "err", err)
 	}
+}
+
+func WriteDebugAccountSnapshot(db ethdb.KeyValueWriter, hash common.Hash, entry []byte) {
+	if err := db.Put(debugAccountSnapshotKey(hash), entry); err != nil {
+		log.Crit("Failed to store debug account snapshot", "err", err)
+	}
+}
+
+func ReadDebugAccountSnapshot(db ethdb.KeyValueReader, hash common.Hash) []byte {
+	data, _ := db.Get(debugAccountSnapshotKey(hash))
+	return data
+}
+
+func WriteDebugStorageSnapshot(db ethdb.KeyValueWriter, accountHash, storageHash common.Hash, entry []byte) {
+	if err := db.Put(debugStorageSnapshotKey(accountHash, storageHash), entry); err != nil {
+		log.Crit("Failed to store debug storage snapshot", "err", err)
+	}
+}
+
+func ReadDebugStorageSnapshot(db ethdb.KeyValueReader, accountHash, storageHash common.Hash) []byte {
+	data, _ := db.Get(debugStorageSnapshotKey(accountHash, storageHash))
+	return data
 }
 
 // DeleteAccountSnapshot removes the snapshot entry of an account trie leaf.
@@ -95,6 +121,10 @@ func DeleteAccountSnapshot(db ethdb.KeyValueWriter, hash common.Hash) {
 // ReadStorageSnapshot retrieves the snapshot entry of a storage trie leaf.
 func ReadStorageSnapshot(db ethdb.KeyValueReader, accountHash, storageHash common.Hash) []byte {
 	data, _ := db.Get(storageSnapshotKey(accountHash, storageHash))
+	d := ReadDebugStorageSnapshot(db, accountHash, storageHash)
+	if len(d) > 0 {
+		log.Info("Read expired storage", "accountHash", accountHash, "storageHash", storageHash, "data", d)
+	}
 	return data
 }
 
