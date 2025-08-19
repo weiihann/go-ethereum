@@ -232,6 +232,14 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 				Name:  "expiry-range",
 				Usage: "Expiry block range",
 			},
+			&cli.BoolFlag{
+				Name:  "account",
+				Usage: "Prune expired account data",
+			},
+			&cli.BoolFlag{
+				Name:  "storage",
+				Usage: "Prune expired storage data",
+			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command prunes the expired state data from the database",
 	}
@@ -984,6 +992,9 @@ func pruneExpired(ctx *cli.Context) error {
 		return fmt.Errorf("expiry-range is required")
 	}
 
+	pruneAccount := ctx.Bool("account")
+	pruneStorage := ctx.Bool("storage")
+
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
@@ -999,7 +1010,7 @@ func pruneExpired(ctx *cli.Context) error {
 	}
 	defer chClient.Stop()
 
-	return rawdb.PruneExpired(ctx.Context, db, chClient, maxBlock, prevExpiryRange, expiryRange)
+	return rawdb.PruneExpired(ctx.Context, db, chClient, maxBlock, prevExpiryRange, expiryRange, pruneAccount, pruneStorage)
 }
 
 func checkExpired(ctx *cli.Context) error {
