@@ -249,7 +249,7 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Usage:     "Inspect the contract slots",
 		ArgsUsage: "<contract-address>",
 		Flags: slices.Concat([]cli.Flag{
-			&cli.Uint64Flag{
+			&cli.StringFlag{
 				Name:  "address",
 				Usage: "contract address",
 			},
