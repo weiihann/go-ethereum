@@ -824,13 +824,21 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 
 func InspectContractSlots(ctx context.Context, db ethdb.Database, address string) error {
 	addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+	log.Info("Inspecting contract slots", "address", address, "addrHash", addrHash.Hex())
 
 	var slotsStat stat
+
+	start := time.Now()
+	lastLog := time.Now()
 
 	slotIt := db.NewIterator(SnapshotStoragePrefix, addrHash.Bytes())
 	for slotIt.Next() {
 		size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
 		slotsStat.Add(size)
+		if slotsStat.count%2000000 == 0 || time.Since(lastLog) > 8*time.Second {
+			log.Info("Inspecting contract slots", "address", address, "counted", slotsStat.count, "elapsed", common.PrettyDuration(time.Since(start)))
+			lastLog = time.Now()
+		}
 	}
 	slotIt.Release()
 
