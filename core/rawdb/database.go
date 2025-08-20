@@ -832,16 +832,16 @@ func InspectContractSlots(ctx context.Context, db ethdb.Database, address string
 	start := time.Now()
 	lastLog := time.Now()
 
-	// slotIt := db.NewIterator(SnapshotStoragePrefix, addrHash.Bytes())
-	// for slotIt.Next() {
-	// 	size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
-	// 	slotsStat.Add(size)
-	// 	if slotsStat.count%10000000 == 0 || time.Since(lastLog) > 8*time.Second {
-	// 		log.Info("Inspecting contract slots", "address", address, "counted", slotsStat.count, "elapsed", common.PrettyDuration(time.Since(start)))
-	// 		lastLog = time.Now()
-	// 	}
-	// }
-	// slotIt.Release()
+	slotIt := db.NewIterator(SnapshotStoragePrefix, addrHash.Bytes())
+	for slotIt.Next() {
+		size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
+		slotsStat.Add(size)
+		if slotsStat.count%10000000 == 0 || time.Since(lastLog) > 8*time.Second {
+			log.Info("Inspecting contract slots", "address", address, "counted", slotsStat.count, "elapsed", common.PrettyDuration(time.Since(start)))
+			lastLog = time.Now()
+		}
+	}
+	slotIt.Release()
 
 	trNodesIt := db.NewIterator(TrieNodeStoragePrefix, addrHash.Bytes())
 	for trNodesIt.Next() {
