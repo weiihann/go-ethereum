@@ -85,6 +85,7 @@ Remove blockchain and state databases`,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
 			dbPruneExpiredCmd,
+			dbInspectContractSlotsCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -241,6 +242,19 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command prunes the expired state data from the database",
+	}
+	dbInspectContractSlotsCmd = &cli.Command{
+		Action:    inspectContractSlots,
+		Name:      "inspect-contract-slots",
+		Usage:     "Inspect the contract slots",
+		ArgsUsage: "<contract-address>",
+		Flags: slices.Concat([]cli.Flag{
+			&cli.Uint64Flag{
+				Name:  "address",
+				Usage: "contract address",
+			},
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Description: "This command inspects the contract slots",
 	}
 )
 
@@ -989,4 +1003,21 @@ func pruneExpired(ctx *cli.Context) error {
 	defer chClient.Stop()
 
 	return rawdb.PruneExpired(ctx.Context, db, chClient, maxBlock, prevExpiryRange, expiryRange, pruneAccount, pruneStorage)
+}
+
+func inspectContractSlots(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, false)
+	defer db.Close()
+
+	address := ctx.String("address")
+	if address == "" {
+		return fmt.Errorf("address is required")
+	}
+
+	rawdb.InspectContractSlots(ctx.Context, db, address)
+
+	return nil
 }
