@@ -827,22 +827,38 @@ func InspectContractSlots(ctx context.Context, db ethdb.Database, address string
 	log.Info("Inspecting contract slots", "address", address, "addrHash", addrHash.Hex())
 
 	var slotsStat stat
+	var trNodesStat stat
 
 	start := time.Now()
 	lastLog := time.Now()
 
-	slotIt := db.NewIterator(SnapshotStoragePrefix, addrHash.Bytes())
-	for slotIt.Next() {
-		size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
-		slotsStat.Add(size)
-		if slotsStat.count%2000000 == 0 || time.Since(lastLog) > 8*time.Second {
-			log.Info("Inspecting contract slots", "address", address, "counted", slotsStat.count, "elapsed", common.PrettyDuration(time.Since(start)))
+	// slotIt := db.NewIterator(SnapshotStoragePrefix, addrHash.Bytes())
+	// for slotIt.Next() {
+	// 	size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
+	// 	slotsStat.Add(size)
+	// 	if slotsStat.count%10000000 == 0 || time.Since(lastLog) > 8*time.Second {
+	// 		log.Info("Inspecting contract slots", "address", address, "counted", slotsStat.count, "elapsed", common.PrettyDuration(time.Since(start)))
+	// 		lastLog = time.Now()
+	// 	}
+	// }
+	// slotIt.Release()
+
+	trNodesIt := db.NewIterator(TrieNodeStoragePrefix, addrHash.Bytes())
+	for trNodesIt.Next() {
+		size := common.StorageSize(len(trNodesIt.Key()) + len(trNodesIt.Value()))
+		trNodesStat.Add(size)
+		if trNodesStat.count%10000000 == 0 || time.Since(lastLog) > 8*time.Second {
+			log.Info("Inspecting contract trie nodes", "address", address, "counted", trNodesStat.count, "elapsed", common.PrettyDuration(time.Since(start)))
 			lastLog = time.Now()
 		}
 	}
-	slotIt.Release()
+	trNodesIt.Release()
 
-	fmt.Println("Inspect completed", "address", address, "slots", slotsStat.Count(), "size", slotsStat.Size())
+	fmt.Println("Inspect completed",
+		"address", address,
+		"slots", slotsStat.Count(), "size", slotsStat.Size(),
+		"trNodes", trNodesStat.Count(), "size", trNodesStat.Size(),
+	)
 
 	return nil
 }
