@@ -421,7 +421,7 @@ func exportChain(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	chain, db := utils.MakeChain(ctx, stack, true)
+	chain, db := utils.MakeChain(ctx, stack, false)
 	defer db.Close()
 	start := time.Now()
 
@@ -709,7 +709,7 @@ func downloadEra(ctx *cli.Context) error {
 	flags.CheckExclusive(ctx, eraBlockFlag, eraEpochFlag, eraAllFlag)
 
 	// Resolve the network.
-	var network = "mainnet"
+	network := "mainnet"
 	if utils.IsNetworkPreset(ctx) {
 		switch {
 		case ctx.IsSet(utils.MainnetFlag.Name):
