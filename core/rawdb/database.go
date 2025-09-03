@@ -407,6 +407,8 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		stateLookups       stat
 		accountTries       stat
 		storageTries       stat
+		accountTriesMarks  stat
+		storageTriesMarks  stat
 		codes              stat
 		txLookups          stat
 		accountSnaps       stat
@@ -466,6 +468,10 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 			accountTries.Add(size)
 		case IsStorageTrieNode(key):
 			storageTries.Add(size)
+		case bytes.HasPrefix(key, TrieNodeAccountMarkPrefix):
+			accountTriesMarks.Add(size)
+		case bytes.HasPrefix(key, TrieNodeStorageMarkPrefix):
+			storageTriesMarks.Add(size)
 		case bytes.HasPrefix(key, CodePrefix) && len(key) == len(CodePrefix)+common.HashLength:
 			codes.Add(size)
 		case bytes.HasPrefix(key, txLookupPrefix) && len(key) == (len(txLookupPrefix)+common.HashLength):

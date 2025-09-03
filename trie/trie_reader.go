@@ -27,19 +27,20 @@ import (
 type trieReader struct {
 	owner  common.Hash
 	reader database.NodeReader
+	marks  map[string]struct{}
 	banned map[string]struct{} // Marker to prevent node from being accessed, for tests
 }
 
 // newTrieReader initializes the trie reader with the given node reader.
 func newTrieReader(stateRoot, owner common.Hash, db database.NodeDatabase) (*trieReader, error) {
 	if stateRoot == (common.Hash{}) || stateRoot == types.EmptyRootHash {
-		return &trieReader{owner: owner}, nil
+		return &trieReader{owner: owner, marks: make(map[string]struct{})}, nil
 	}
 	reader, err := db.NodeReader(stateRoot)
 	if err != nil {
 		return nil, &MissingNodeError{Owner: owner, NodeHash: stateRoot, err: err}
 	}
-	return &trieReader{owner: owner, reader: reader}, nil
+	return &trieReader{owner: owner, reader: reader, marks: make(map[string]struct{})}, nil
 }
 
 // newEmptyReader initializes the pure in-memory reader. All read operations
@@ -68,5 +69,6 @@ func (r *trieReader) node(path []byte, hash common.Hash) ([]byte, error) {
 	if err != nil || len(blob) == 0 {
 		return nil, &MissingNodeError{Owner: r.owner, NodeHash: hash, Path: path, err: err}
 	}
+	r.marks[string(path)] = struct{}{}
 	return blob, nil
 }

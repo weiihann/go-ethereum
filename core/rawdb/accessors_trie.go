@@ -104,6 +104,46 @@ func DeleteStorageTrieNode(db ethdb.KeyValueWriter, accountHash common.Hash, pat
 	}
 }
 
+func WriteAccountTrieNodeMark(db ethdb.KeyValueWriter, path []byte) {
+	if err := db.Put(accountTrieNodeMarkKey(path), []byte{}); err != nil {
+		log.Crit("Failed to store account trie node mark", "err", err)
+	}
+}
+
+func WriteStorageTrieNodeMark(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte) {
+	if err := db.Put(storageTrieNodeMarkKey(accountHash, path), []byte{}); err != nil {
+		log.Crit("Failed to store storage trie node mark", "err", err)
+	}
+}
+
+func DeleteAccountTrieNodeMark(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte) {
+	if err := db.Delete(accountTrieNodeMarkKey(path)); err != nil {
+		log.Crit("Failed to delete account trie node mark", "err", err)
+	}
+}
+
+func DeleteStorageTrieNodeMark(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte) {
+	if err := db.Delete(storageTrieNodeMarkKey(accountHash, path)); err != nil {
+		log.Crit("Failed to delete storage trie node mark", "err", err)
+	}
+}
+
+func HasAccountTrieNodeMark(db ethdb.KeyValueReader, path []byte) bool {
+	has, err := db.Has(accountTrieNodeMarkKey(path))
+	if err != nil {
+		return false
+	}
+	return has
+}
+
+func HasStorageTrieNodeMark(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) bool {
+	has, err := db.Has(storageTrieNodeMarkKey(accountHash, path))
+	if err != nil {
+		return false
+	}
+	return has
+}
+
 // ReadLegacyTrieNode retrieves the legacy trie node with the given
 // associated node hash.
 func ReadLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) []byte {
