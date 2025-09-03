@@ -564,6 +564,8 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		{"Key-Value store", "Path trie state lookups", stateLookups.Size(), stateLookups.Count()},
 		{"Key-Value store", "Path trie account nodes", accountTries.Size(), accountTries.Count()},
 		{"Key-Value store", "Path trie storage nodes", storageTries.Size(), storageTries.Count()},
+		{"Key-Value store", "Path trie account marks", accountTriesMarks.Size(), accountTriesMarks.Count()},
+		{"Key-Value store", "Path trie storage marks", storageTriesMarks.Size(), storageTriesMarks.Count()},
 		{"Key-Value store", "Path state history indexes", stateIndex.Size(), stateIndex.Count()},
 		{"Key-Value store", "Verkle trie nodes", verkleTries.Size(), verkleTries.Count()},
 		{"Key-Value store", "Verkle trie state lookups", verkleStateLookups.Size(), verkleStateLookups.Count()},
