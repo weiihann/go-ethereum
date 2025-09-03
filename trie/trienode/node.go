@@ -63,6 +63,7 @@ type NodeSet struct {
 	Owner   common.Hash
 	Leaves  []*leaf
 	Nodes   map[string]*Node
+	Marks   map[string]struct{}
 	updates int // the count of updated and inserted nodes
 	deletes int // the count of deleted nodes
 }
@@ -73,6 +74,7 @@ func NewNodeSet(owner common.Hash) *NodeSet {
 	return &NodeSet{
 		Owner: owner,
 		Nodes: make(map[string]*Node),
+		Marks: make(map[string]struct{}),
 	}
 }
 
@@ -118,7 +120,7 @@ func (set *NodeSet) MergeSet(other *NodeSet) error {
 }
 
 // Merge adds a set of nodes into the set.
-func (set *NodeSet) Merge(owner common.Hash, nodes map[string]*Node) error {
+func (set *NodeSet) Merge(owner common.Hash, nodes map[string]*Node, marks map[string]struct{}) error {
 	if set.Owner != owner {
 		return fmt.Errorf("nodesets belong to different owner are not mergeable %x-%x", set.Owner, owner)
 	}
@@ -139,6 +141,11 @@ func (set *NodeSet) Merge(owner common.Hash, nodes map[string]*Node) error {
 		}
 		set.Nodes[path] = node
 	}
+
+	for path := range marks {
+		set.Marks[path] = struct{}{}
+	}
+
 	return nil
 }
 
@@ -164,7 +171,7 @@ func (set *NodeSet) HashSet() map[common.Hash][]byte {
 
 // Summary returns a string-representation of the NodeSet.
 func (set *NodeSet) Summary() string {
-	var out = new(strings.Builder)
+	out := new(strings.Builder)
 	fmt.Fprintf(out, "nodeset owner: %v\n", set.Owner)
 	for path, n := range set.Nodes {
 		// Deletion
@@ -203,7 +210,7 @@ func NewWithNodeSet(set *NodeSet) *MergedNodeSet {
 func (set *MergedNodeSet) Merge(other *NodeSet) error {
 	subset, present := set.Sets[other.Owner]
 	if present {
-		return subset.Merge(other.Owner, other.Nodes)
+		return subset.Merge(other.Owner, other.Nodes, other.Marks)
 	}
 	set.Sets[other.Owner] = other
 	return nil

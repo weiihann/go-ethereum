@@ -1328,6 +1328,27 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 				return nil, err
 			}
 			s.TrieDBCommits += time.Since(start)
+
+			// Commit the marks
+			batch := db.Disk().NewBatch()
+
+			for _, set := range ret.nodes.Sets {
+				isAcc := false
+				if set.Owner == (common.Hash{}) {
+					isAcc = true
+				}
+				for path := range set.Marks {
+					if isAcc {
+						rawdb.WriteAccountTrieNodeMark(batch, []byte(path))
+					} else {
+						rawdb.WriteStorageTrieNodeMark(batch, set.Owner, []byte(path))
+					}
+				}
+			}
+
+			if err := batch.Write(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	s.reader, _ = s.db.Reader(s.originalRoot)

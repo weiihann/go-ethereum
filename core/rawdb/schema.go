@@ -117,9 +117,11 @@ var (
 	skeletonHeaderPrefix  = []byte("S") // skeletonHeaderPrefix + num (uint64 big endian) -> header
 
 	// Path-based storage scheme of merkle patricia trie.
-	TrieNodeAccountPrefix = []byte("A") // TrieNodeAccountPrefix + hexPath -> trie node
-	TrieNodeStoragePrefix = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
-	stateIDPrefix         = []byte("L") // stateIDPrefix + state root -> state id
+	TrieNodeAccountPrefix     = []byte("A") // TrieNodeAccountPrefix + hexPath -> trie node
+	TrieNodeStoragePrefix     = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
+	TrieNodeAccountMarkPrefix = []byte("y")
+	TrieNodeStorageMarkPrefix = []byte("z")
+	stateIDPrefix             = []byte("L") // stateIDPrefix + state root -> state id
 
 	// State history indexing within path-based storage scheme
 	StateHistoryIndexPrefix           = []byte("m")   // The global prefix of state history index data
@@ -277,6 +279,18 @@ func accountTrieNodeKey(path []byte) []byte {
 func storageTrieNodeKey(accountHash common.Hash, path []byte) []byte {
 	buf := make([]byte, len(TrieNodeStoragePrefix)+common.HashLength+len(path))
 	n := copy(buf, TrieNodeStoragePrefix)
+	n += copy(buf[n:], accountHash.Bytes())
+	copy(buf[n:], path)
+	return buf
+}
+
+func accountTrieNodeMarkKey(path []byte) []byte {
+	return append(TrieNodeAccountMarkPrefix, path...)
+}
+
+func storageTrieNodeMarkKey(accountHash common.Hash, path []byte) []byte {
+	buf := make([]byte, len(TrieNodeStorageMarkPrefix)+common.HashLength+len(path))
+	n := copy(buf, TrieNodeStorageMarkPrefix)
 	n += copy(buf[n:], accountHash.Bytes())
 	copy(buf[n:], path)
 	return buf
