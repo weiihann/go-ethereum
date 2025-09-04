@@ -116,7 +116,7 @@ func WriteStorageTrieNodeMark(db ethdb.KeyValueWriter, accountHash common.Hash, 
 	}
 }
 
-func DeleteAccountTrieNodeMark(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte) {
+func DeleteAccountTrieNodeMark(db ethdb.KeyValueWriter, path []byte) {
 	if err := db.Delete(accountTrieNodeMarkKey(path)); err != nil {
 		log.Crit("Failed to delete account trie node mark", "err", err)
 	}

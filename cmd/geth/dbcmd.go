@@ -240,6 +240,10 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 				Name:  "storage",
 				Usage: "Prune expired storage data",
 			},
+			&cli.BoolFlag{
+				Name:  "trie",
+				Usage: "Prune expired trie data",
+			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command prunes the expired state data from the database",
 	}
@@ -982,6 +986,7 @@ func pruneExpired(ctx *cli.Context) error {
 
 	pruneAccount := ctx.Bool("account")
 	pruneStorage := ctx.Bool("storage")
+	pruneTrie := ctx.Bool("trie")
 
 	if !pruneAccount && !pruneStorage {
 		return fmt.Errorf("at least one of account or storage must be true")
@@ -1002,7 +1007,17 @@ func pruneExpired(ctx *cli.Context) error {
 	}
 	defer chClient.Stop()
 
-	return rawdb.PruneExpired(ctx.Context, db, chClient, maxBlock, prevExpiryRange, expiryRange, pruneAccount, pruneStorage)
+	return rawdb.PruneExpired(
+		ctx.Context,
+		db,
+		chClient,
+		maxBlock,
+		prevExpiryRange,
+		expiryRange,
+		pruneAccount,
+		pruneStorage,
+		pruneTrie,
+	)
 }
 
 func inspectContractSlots(ctx *cli.Context) error {
