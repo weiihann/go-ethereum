@@ -728,7 +728,13 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 	return batch.Write()
 }
 
-func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, maxBlock, prevExpiryRange, expiryRange uint64, pruneAccount, pruneStorage bool) error {
+func PruneExpired(
+	ctx context.Context,
+	db ethdb.Database,
+	client *ch.Client,
+	maxBlock, prevExpiryRange, expiryRange uint64,
+	pruneAccount, pruneStorage, pruneTrie bool,
+) error {
 	expBlock := maxBlock - expiryRange
 	startExpBlock := maxBlock - prevExpiryRange
 	log.Info("Starting expired data pruning", "maxBlock", maxBlock,
@@ -782,6 +788,14 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 		log.Info("Completed processing expired storage slots", "totalProcessed", storageProcessed)
 	}
 
+	if pruneTrie {
+		log.Info("Processing expired trie nodes...")
+		if err := pruneExpiredTrie(db); err != nil {
+			return err
+		}
+		log.Info("Completed processing expired trie nodes")
+	}
+
 	log.Info("Counting remaining data...")
 	countStart := time.Now()
 
@@ -818,6 +832,37 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 		log.Info("Finished counting storage", "total", storageSnaps.count, "elapsed", common.PrettyDuration(time.Since(slotStart)))
 	}
 
+	var accountTries stat
+	var storageTries stat
+	if pruneTrie {
+		log.Info("Counting remaining trie nodes...")
+		countStart := time.Now()
+		lastCountLog := time.Now()
+		accIt := db.NewIterator(TrieNodeAccountPrefix, nil)
+		for accIt.Next() {
+			size := common.StorageSize(len(accIt.Key()) + len(accIt.Value()))
+			accountTries.Add(size)
+			if accountTries.count%1000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
+				log.Info("Counting remaining account trie nodes", "counted", accountTries.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+				lastCountLog = time.Now()
+			}
+		}
+		accIt.Release()
+		log.Info("Finished counting account trie nodes", "total", accountTries.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+
+		slotIt := db.NewIterator(TrieNodeStoragePrefix, nil)
+		for slotIt.Next() {
+			size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
+			storageTries.Add(size)
+			if storageTries.count%1000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
+				log.Info("Counting remaining storage trie nodes", "counted", storageTries.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+				lastCountLog = time.Now()
+			}
+		}
+		slotIt.Release()
+		log.Info("Finished counting storage trie nodes", "total", storageTries.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+	}
+
 	log.Info("Pruning completed",
 		"accountsProcessed", accountsProcessed,
 		"storageProcessed", storageProcessed,
@@ -825,6 +870,10 @@ func PruneExpired(ctx context.Context, db ethdb.Database, client *ch.Client, max
 		"storageRemaining", storageSnaps.Count(),
 		"accountsSize", accountSnaps.Size(),
 		"storageSize", storageSnaps.Size(),
+		"accountTries", accountTries.Count(),
+		"storageTries", storageTries.Count(),
+		"accountTriesSize", accountTries.Size(),
+		"storageTriesSize", storageTries.Size(),
 		"totalElapsed", common.PrettyDuration(time.Since(start)))
 
 	return nil
@@ -867,6 +916,31 @@ func InspectContractSlots(ctx context.Context, db ethdb.Database, address string
 		"slots", slotsStat.Count(), "size", slotsStat.Size(),
 		"trNodes", trNodesStat.Count(), "size", trNodesStat.Size(),
 	)
+
+	return nil
+}
+
+func pruneExpiredTrie(db ethdb.Database) error {
+	accIt := db.NewIterator(TrieNodeAccountPrefix, nil)
+	for accIt.Next() {
+		key := accIt.Key()
+		path := key[len(TrieNodeAccountPrefix):]
+		if !HasAccountTrieNodeMark(db, path) {
+			DeleteAccountTrieNode(db, path)
+		}
+	}
+	accIt.Release()
+
+	slotIt := db.NewIterator(TrieNodeStoragePrefix, nil)
+	for slotIt.Next() {
+		key := slotIt.Key()
+		accHash := common.BytesToHash(key[len(TrieNodeStoragePrefix) : len(TrieNodeStoragePrefix)+common.HashLength])
+		path := key[len(TrieNodeStoragePrefix)+common.HashLength:]
+		if !HasStorageTrieNodeMark(db, accHash, path) {
+			DeleteStorageTrieNode(db, accHash, path)
+		}
+	}
+	slotIt.Release()
 
 	return nil
 }
