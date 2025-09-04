@@ -988,8 +988,8 @@ func pruneExpired(ctx *cli.Context) error {
 	pruneStorage := ctx.Bool("storage")
 	pruneTrie := ctx.Bool("trie")
 
-	if !pruneAccount && !pruneStorage {
-		return fmt.Errorf("at least one of account or storage must be true")
+	if !pruneAccount && !pruneStorage && !pruneTrie {
+		return fmt.Errorf("at least one of account or storage or trie must be true")
 	}
 
 	stack, _ := makeConfigNode(ctx)
