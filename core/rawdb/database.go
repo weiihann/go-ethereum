@@ -936,7 +936,7 @@ func pruneExpiredTrie(db ethdb.Database) error {
 
 		count++
 		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-			log.Info("Pruning expired account trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+			log.Info("Duplicating expired account trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
 			lastCountLog = time.Now()
 		}
 	}
