@@ -121,6 +121,8 @@ var (
 	TrieNodeStoragePrefix     = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
 	TrieNodeAccountMarkPrefix = []byte("y")
 	TrieNodeStorageMarkPrefix = []byte("z")
+	TrieNodeAccountDupPrefix  = []byte("w")
+	TrieNodeStorageDupPrefix  = []byte("x")
 	stateIDPrefix             = []byte("L") // stateIDPrefix + state root -> state id
 
 	// State history indexing within path-based storage scheme
@@ -275,6 +277,10 @@ func accountTrieNodeKey(path []byte) []byte {
 	return append(TrieNodeAccountPrefix, path...)
 }
 
+func accountTrieNodeDupKey(path []byte) []byte {
+	return append(TrieNodeAccountDupPrefix, path...)
+}
+
 // storageTrieNodeKey = TrieNodeStoragePrefix + accountHash + nodePath.
 func storageTrieNodeKey(accountHash common.Hash, path []byte) []byte {
 	buf := make([]byte, len(TrieNodeStoragePrefix)+common.HashLength+len(path))
@@ -282,6 +288,10 @@ func storageTrieNodeKey(accountHash common.Hash, path []byte) []byte {
 	n += copy(buf[n:], accountHash.Bytes())
 	copy(buf[n:], path)
 	return buf
+}
+
+func storageTrieNodeDupKey(accountHash common.Hash, path []byte) []byte {
+	return append(TrieNodeStorageDupPrefix, accountHash.Bytes()...)
 }
 
 func accountTrieNodeMarkKey(path []byte) []byte {

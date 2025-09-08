@@ -67,6 +67,20 @@ func WriteAccountTrieNode(db ethdb.KeyValueWriter, path []byte, node []byte) {
 	}
 }
 
+func WriteAccountTrieNodeDup(db ethdb.KeyValueWriter, path []byte) {
+	if err := db.Put(accountTrieNodeDupKey(path), []byte{}); err != nil {
+		log.Crit("Failed to store account trie node dup", "err", err)
+	}
+}
+
+func HasAccountTrieNodeDup(db ethdb.KeyValueReader, path []byte) bool {
+	has, err := db.Has(accountTrieNodeDupKey(path))
+	if err != nil {
+		return false
+	}
+	return has
+}
+
 // DeleteAccountTrieNode deletes the specified account trie node from the database.
 func DeleteAccountTrieNode(db ethdb.KeyValueWriter, path []byte) {
 	if err := db.Delete(accountTrieNodeKey(path)); err != nil {
@@ -78,6 +92,20 @@ func DeleteAccountTrieNode(db ethdb.KeyValueWriter, path []byte) {
 func ReadStorageTrieNode(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) []byte {
 	data, _ := db.Get(storageTrieNodeKey(accountHash, path))
 	return data
+}
+
+func WriteStorageTrieNodeDup(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte) {
+	if err := db.Put(storageTrieNodeDupKey(accountHash, path), []byte{}); err != nil {
+		log.Crit("Failed to store storage trie node dup", "err", err)
+	}
+}
+
+func HasStorageTrieNodeDup(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) bool {
+	has, err := db.Has(storageTrieNodeDupKey(accountHash, path))
+	if err != nil {
+		return false
+	}
+	return has
 }
 
 // HasStorageTrieNode checks the presence of the storage trie node with the
