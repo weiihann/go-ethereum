@@ -85,6 +85,7 @@ Remove blockchain and state databases`,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
 			dbPruneExpiredCmd,
+			dbQueryChCmd,
 			dbInspectContractSlotsCmd,
 		},
 	}
@@ -243,6 +244,19 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			&cli.BoolFlag{
 				Name:  "trie",
 				Usage: "Prune expired trie data",
+			},
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Description: "This command prunes the expired state data from the database",
+	}
+	dbQueryChCmd = &cli.Command{
+		Action:    queryCh,
+		Name:      "query-ch",
+		Usage:     "TODO",
+		ArgsUsage: "<clickhouse-url>",
+		Flags: slices.Concat([]cli.Flag{
+			&cli.StringFlag{
+				Name:  "clickhouse-url",
+				Usage: "Clickhouse database server URL",
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command prunes the expired state data from the database",
@@ -1035,4 +1049,33 @@ func inspectContractSlots(ctx *cli.Context) error {
 	rawdb.InspectContractSlots(ctx.Context, db, address)
 
 	return nil
+}
+
+func queryCh(ctx *cli.Context) error {
+	// Extract the URL from the command line flags
+	clickhouseURL := ctx.String("clickhouse-url")
+	if clickhouseURL == "" {
+		return fmt.Errorf("clickhouse-url is required")
+	}
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, false)
+	defer db.Close()
+
+	chConfig := ch.Config{
+		DSN: clickhouseURL,
+	}
+	chClient := ch.New(&chConfig)
+	if err := chClient.Start(ctx.Context); err != nil {
+		return fmt.Errorf("failed to start Clickhouse client: %v", err)
+	}
+	defer chClient.Stop()
+
+	return rawdb.QueryCh(
+		ctx.Context,
+		db,
+		chClient,
+	)
 }

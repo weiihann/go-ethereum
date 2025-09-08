@@ -844,6 +844,102 @@ func PruneExpired(
 	return nil
 }
 
+func QueryCh(ctx context.Context, db ethdb.Database, client *ch.Client) error {
+	var deletedAccounts, deletedStorage stat
+
+	var accountsProcessed, storageProcessed uint64
+	start := time.Now()
+	lastLog := time.Now()
+
+	onAccounts := func(address string) {
+		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+		data := ReadAccountSnapshot(db, addrHash)
+		if len(data) != 0 {
+			deletedAccounts.Add(common.StorageSize(len(addrHash) + len(data)))
+		}
+
+		accountsProcessed++
+		if accountsProcessed%1000000 == 0 || time.Since(lastLog) > 8*time.Second {
+			log.Info("Processing expired accounts", "processed", accountsProcessed, "elapsed", common.PrettyDuration(time.Since(start)))
+			lastLog = time.Now()
+		}
+	}
+	onStorage := func(address string, slot string) {
+		addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
+		slotHash := crypto.Keccak256Hash(common.HexToHash(slot).Bytes())
+		data := ReadStorageSnapshot(db, addrHash, slotHash)
+		if len(data) != 0 {
+			deletedStorage.Add(common.StorageSize(len(addrHash) + len(slotHash) + len(data)))
+		}
+
+		storageProcessed++
+		if storageProcessed%5000000 == 0 || time.Since(lastLog) > 8*time.Second {
+			log.Info("Processing expired storage", "processed", storageProcessed, "elapsed", common.PrettyDuration(time.Since(start)))
+			lastLog = time.Now()
+		}
+	}
+
+	if err := execOnZeroLifespanAccounts(ctx, client, onAccounts); err != nil {
+		return err
+	}
+	if err := execOnZeroLifespanSlots(ctx, client, onStorage); err != nil {
+		return err
+	}
+
+	log.Info("Deleted accounts", "size", deletedAccounts.Size(), "count", deletedAccounts.Count())
+	log.Info("Deleted storage", "size", deletedStorage.Size(), "count", deletedStorage.Count())
+	log.Info("Total elapsed", "elapsed", common.PrettyDuration(time.Since(start)))
+
+	return nil
+}
+
+func execOnZeroLifespanAccounts(ctx context.Context, client *ch.Client, execFn func(address string)) error {
+	query := `
+		SELECT address FROM default.accounts_lifespan_v2
+		WHERE lifespan = 0
+	`
+
+	rows, err := client.Query(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var address string
+		if err := rows.Scan(&address); err != nil {
+			return err
+		}
+		execFn(address)
+	}
+
+	return nil
+}
+
+func execOnZeroLifespanSlots(ctx context.Context, client *ch.Client, execFn func(address string, slot string)) error {
+	query := `
+		SELECT address, slot FROM default.storage_lifespan
+		WHERE lifespan = 0
+	`
+
+	rows, err := client.Query(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var address string
+		var slot string
+		if err := rows.Scan(&address, &slot); err != nil {
+			return err
+		}
+		execFn(address, slot)
+	}
+
+	return nil
+}
+
 func InspectContractSlots(ctx context.Context, db ethdb.Database, address string) error {
 	addrHash := crypto.Keccak256Hash(common.HexToAddress(address).Bytes())
 	log.Info("Inspecting contract slots", "address", address, "addrHash", addrHash.Hex())
