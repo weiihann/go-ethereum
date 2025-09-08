@@ -921,6 +921,11 @@ func InspectContractSlots(ctx context.Context, db ethdb.Database, address string
 }
 
 func pruneExpiredTrie(db ethdb.Database) error {
+	countStart := time.Now()
+	lastCountLog := time.Now()
+
+	count := 0
+
 	accIt := db.NewIterator(TrieNodeAccountPrefix, nil)
 	for accIt.Next() {
 		key := accIt.Key()
@@ -928,9 +933,16 @@ func pruneExpiredTrie(db ethdb.Database) error {
 		if !HasAccountTrieNodeMark(db, path) {
 			DeleteAccountTrieNode(db, path)
 		}
+
+		count++
+		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
+			log.Info("Pruning expired account trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+			lastCountLog = time.Now()
+		}
 	}
 	accIt.Release()
 
+	count = 0
 	slotIt := db.NewIterator(TrieNodeStoragePrefix, nil)
 	for slotIt.Next() {
 		key := slotIt.Key()
@@ -939,6 +951,13 @@ func pruneExpiredTrie(db ethdb.Database) error {
 		if !HasStorageTrieNodeMark(db, accHash, path) {
 			DeleteStorageTrieNode(db, accHash, path)
 		}
+
+		count++
+		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
+			log.Info("Pruning expired storage trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+			lastCountLog = time.Now()
+		}
+
 	}
 	slotIt.Release()
 
