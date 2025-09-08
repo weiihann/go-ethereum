@@ -931,7 +931,7 @@ func pruneExpiredTrie(db ethdb.Database) error {
 		key := accIt.Key()
 		path := key[len(TrieNodeAccountPrefix):]
 		if !HasAccountTrieNodeMark(db, path) {
-			DeleteAccountTrieNode(db, path)
+			WriteAccountTrieNodeDup(db, path)
 		}
 
 		count++
@@ -949,17 +949,47 @@ func pruneExpiredTrie(db ethdb.Database) error {
 		accHash := common.BytesToHash(key[len(TrieNodeStoragePrefix) : len(TrieNodeStoragePrefix)+common.HashLength])
 		path := key[len(TrieNodeStoragePrefix)+common.HashLength:]
 		if !HasStorageTrieNodeMark(db, accHash, path) {
-			DeleteStorageTrieNode(db, accHash, path)
+			WriteStorageTrieNodeDup(db, accHash, path)
 		}
 
 		count++
 		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-			log.Info("Pruning expired storage trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+			log.Info("Duplicating expired storage trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
 			lastCountLog = time.Now()
 		}
 
 	}
 	slotIt.Release()
+
+	// Iterate the dup keys and delete the trie nodes
+	count = 0
+	lastCountLog = time.Now()
+
+	accDupIt := db.NewIterator(TrieNodeAccountDupPrefix, nil)
+	for accDupIt.Next() {
+		path := accDupIt.Key()[len(TrieNodeAccountDupPrefix):]
+		DeleteAccountTrieNode(db, path)
+
+		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
+			log.Info("Pruning expired account trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+			lastCountLog = time.Now()
+		}
+	}
+	accDupIt.Release()
+
+	slotDupIt := db.NewIterator(TrieNodeStorageDupPrefix, nil)
+	for slotDupIt.Next() {
+		key := slotDupIt.Key()
+		accHash := common.BytesToHash(key[len(TrieNodeStorageDupPrefix) : len(TrieNodeStorageDupPrefix)+common.HashLength])
+		path := key[len(TrieNodeStorageDupPrefix)+common.HashLength:]
+		DeleteStorageTrieNode(db, accHash, path)
+
+		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
+			log.Info("Pruning expired storage trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+			lastCountLog = time.Now()
+		}
+	}
+	slotDupIt.Release()
 
 	return nil
 }
