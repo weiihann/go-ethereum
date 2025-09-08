@@ -832,37 +832,6 @@ func PruneExpired(
 		log.Info("Finished counting storage", "total", storageSnaps.count, "elapsed", common.PrettyDuration(time.Since(slotStart)))
 	}
 
-	var accountTries stat
-	var storageTries stat
-	if pruneTrie {
-		log.Info("Counting remaining trie nodes...")
-		countStart := time.Now()
-		lastCountLog := time.Now()
-		accIt := db.NewIterator(TrieNodeAccountPrefix, nil)
-		for accIt.Next() {
-			size := common.StorageSize(len(accIt.Key()) + len(accIt.Value()))
-			accountTries.Add(size)
-			if accountTries.count%1000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-				log.Info("Counting remaining account trie nodes", "counted", accountTries.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
-				lastCountLog = time.Now()
-			}
-		}
-		accIt.Release()
-		log.Info("Finished counting account trie nodes", "total", accountTries.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
-
-		slotIt := db.NewIterator(TrieNodeStoragePrefix, nil)
-		for slotIt.Next() {
-			size := common.StorageSize(len(slotIt.Key()) + len(slotIt.Value()))
-			storageTries.Add(size)
-			if storageTries.count%1000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-				log.Info("Counting remaining storage trie nodes", "counted", storageTries.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
-				lastCountLog = time.Now()
-			}
-		}
-		slotIt.Release()
-		log.Info("Finished counting storage trie nodes", "total", storageTries.count, "elapsed", common.PrettyDuration(time.Since(countStart)))
-	}
-
 	log.Info("Pruning completed",
 		"accountsProcessed", accountsProcessed,
 		"storageProcessed", storageProcessed,
@@ -870,10 +839,6 @@ func PruneExpired(
 		"storageRemaining", storageSnaps.Count(),
 		"accountsSize", accountSnaps.Size(),
 		"storageSize", storageSnaps.Size(),
-		"accountTries", accountTries.Count(),
-		"storageTries", storageTries.Count(),
-		"accountTriesSize", accountTries.Size(),
-		"storageTriesSize", storageTries.Size(),
 		"totalElapsed", common.PrettyDuration(time.Since(start)))
 
 	return nil
@@ -920,76 +885,66 @@ func InspectContractSlots(ctx context.Context, db ethdb.Database, address string
 	return nil
 }
 
+// ok we don't actually prune the trie nodes, we just count them
 func pruneExpiredTrie(db ethdb.Database) error {
 	countStart := time.Now()
 	lastCountLog := time.Now()
 
 	count := 0
 
-	accIt := db.NewIterator(TrieNodeAccountPrefix, nil)
+	var accountTries, storageTries stat
+
+	accIt := db.NewIterator(TrieNodeAccountMarkPrefix, nil)
 	for accIt.Next() {
 		key := accIt.Key()
-		path := key[len(TrieNodeAccountPrefix):]
-		if !HasAccountTrieNodeMark(db, path) {
-			WriteAccountTrieNodeDup(db, path)
+		path := key[len(TrieNodeAccountMarkPrefix):]
+
+		add := true
+		node := ReadAccountTrieNode(db, path)
+		if len(node) == 0 {
+			add = false
+		}
+		if add {
+			accountTries.Add(common.StorageSize(len(key) + len(node)))
 		}
 
 		count++
 		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-			log.Info("Duplicating expired account trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+			log.Info("Counting active account trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
 			lastCountLog = time.Now()
 		}
 	}
 	accIt.Release()
 
 	count = 0
-	slotIt := db.NewIterator(TrieNodeStoragePrefix, nil)
+	slotIt := db.NewIterator(TrieNodeStorageMarkPrefix, nil)
 	for slotIt.Next() {
 		key := slotIt.Key()
-		accHash := common.BytesToHash(key[len(TrieNodeStoragePrefix) : len(TrieNodeStoragePrefix)+common.HashLength])
-		path := key[len(TrieNodeStoragePrefix)+common.HashLength:]
-		if !HasStorageTrieNodeMark(db, accHash, path) {
-			WriteStorageTrieNodeDup(db, accHash, path)
+		accHash := common.BytesToHash(key[len(TrieNodeStorageMarkPrefix) : len(TrieNodeStorageMarkPrefix)+common.HashLength])
+		path := key[len(TrieNodeStorageMarkPrefix)+common.HashLength:]
+
+		add := true
+		node := ReadStorageTrieNode(db, accHash, path)
+		if len(node) == 0 {
+			add = false
+		}
+		if add {
+			storageTries.Add(common.StorageSize(len(key) + len(node)))
 		}
 
 		count++
 		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-			log.Info("Duplicating expired storage trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
+			log.Info("Counting active storage trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
 			lastCountLog = time.Now()
 		}
-
 	}
 	slotIt.Release()
 
-	// Iterate the dup keys and delete the trie nodes
-	count = 0
-	lastCountLog = time.Now()
-
-	accDupIt := db.NewIterator(TrieNodeAccountDupPrefix, nil)
-	for accDupIt.Next() {
-		path := accDupIt.Key()[len(TrieNodeAccountDupPrefix):]
-		DeleteAccountTrieNode(db, path)
-
-		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-			log.Info("Pruning expired account trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
-			lastCountLog = time.Now()
-		}
-	}
-	accDupIt.Release()
-
-	slotDupIt := db.NewIterator(TrieNodeStorageDupPrefix, nil)
-	for slotDupIt.Next() {
-		key := slotDupIt.Key()
-		accHash := common.BytesToHash(key[len(TrieNodeStorageDupPrefix) : len(TrieNodeStorageDupPrefix)+common.HashLength])
-		path := key[len(TrieNodeStorageDupPrefix)+common.HashLength:]
-		DeleteStorageTrieNode(db, accHash, path)
-
-		if count%5000000 == 0 || time.Since(lastCountLog) > 10*time.Second {
-			log.Info("Pruning expired storage trie nodes", "counted", count, "elapsed", common.PrettyDuration(time.Since(countStart)))
-			lastCountLog = time.Now()
-		}
-	}
-	slotDupIt.Release()
+	log.Info("Counting completed",
+		"accountTries", accountTries.Count(), "size", accountTries.Size(),
+		"storageTries", storageTries.Count(), "size", storageTries.Size(),
+		"elapsed", common.PrettyDuration(time.Since(countStart)),
+	)
 
 	return nil
 }
