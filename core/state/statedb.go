@@ -536,6 +536,7 @@ func (s *StateDB) SelfDestruct6780(addr common.Address) (uint256.Int, bool) {
 	if stateObject.newContract {
 		return s.SelfDestruct(addr), true
 	}
+	log.Info("SelfDestruct6780", "addr", addr, "balance", stateObject.Balance())
 	return *(stateObject.Balance()), false
 }
 
