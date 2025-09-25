@@ -116,7 +116,12 @@ if one is set.  Otherwise it prints the genesis from the datadir.`,
 			utils.LogNoHistoryFlag,
 			utils.LogExportCheckpointsFlag,
 			utils.StateHistoryFlag,
-		}, utils.DatabaseFlags, debug.Flags),
+		}, utils.DatabaseFlags, debug.Flags, []cli.Flag{
+			&cli.Uint64Flag{
+				Name:  "end-block",
+				Usage: "End block to import",
+			},
+		}),
 		Before: func(ctx *cli.Context) error {
 			flags.MigrateGlobalFlags(ctx)
 			return debug.Setup(ctx)
@@ -337,6 +342,10 @@ func importChain(ctx *cli.Context) error {
 	if ctx.Args().Len() < 1 {
 		utils.Fatalf("This command requires an argument.")
 	}
+
+	endBlock := ctx.Uint64("end-block")
+	log.Info("Importing chain", "end-block", endBlock)
+
 	stack, cfg := makeConfigNode(ctx)
 	defer stack.Close()
 
@@ -367,13 +376,13 @@ func importChain(ctx *cli.Context) error {
 	var importErr error
 
 	if ctx.Args().Len() == 1 {
-		if err := utils.ImportChain(chain, ctx.Args().First()); err != nil {
+		if err := utils.ImportChain(chain, ctx.Args().First(), endBlock); err != nil {
 			importErr = err
 			log.Error("Import error", "err", err)
 		}
 	} else {
 		for _, arg := range ctx.Args().Slice() {
-			if err := utils.ImportChain(chain, arg); err != nil {
+			if err := utils.ImportChain(chain, arg, endBlock); err != nil {
 				importErr = err
 				log.Error("Import error", "file", arg, "err", err)
 				if err == utils.ErrImportInterrupted {
@@ -709,7 +718,7 @@ func downloadEra(ctx *cli.Context) error {
 	flags.CheckExclusive(ctx, eraBlockFlag, eraEpochFlag, eraAllFlag)
 
 	// Resolve the network.
-	var network = "mainnet"
+	network := "mainnet"
 	if utils.IsNetworkPreset(ctx) {
 		switch {
 		case ctx.IsSet(utils.MainnetFlag.Name):
