@@ -148,6 +148,9 @@ type Trie interface {
 
 	// IsVerkle returns true if the trie is verkle-tree based
 	IsVerkle() bool
+
+	// Access returns the access trie.
+	Access() *trie.AccessTrie
 }
 
 // CachingDB is an implementation of Database interface. It leverages both trie and

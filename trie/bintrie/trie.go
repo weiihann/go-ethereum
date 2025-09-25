@@ -351,3 +351,8 @@ func (t *BinaryTrie) PrefetchStorage(addr common.Address, keys [][]byte) error {
 func (t *BinaryTrie) Witness() map[string][]byte {
 	panic("not implemented")
 }
+
+// Access returns the access trie.
+func (t *BinaryTrie) Access() *trie.AccessTrie {
+	panic("not implemented")
+}

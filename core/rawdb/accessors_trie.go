@@ -104,6 +104,18 @@ func DeleteStorageTrieNode(db ethdb.KeyValueWriter, accountHash common.Hash, pat
 	}
 }
 
+func WriteAccessNodeAccount(db ethdb.KeyValueWriter, path []byte) {
+	if err := db.Put(accessNodeAccountKey(path), []byte{}); err != nil {
+		log.Crit("Failed to store access node account", "err", err)
+	}
+}
+
+func WriteAccessNodeSlot(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte) {
+	if err := db.Put(accessNodeSlotKey(accountHash, path), []byte{}); err != nil {
+		log.Crit("Failed to store access node slot", "err", err)
+	}
+}
+
 // ReadLegacyTrieNode retrieves the legacy trie node with the given
 // associated node hash.
 func ReadLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) []byte {

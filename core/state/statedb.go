@@ -1250,6 +1250,27 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 			return err
 		}
 		s.AccountCommits = time.Since(start)
+
+		dbw := s.db.TrieDB().Disk().NewBatch()
+		access := s.trie.Access()
+		isAccount := false
+		for owner, nodes := range access.Nodes {
+			if owner == (common.Hash{}) {
+				isAccount = true
+			}
+			for path := range nodes {
+				if isAccount {
+					rawdb.WriteAccessNodeAccount(dbw, []byte(path))
+				} else {
+					rawdb.WriteAccessNodeSlot(dbw, owner, []byte(path))
+				}
+			}
+		}
+
+		if err := dbw.Write(); err != nil {
+			return err
+		}
+
 		return nil
 	})
 	// Schedule each of the storage tries that need to be updated, so they can

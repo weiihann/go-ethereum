@@ -327,3 +327,8 @@ func (t *StateTrie) MustNodeIterator(start []byte) NodeIterator {
 func (t *StateTrie) IsVerkle() bool {
 	return false
 }
+
+// Access returns the access trie.
+func (t *StateTrie) Access() *AccessTrie {
+	return t.trie.access
+}
