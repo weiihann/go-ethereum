@@ -112,6 +112,18 @@ func DeleteStorageSnapshot(db ethdb.KeyValueWriter, accountHash, storageHash com
 	}
 }
 
+func WriteAccessAccount(db ethdb.KeyValueWriter, address common.Address) {
+	if err := db.Put(accessAccountKey(address), []byte{}); err != nil {
+		log.Crit("Failed to store access account", "err", err)
+	}
+}
+
+func WriteAccessSlot(db ethdb.KeyValueWriter, address common.Address, slot common.Hash) {
+	if err := db.Put(accessSlotKey(address, slot), []byte{}); err != nil {
+		log.Crit("Failed to store access slot", "err", err)
+	}
+}
+
 // IterateStorageSnapshots returns an iterator for walking the entire storage
 // space of a specific account.
 func IterateStorageSnapshots(db ethdb.Iteratee, accountHash common.Hash) ethdb.Iterator {

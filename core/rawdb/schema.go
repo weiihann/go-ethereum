@@ -115,6 +115,8 @@ var (
 	SnapshotStoragePrefix = []byte("o") // SnapshotStoragePrefix + account hash + storage hash -> storage trie value
 	CodePrefix            = []byte("c") // CodePrefix + code hash -> account code
 	skeletonHeaderPrefix  = []byte("S") // skeletonHeaderPrefix + num (uint64 big endian) -> header
+	AccessAccountPrefix   = []byte("W") // AccessAccountPrefix + account address
+	AccessSlotPrefix      = []byte("X") // AccessSlotPrefix + account address + slot key
 
 	// Path-based storage scheme of merkle patricia trie.
 	TrieNodeAccountPrefix = []byte("A") // TrieNodeAccountPrefix + hexPath -> trie node
@@ -225,6 +227,14 @@ func storageSnapshotKey(accountHash, storageHash common.Hash) []byte {
 	n += copy(buf[n:], accountHash.Bytes())
 	copy(buf[n:], storageHash.Bytes())
 	return buf
+}
+
+func accessAccountKey(address common.Address) []byte {
+	return append(AccessAccountPrefix, address.Bytes()...)
+}
+
+func accessSlotKey(address common.Address, slot common.Hash) []byte {
+	return append(AccessSlotPrefix, append(address.Bytes(), slot.Bytes()...)...)
 }
 
 // storageSnapshotsKey = SnapshotStoragePrefix + account hash + storage hash

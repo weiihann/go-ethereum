@@ -77,10 +77,11 @@ func (m *mutation) isDelete() bool {
 // must be created with new root and updated database for accessing post-
 // commit states.
 type StateDB struct {
-	db         Database
-	prefetcher *triePrefetcher
-	reader     Reader
-	trie       Trie // it's resolved on first access
+	db          Database
+	prefetcher  *triePrefetcher
+	reader      Reader
+	trie        Trie // it's resolved on first access
+	accessState *AccessState
 
 	// originalRoot is the pre-state root, before any changes were made.
 	// It will be updated when the Commit is called.
@@ -182,6 +183,7 @@ func NewWithReader(root common.Hash, db Database, reader Reader) (*StateDB, erro
 		journal:              newJournal(),
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
+		accessState:          NewAccessState(),
 	}
 	if db.TrieDB().IsVerkle() {
 		sdb.accessEvents = NewAccessEvents(db.PointCache())
@@ -376,6 +378,7 @@ func (s *StateDB) GetCodeHash(addr common.Address) common.Hash {
 func (s *StateDB) GetState(addr common.Address, hash common.Hash) common.Hash {
 	stateObject := s.getStateObject(addr)
 	if stateObject != nil {
+		s.accessState.AddSlot(addr, hash)
 		return stateObject.GetState(hash)
 	}
 	return common.Hash{}
@@ -468,6 +471,7 @@ func (s *StateDB) SetCode(addr common.Address, code []byte) (prev []byte) {
 
 func (s *StateDB) SetState(addr common.Address, key, value common.Hash) common.Hash {
 	if stateObject := s.getOrNewStateObject(addr); stateObject != nil {
+		s.accessState.AddSlot(addr, key)
 		return stateObject.SetState(key, value)
 	}
 	return common.Hash{}
@@ -587,6 +591,8 @@ func (s *StateDB) deleteStateObject(addr common.Address) {
 // getStateObject retrieves a state object given by the address, returning nil if
 // the object is not found or was deleted in this execution context.
 func (s *StateDB) getStateObject(addr common.Address) *stateObject {
+	s.accessState.AddAddress(addr)
+
 	// Prefer live objects if any is available
 	if obj := s.stateObjects[addr]; obj != nil {
 		return obj
@@ -1317,6 +1323,22 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 	if err != nil {
 		return nil, err
 	}
+
+	if db := s.db.TrieDB().Disk(); db != nil {
+		batch := db.NewBatch()
+		for addr := range s.accessState.Address {
+			rawdb.WriteAccessAccount(batch, addr)
+			for slot := range s.accessState.Slots[addr] {
+				rawdb.WriteAccessSlot(batch, addr, slot)
+			}
+		}
+		if err := batch.Write(); err != nil {
+			return nil, err
+		}
+
+		s.accessState.Reset()
+	}
+
 	// Commit dirty contract code if any exists
 	if db := s.db.TrieDB().Disk(); db != nil && len(ret.codes) > 0 {
 		batch := db.NewBatch()
