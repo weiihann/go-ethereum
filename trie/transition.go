@@ -225,3 +225,8 @@ func (t *TransitionTrie) UpdateContractCode(addr common.Address, codeHash common
 func (t *TransitionTrie) Witness() map[string][]byte {
 	panic("not implemented")
 }
+
+// Access returns the access trie.
+func (t *TransitionTrie) Access() *AccessTrie {
+	panic("not implemented")
+}

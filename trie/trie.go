@@ -56,6 +56,7 @@ type Trie struct {
 
 	// reader is the handler trie can retrieve nodes from.
 	reader *Reader
+	access *AccessTrie
 
 	// Various tracers for capturing the modifications to trie
 	opTracer       *opTracer
@@ -97,6 +98,7 @@ func New(id *ID, db database.NodeDatabase) (*Trie, error) {
 		reader:         reader,
 		opTracer:       newOpTracer(),
 		prevalueTracer: NewPrevalueTracer(),
+		access:         NewAccessTrie(),
 	}
 	if id.Root != (common.Hash{}) && id.Root != types.EmptyRootHash {
 		rootnode, err := trie.resolveAndTrack(id.Root[:], nil)
@@ -647,6 +649,7 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 	if n, ok := n.(hashNode); ok {
 		return t.resolveAndTrack(n, prefix)
 	}
+	t.access.AddNode(t.owner, string(prefix))
 	return n, nil
 }
 
@@ -655,6 +658,7 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 // node's original value. The rlp-encoded blob is preferred to be loaded from
 // database because it's easy to decode node while complex to encode node to blob.
 func (t *Trie) resolveAndTrack(n hashNode, prefix []byte) (node, error) {
+	t.access.AddNode(t.owner, string(prefix))
 	blob, err := t.reader.Node(prefix, common.BytesToHash(n))
 	if err != nil {
 		return nil, err
@@ -734,6 +738,9 @@ func (t *Trie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 	// If the number of changes is below 100, we let one thread handle it
 	t.root = newCommitter(nodes, t.prevalueTracer, collectLeaf).Commit(t.root, t.uncommitted > 100)
 	t.uncommitted = 0
+
+	t.access.AddNodeSet(nodes)
+
 	return rootHash, nodes
 }
 

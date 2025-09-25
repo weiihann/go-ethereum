@@ -119,9 +119,11 @@ var (
 	AccessSlotPrefix      = []byte("X") // AccessSlotPrefix + account address + slot key
 
 	// Path-based storage scheme of merkle patricia trie.
-	TrieNodeAccountPrefix = []byte("A") // TrieNodeAccountPrefix + hexPath -> trie node
-	TrieNodeStoragePrefix = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
-	stateIDPrefix         = []byte("L") // stateIDPrefix + state root -> state id
+	TrieNodeAccountPrefix   = []byte("A") // TrieNodeAccountPrefix + hexPath -> trie node
+	TrieNodeStoragePrefix   = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
+	stateIDPrefix           = []byte("L") // stateIDPrefix + state root -> state id
+	AccessNodeAccountPrefix = []byte("Y") // AccessNodeAccountPrefix + hexPath
+	AccessNodeSlotPrefix    = []byte("Z") // AccessNodeSlotPrefix + account hash + hexPath
 
 	// State history indexing within path-based storage scheme
 	StateHistoryIndexPrefix           = []byte("m")   // The global prefix of state history index data
@@ -290,6 +292,20 @@ func accountTrieNodeKey(path []byte) []byte {
 func storageTrieNodeKey(accountHash common.Hash, path []byte) []byte {
 	buf := make([]byte, len(TrieNodeStoragePrefix)+common.HashLength+len(path))
 	n := copy(buf, TrieNodeStoragePrefix)
+	n += copy(buf[n:], accountHash.Bytes())
+	copy(buf[n:], path)
+	return buf
+}
+
+// accessNodeAccountKey = AccessNodeAccountPrefix + hexPath
+func accessNodeAccountKey(path []byte) []byte {
+	return append(AccessNodeAccountPrefix, path...)
+}
+
+// accessNodeSlotKey = AccessNodeSlotPrefix + accountHash + hexPath
+func accessNodeSlotKey(accountHash common.Hash, path []byte) []byte {
+	buf := make([]byte, len(AccessNodeSlotPrefix)+common.HashLength+len(path))
+	n := copy(buf, AccessNodeSlotPrefix)
 	n += copy(buf[n:], accountHash.Bytes())
 	copy(buf[n:], path)
 	return buf

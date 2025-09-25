@@ -455,3 +455,8 @@ func (t *VerkleTrie) nodeResolver(path []byte) ([]byte, error) {
 func (t *VerkleTrie) Witness() map[string][]byte {
 	panic("not implemented")
 }
+
+// Access returns the access trie.
+func (t *VerkleTrie) Access() *AccessTrie {
+	panic("not implemented")
+}
