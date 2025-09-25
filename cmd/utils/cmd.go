@@ -148,7 +148,7 @@ func monitorFreeDiskSpace(sigc chan os.Signal, path string, freeDiskSpaceCritica
 	}
 }
 
-func ImportChain(chain *core.BlockChain, fn string) error {
+func ImportChain(chain *core.BlockChain, fn string, endBlock uint64) error {
 	// Watch for Ctrl-C while the import is running.
 	// If a signal is received, the import will stop at the next batch.
 	interrupt := make(chan os.Signal, 1)
@@ -224,6 +224,27 @@ func ImportChain(chain *core.BlockChain, fn string) error {
 			log.Info("Skipping batch as all blocks present", "batch", batch, "first", blocks[0].Hash(), "last", blocks[i-1].Hash())
 			continue
 		}
+
+		terminateEarly := false
+		if endBlock > 0 {
+			if missing[len(missing)-1].NumberU64() > endBlock {
+				// Iterate until the end block is found
+				ind := 0
+				for i := len(missing) - 1; i >= 0; i-- {
+					ind = i
+					if missing[i].NumberU64() == endBlock {
+						break
+					}
+				}
+				missing = missing[:ind+1]
+				if len(missing) == 0 {
+					log.Info("No blocks to import", "end-block", endBlock)
+					return nil
+				}
+				terminateEarly = true
+			}
+		}
+
 		if failindex, err := chain.InsertChain(missing); err != nil {
 			var failnumber uint64
 			if failindex > 0 && failindex < len(missing) {
@@ -232,6 +253,10 @@ func ImportChain(chain *core.BlockChain, fn string) error {
 				failnumber = missing[0].NumberU64()
 			}
 			return fmt.Errorf("invalid block %d: %v", failnumber, err)
+		}
+
+		if terminateEarly {
+			return nil
 		}
 	}
 	return nil
