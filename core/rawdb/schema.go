@@ -231,11 +231,11 @@ func storageSnapshotKey(accountHash, storageHash common.Hash) []byte {
 	return buf
 }
 
-func accessAccountKey(address common.Address) []byte {
+func accessAccountKey(address common.Hash) []byte {
 	return append(AccessAccountPrefix, address.Bytes()...)
 }
 
-func accessSlotKey(address common.Address, slot common.Hash) []byte {
+func accessSlotKey(address common.Hash, slot common.Hash) []byte {
 	return append(AccessSlotPrefix, append(address.Bytes(), slot.Bytes()...)...)
 }
 

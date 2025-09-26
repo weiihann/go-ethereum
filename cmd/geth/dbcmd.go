@@ -209,10 +209,15 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Description: "This command queries the history of the account or storage slot within the specified block range",
 	}
 	dbPruneExpiredCmd = &cli.Command{
-		Action:      pruneExpired,
-		Name:        "prune-expired",
-		Usage:       "Prune expired access nodes",
-		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Action: pruneExpired,
+		Name:   "prune-expired",
+		Usage:  "Prune expired access nodes",
+		Flags: slices.Concat(utils.NetworkFlags, utils.DatabaseFlags, []cli.Flag{
+			&cli.StringFlag{
+				Name:  "source-db",
+				Usage: "Path to the source database",
+			},
+		}),
 		Description: "This command prunes expired state",
 	}
 	dbInspectStateCmd = &cli.Command{
@@ -936,8 +941,20 @@ func pruneExpired(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, false)
-	defer db.Close()
+	targetDB := utils.MakeChainDatabase(ctx, stack, false)
+	defer targetDB.Close()
 
-	return rawdb.PruneExpired(db)
+	sourceDBPath := ctx.String("source-db")
+	if sourceDBPath == "" {
+		return fmt.Errorf("source-db is required")
+	}
+
+	log.Info("Pruning expired state from source database", "path", sourceDBPath)
+
+	// This is a hack
+	stack.Config().DataDir = sourceDBPath
+	sourceDB := utils.MakeChainDatabase(ctx, stack, true)
+	defer sourceDB.Close()
+
+	return rawdb.PruneExpired(sourceDB, targetDB)
 }
