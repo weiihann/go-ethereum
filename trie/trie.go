@@ -79,6 +79,7 @@ func (t *Trie) Copy() *Trie {
 		reader:         t.reader,
 		opTracer:       t.opTracer.copy(),
 		prevalueTracer: t.prevalueTracer.Copy(),
+		access:         t.access.Copy(),
 	}
 }
 
