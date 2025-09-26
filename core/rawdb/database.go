@@ -660,6 +660,9 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 
 func InspectState(db ethdb.Database) error {
 	var (
+		count     atomic.Uint64
+		startTime time.Time
+
 		accountSnaps       stat
 		accountTries       stat
 		storageSnaps       stat
@@ -670,11 +673,27 @@ func InspectState(db ethdb.Database) error {
 		storageNodesAccess stat
 	)
 
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				log.Info("Inspecting state", "count", count.Load(), "elapsed", common.PrettyDuration(time.Since(startTime)))
+			case <-done:
+				return
+			}
+		}
+	}()
+	defer close(done)
+
 	it := db.NewIterator(SnapshotAccountPrefix, nil)
 	for it.Next() {
 		key := it.Key()
 		size := common.StorageSize(len(key) + len(it.Value()))
 		accountSnaps.add(size)
+		count.Add(1)
 	}
 	it.Release()
 
@@ -683,6 +702,7 @@ func InspectState(db ethdb.Database) error {
 		key := it.Key()
 		size := common.StorageSize(len(key) + len(it.Value()))
 		storageSnaps.add(size)
+		count.Add(1)
 	}
 	it.Release()
 
@@ -691,6 +711,7 @@ func InspectState(db ethdb.Database) error {
 		key := it.Key()
 		size := common.StorageSize(len(key) + len(it.Value()))
 		accountSnapsAccess.add(size)
+		count.Add(1)
 	}
 	it.Release()
 
@@ -699,6 +720,7 @@ func InspectState(db ethdb.Database) error {
 		key := it.Key()
 		size := common.StorageSize(len(key) + len(it.Value()))
 		storageSnapsAccess.add(size)
+		count.Add(1)
 	}
 	it.Release()
 
@@ -707,6 +729,7 @@ func InspectState(db ethdb.Database) error {
 		key := it.Key()
 		size := common.StorageSize(len(key) + len(it.Value()))
 		accountNodesAccess.add(size)
+		count.Add(1)
 	}
 	it.Release()
 
@@ -715,6 +738,7 @@ func InspectState(db ethdb.Database) error {
 		key := it.Key()
 		size := common.StorageSize(len(key) + len(it.Value()))
 		storageNodesAccess.add(size)
+		count.Add(1)
 	}
 	it.Release()
 
@@ -723,6 +747,7 @@ func InspectState(db ethdb.Database) error {
 		key := it.Key()
 		size := common.StorageSize(len(key) + len(it.Value()))
 		accountTries.add(size)
+		count.Add(1)
 	}
 	it.Release()
 
@@ -731,6 +756,7 @@ func InspectState(db ethdb.Database) error {
 		key := it.Key()
 		size := common.StorageSize(len(key) + len(it.Value()))
 		storageTries.add(size)
+		count.Add(1)
 	}
 	it.Release()
 
