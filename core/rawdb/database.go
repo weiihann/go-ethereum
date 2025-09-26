@@ -958,7 +958,6 @@ func processExpiredAccounts(ctx context.Context, sourceDB, targetDB ethdb.KeyVal
 		if err != nil {
 			return err
 		}
-		count.Add(uint64(len(accounts)))
 
 		if !hasMore {
 			break // No more accounts to process
@@ -968,6 +967,8 @@ func processExpiredAccounts(ctx context.Context, sourceDB, targetDB ethdb.KeyVal
 		if err := deleteAccountsBatch(ctx, targetDB, accounts); err != nil {
 			return err
 		}
+		log.Info("Deleted accounts")
+		count.Add(uint64(len(accounts)))
 
 		// Continue from the last processed key
 		start = accounts[len(accounts)-1]
@@ -1037,8 +1038,6 @@ func processExpiredStorage(ctx context.Context, sourceDB, targetDB ethdb.KeyValu
 			return err
 		}
 
-		count.Add(uint64(len(storage)))
-
 		if !hasMore {
 			break // No more storage to process
 		}
@@ -1047,6 +1046,8 @@ func processExpiredStorage(ctx context.Context, sourceDB, targetDB ethdb.KeyValu
 		if err := deleteStorageBatch(ctx, targetDB, storage); err != nil {
 			return err
 		}
+		log.Info("Deleted storage")
+		count.Add(uint64(len(storage)))
 
 		// Continue from the last processed key
 		start = storage[len(storage)-1]
@@ -1116,7 +1117,6 @@ func processExpiredAccountNode(ctx context.Context, sourceDB, targetDB ethdb.Key
 		if err != nil {
 			return err
 		}
-		count.Add(uint64(len(accNodes)))
 
 		if !hasMore {
 			break // No more account nodes to process
@@ -1126,6 +1126,8 @@ func processExpiredAccountNode(ctx context.Context, sourceDB, targetDB ethdb.Key
 		if err := deleteAccountNodeBatch(ctx, targetDB, accNodes); err != nil {
 			return err
 		}
+		log.Info("Deleted account nodes")
+		count.Add(uint64(len(accNodes)))
 
 		// Continue from the last processed key
 		start = accNodes[len(accNodes)-1]
@@ -1192,8 +1194,6 @@ func processExpiredStorageNode(ctx context.Context, sourceDB, targetDB ethdb.Key
 			return err
 		}
 
-		count.Add(uint64(len(storageNodes)))
-
 		if !hasMore {
 			break // No more storage nodes to process
 		}
@@ -1202,6 +1202,8 @@ func processExpiredStorageNode(ctx context.Context, sourceDB, targetDB ethdb.Key
 		if err := deleteStorageNodeBatch(ctx, targetDB, storageNodes); err != nil {
 			return err
 		}
+		log.Info("Deleted storage nodes")
+		count.Add(uint64(len(storageNodes)))
 
 		// Continue from the last processed key
 		start = storageNodes[len(storageNodes)-1]
