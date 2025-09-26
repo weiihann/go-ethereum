@@ -378,15 +378,13 @@ func (s *stateObject) updateRoot() {
 // commitStorage overwrites the clean storage with the storage changes and
 // fulfills the storage diffs into the given accountUpdate struct.
 func (s *stateObject) commitStorage(op *accountUpdate) {
-	var (
-		encode = func(val common.Hash) []byte {
-			if val == (common.Hash{}) {
-				return nil
-			}
-			blob, _ := rlp.EncodeToBytes(common.TrimLeftZeroes(val[:]))
-			return blob
+	encode := func(val common.Hash) []byte {
+		if val == (common.Hash{}) {
+			return nil
 		}
-	)
+		blob, _ := rlp.EncodeToBytes(common.TrimLeftZeroes(val[:]))
+		return blob
+	}
 	for key, val := range s.pendingStorage {
 		// Skip the noop storage changes, it might be possible the value
 		// of tracked slot is same in originStorage and pendingStorage
@@ -588,5 +586,8 @@ func (s *stateObject) Root() common.Hash {
 }
 
 func (s *stateObject) Access() *trie.AccessTrie {
+	if s.trie == nil {
+		return nil
+	}
 	return s.trie.Access()
 }

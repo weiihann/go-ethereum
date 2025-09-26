@@ -1299,13 +1299,15 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 
 			dbw := s.db.TrieDB().Disk().NewBatch()
 			access := obj.Access()
-			for owner, nodes := range access.Nodes {
-				for path := range nodes {
-					rawdb.WriteAccessNodeSlot(dbw, owner, []byte(path))
+			if access != nil {
+				for owner, nodes := range access.Nodes {
+					for path := range nodes {
+						rawdb.WriteAccessNodeSlot(dbw, owner, []byte(path))
+					}
 				}
-			}
-			if err := dbw.Write(); err != nil {
-				return err
+				if err := dbw.Write(); err != nil {
+					return err
+				}
 			}
 
 			return nil
