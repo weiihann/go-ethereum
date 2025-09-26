@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
 
@@ -15,14 +14,12 @@ type AccessTrie struct {
 }
 
 func NewAccessTrie() *AccessTrie {
-	log.Info("Creating AccessTrie")
 	return &AccessTrie{
 		Nodes: make(map[common.Hash]map[string]struct{}),
 	}
 }
 
 func (t *AccessTrie) AddNode(owner common.Hash, path string) {
-	log.Info("AccessTrie AddNode", "owner", owner, "path", path)
 	t.rw.Lock()
 	defer t.rw.Unlock()
 
@@ -40,7 +37,6 @@ func (t *AccessTrie) addNode(owner common.Hash, path string) {
 }
 
 func (t *AccessTrie) AddNodeSet(nodes *trienode.NodeSet) {
-	log.Info("AccessTrie AddNodeSet")
 	t.rw.Lock()
 	defer t.rw.Unlock()
 
@@ -53,7 +49,6 @@ func (t *AccessTrie) AddNodeSet(nodes *trienode.NodeSet) {
 }
 
 func (t *AccessTrie) Reset() {
-	log.Info("AccessTrie Reset")
 	t.rw.Lock()
 	defer t.rw.Unlock()
 
@@ -61,7 +56,6 @@ func (t *AccessTrie) Reset() {
 }
 
 func (t *AccessTrie) Copy() *AccessTrie {
-	log.Info("AccessTrie Copy")
 	t.rw.RLock()
 	defer t.rw.RUnlock()
 
