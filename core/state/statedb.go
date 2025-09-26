@@ -1254,17 +1254,9 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 
 		dbw := s.db.TrieDB().Disk().NewBatch()
 		access := s.trie.Access()
-		isAccount := false
-		for owner, nodes := range access.Nodes {
-			if owner == (common.Hash{}) {
-				isAccount = true
-			}
+		for _, nodes := range access.Nodes {
 			for path := range nodes {
-				if isAccount {
-					rawdb.WriteAccessNodeAccount(dbw, []byte(path))
-				} else {
-					rawdb.WriteAccessNodeSlot(dbw, owner, []byte(path))
-				}
+				rawdb.WriteAccessNodeAccount(dbw, []byte(path))
 			}
 		}
 
@@ -1304,6 +1296,18 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 			updates[obj.addrHash] = update
 			s.StorageCommits = time.Since(start) // overwrite with the longest storage commit runtime
 			lock.Unlock()
+
+			dbw := s.db.TrieDB().Disk().NewBatch()
+			access := obj.Access()
+			for owner, nodes := range access.Nodes {
+				for path := range nodes {
+					rawdb.WriteAccessNodeSlot(dbw, owner, []byte(path))
+				}
+			}
+			if err := dbw.Write(); err != nil {
+				return err
+			}
+
 			return nil
 		})
 	}

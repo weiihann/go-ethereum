@@ -659,9 +659,11 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 }
 
 func InspectState(db ethdb.Database) error {
+	log.Info("Inspecting state")
+
 	var (
 		count     atomic.Uint64
-		startTime time.Time
+		startTime = time.Now()
 
 		accountSnaps       stat
 		accountTries       stat
