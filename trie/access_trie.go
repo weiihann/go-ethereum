@@ -26,6 +26,10 @@ func (t *AccessTrie) AddNode(owner common.Hash, path string) {
 	t.rw.Lock()
 	defer t.rw.Unlock()
 
+	t.addNode(owner, path)
+}
+
+func (t *AccessTrie) addNode(owner common.Hash, path string) {
 	if _, ok := t.Nodes[owner]; !ok {
 		t.Nodes[owner] = make(map[string]struct{})
 	}
@@ -43,7 +47,7 @@ func (t *AccessTrie) AddNodeSet(nodes *trienode.NodeSet) {
 	owner := nodes.Owner
 	for path, node := range nodes.Nodes {
 		if !node.IsDeleted() {
-			t.AddNode(owner, path)
+			t.addNode(owner, path)
 		}
 	}
 }
