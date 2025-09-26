@@ -873,43 +873,60 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 	return batch.Write()
 }
 
-func PruneExpired(db ethdb.KeyValueStore) error {
+func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 	const batchSize = 1000000
 
-	if err := processExpiredAccounts(db, batchSize); err != nil {
+	done := make(chan struct{})
+	startTime := time.Now()
+	var count atomic.Uint64
+	go func() {
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				log.Info("Pruning expired state", "count", count.Load(), "elapsed", common.PrettyDuration(time.Since(startTime)))
+			case <-done:
+				return
+			}
+		}
+	}()
+	defer close(done)
+
+	if err := processExpiredAccounts(sourceDB, targetDB, batchSize, &count); err != nil {
 		return err
 	}
 
-	if err := processExpiredStorage(db, batchSize); err != nil {
+	if err := processExpiredStorage(sourceDB, targetDB, batchSize, &count); err != nil {
 		return err
 	}
 
-	if err := processExpiredAccountNode(db, batchSize); err != nil {
+	if err := processExpiredAccountNode(sourceDB, targetDB, batchSize, &count); err != nil {
 		return err
 	}
 
-	if err := processExpiredStorageNode(db, batchSize); err != nil {
+	if err := processExpiredStorageNode(sourceDB, targetDB, batchSize, &count); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func processExpiredAccounts(db ethdb.KeyValueStore, batchSize int) error {
+func processExpiredAccounts(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, count *atomic.Uint64) error {
 	start := []byte{}
-
 	for {
-		accounts, hasMore, err := collectAccountsBatch(db, start, batchSize)
+		accounts, hasMore, err := collectAccountsBatch(sourceDB, targetDB, start, batchSize)
 		if err != nil {
 			return err
 		}
+		count.Add(uint64(len(accounts)))
 
 		if len(accounts) == 0 || !hasMore {
 			break // No more accounts to process
 		}
 
 		// Delete collected accounts in batch
-		if err := deleteAccountsBatch(db, accounts); err != nil {
+		if err := deleteAccountsBatch(targetDB, accounts); err != nil {
 			return err
 		}
 
@@ -917,11 +934,13 @@ func processExpiredAccounts(db ethdb.KeyValueStore, batchSize int) error {
 		start = accounts[len(accounts)-1]
 	}
 
+	log.Info("Processed expired accounts")
+
 	return nil
 }
 
-func collectAccountsBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
-	it := db.NewIterator(AccessAccountPrefix, start)
+func collectAccountsBatch(sourceDB, targetDB ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
+	it := targetDB.NewIterator(SnapshotAccountPrefix, start)
 	defer it.Release()
 
 	var accounts [][]byte
@@ -929,8 +948,12 @@ func collectAccountsBatch(db ethdb.KeyValueStore, start []byte, batchSize int) (
 
 	for it.Next() {
 		key := it.Key()
-		addr := key[len(AccessAccountPrefix):]
-		accounts = append(accounts, addr)
+		addrHash := key[len(SnapshotAccountPrefix):]
+
+		// If the account is not accessed, delete it
+		if !HasAccessAccount(sourceDB, common.BytesToHash(addrHash)) {
+			accounts = append(accounts, addrHash)
+		}
 
 		count++
 		if count >= batchSize {
@@ -941,12 +964,12 @@ func collectAccountsBatch(db ethdb.KeyValueStore, start []byte, batchSize int) (
 	return accounts, false, nil // hasMore = false (reached end)
 }
 
-func deleteAccountsBatch(db ethdb.KeyValueStore, accounts [][]byte) error {
+func deleteAccountsBatch(db ethdb.KeyValueStore, accounts [][]byte) error { // TODO(weiihann): handle source and target db
 	batch := db.NewBatch()
 	defer batch.Reset() // Clean up batch resources
 
 	for _, addr := range accounts {
-		if err := batch.Delete(accountSnapshotKey(crypto.Keccak256Hash(addr))); err != nil {
+		if err := batch.Delete(accountSnapshotKey(common.BytesToHash(addr))); err != nil {
 			return err
 		}
 	}
@@ -954,21 +977,23 @@ func deleteAccountsBatch(db ethdb.KeyValueStore, accounts [][]byte) error {
 	return batch.Write()
 }
 
-func processExpiredStorage(db ethdb.KeyValueStore, batchSize int) error {
+func processExpiredStorage(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, count *atomic.Uint64) error {
 	start := []byte{}
 
 	for {
-		storage, hasMore, err := collectStorageBatch(db, start, batchSize)
+		storage, hasMore, err := collectStorageBatch(sourceDB, targetDB, start, batchSize)
 		if err != nil {
 			return err
 		}
+
+		count.Add(uint64(len(storage)))
 
 		if len(storage) == 0 || !hasMore {
 			break // No more storage to process
 		}
 
 		// Delete collected storage in batch
-		if err := deleteStorageBatch(db, storage); err != nil {
+		if err := deleteStorageBatch(targetDB, storage); err != nil {
 			return err
 		}
 
@@ -979,8 +1004,8 @@ func processExpiredStorage(db ethdb.KeyValueStore, batchSize int) error {
 	return nil
 }
 
-func collectStorageBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
-	it := db.NewIterator(AccessSlotPrefix, start)
+func collectStorageBatch(sourceDB, targetDB ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
+	it := targetDB.NewIterator(SnapshotStoragePrefix, start)
 	defer it.Release()
 
 	var storage [][]byte
@@ -988,8 +1013,12 @@ func collectStorageBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([
 
 	for it.Next() {
 		key := it.Key()
-		k := key[len(AccessSlotPrefix):]
-		storage = append(storage, k)
+		k := key[len(SnapshotStoragePrefix):]
+
+		// If the storage is not accessed, delete it
+		if !HasAccessSlot(sourceDB, common.BytesToHash(k[:common.HashLength]), common.BytesToHash(k[common.HashLength:])) {
+			storage = append(storage, k)
+		}
 
 		count++
 		if count >= batchSize {
@@ -1005,29 +1034,30 @@ func deleteStorageBatch(db ethdb.KeyValueStore, storage [][]byte) error {
 	defer batch.Reset() // Clean up batch resources
 
 	for _, key := range storage {
-		addr := key[:common.AddressLength]
-		slot := key[common.AddressLength:]
-		batch.Delete(storageSnapshotKey(crypto.Keccak256Hash(addr), crypto.Keccak256Hash(slot)))
+		addr := key[:common.HashLength]
+		slot := key[common.HashLength:]
+		batch.Delete(storageSnapshotKey(common.BytesToHash(addr), common.BytesToHash(slot)))
 	}
 
 	return batch.Write()
 }
 
-func processExpiredAccountNode(db ethdb.KeyValueStore, batchSize int) error {
+func processExpiredAccountNode(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, count *atomic.Uint64) error {
 	start := []byte{}
 
 	for {
-		accNodes, hasMore, err := collectAccountNodeBatch(db, start, batchSize)
+		accNodes, hasMore, err := collectAccountNodeBatch(sourceDB, targetDB, start, batchSize)
 		if err != nil {
 			return err
 		}
+		count.Add(uint64(len(accNodes)))
 
 		if len(accNodes) == 0 || !hasMore {
 			break // No more account nodes to process
 		}
 
 		// Delete collected account nodes in batch
-		if err := deleteAccountNodeBatch(db, accNodes); err != nil {
+		if err := deleteAccountNodeBatch(targetDB, accNodes); err != nil {
 			return err
 		}
 
@@ -1038,8 +1068,8 @@ func processExpiredAccountNode(db ethdb.KeyValueStore, batchSize int) error {
 	return nil
 }
 
-func collectAccountNodeBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
-	it := db.NewIterator(AccessNodeAccountPrefix, start)
+func collectAccountNodeBatch(sourceDB, targetDB ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
+	it := targetDB.NewIterator(TrieNodeAccountPrefix, start)
 	defer it.Release()
 
 	var accNodes [][]byte
@@ -1047,7 +1077,11 @@ func collectAccountNodeBatch(db ethdb.KeyValueStore, start []byte, batchSize int
 
 	for it.Next() {
 		key := it.Key()
-		accNodes = append(accNodes, key[len(AccessNodeAccountPrefix):])
+		accPath := key[len(TrieNodeAccountPrefix):]
+
+		if !HasAccountTrieNode(sourceDB, accPath) {
+			accNodes = append(accNodes, accPath)
+		}
 
 		count++
 		if count >= batchSize {
@@ -1069,21 +1103,23 @@ func deleteAccountNodeBatch(db ethdb.KeyValueStore, accNodes [][]byte) error {
 	return batch.Write()
 }
 
-func processExpiredStorageNode(db ethdb.KeyValueStore, batchSize int) error {
+func processExpiredStorageNode(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, count *atomic.Uint64) error {
 	start := []byte{}
 
 	for {
-		storageNodes, hasMore, err := collectStorageNodeBatch(db, start, batchSize)
+		storageNodes, hasMore, err := collectStorageNodeBatch(sourceDB, targetDB, start, batchSize)
 		if err != nil {
 			return err
 		}
+
+		count.Add(uint64(len(storageNodes)))
 
 		if len(storageNodes) == 0 || !hasMore {
 			break // No more storage nodes to process
 		}
 
 		// Delete collected storage nodes in batch
-		if err := deleteStorageNodeBatch(db, storageNodes); err != nil {
+		if err := deleteStorageNodeBatch(targetDB, storageNodes); err != nil {
 			return err
 		}
 
@@ -1094,8 +1130,8 @@ func processExpiredStorageNode(db ethdb.KeyValueStore, batchSize int) error {
 	return nil
 }
 
-func collectStorageNodeBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
-	it := db.NewIterator(AccessNodeSlotPrefix, start)
+func collectStorageNodeBatch(sourceDB, targetDB ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
+	it := targetDB.NewIterator(TrieNodeStoragePrefix, start)
 	defer it.Release()
 
 	var storageNodes [][]byte
@@ -1103,7 +1139,10 @@ func collectStorageNodeBatch(db ethdb.KeyValueStore, start []byte, batchSize int
 
 	for it.Next() {
 		key := it.Key()
-		storageNodes = append(storageNodes, key[len(AccessNodeSlotPrefix):])
+
+		if !HasStorageTrieNode(sourceDB, common.BytesToHash(key[:common.HashLength]), key[common.HashLength:]) {
+			storageNodes = append(storageNodes, key[len(TrieNodeStoragePrefix):])
+		}
 
 		count++
 		if count >= batchSize {
