@@ -658,6 +658,100 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 	return nil
 }
 
+func InspectState(db ethdb.Database) error {
+	var (
+		accountSnaps       stat
+		accountTries       stat
+		storageSnaps       stat
+		storageTries       stat
+		accountSnapsAccess stat
+		storageSnapsAccess stat
+		accountNodesAccess stat
+		storageNodesAccess stat
+	)
+
+	it := db.NewIterator(SnapshotAccountPrefix, nil)
+	for it.Next() {
+		key := it.Key()
+		size := common.StorageSize(len(key) + len(it.Value()))
+		accountSnaps.add(size)
+	}
+	it.Release()
+
+	it = db.NewIterator(SnapshotStoragePrefix, nil)
+	for it.Next() {
+		key := it.Key()
+		size := common.StorageSize(len(key) + len(it.Value()))
+		storageSnaps.add(size)
+	}
+	it.Release()
+
+	it = db.NewIterator(AccessAccountPrefix, nil)
+	for it.Next() {
+		key := it.Key()
+		size := common.StorageSize(len(key) + len(it.Value()))
+		accountSnapsAccess.add(size)
+	}
+	it.Release()
+
+	it = db.NewIterator(AccessSlotPrefix, nil)
+	for it.Next() {
+		key := it.Key()
+		size := common.StorageSize(len(key) + len(it.Value()))
+		storageSnapsAccess.add(size)
+	}
+	it.Release()
+
+	it = db.NewIterator(AccessNodeAccountPrefix, nil)
+	for it.Next() {
+		key := it.Key()
+		size := common.StorageSize(len(key) + len(it.Value()))
+		accountNodesAccess.add(size)
+	}
+	it.Release()
+
+	it = db.NewIterator(AccessNodeSlotPrefix, nil)
+	for it.Next() {
+		key := it.Key()
+		size := common.StorageSize(len(key) + len(it.Value()))
+		storageNodesAccess.add(size)
+	}
+	it.Release()
+
+	it = db.NewIterator(TrieNodeAccountPrefix, nil)
+	for it.Next() {
+		key := it.Key()
+		size := common.StorageSize(len(key) + len(it.Value()))
+		accountTries.add(size)
+	}
+	it.Release()
+
+	it = db.NewIterator(TrieNodeStoragePrefix, nil)
+	for it.Next() {
+		key := it.Key()
+		size := common.StorageSize(len(key) + len(it.Value()))
+		storageTries.add(size)
+	}
+	it.Release()
+
+	// Print the statistics in table
+	table := newTableWriter(os.Stdout)
+	table.SetHeader([]string{"Database", "Category", "Size", "Items"})
+	table.AppendBulk([][]string{
+		{"Database", "Account snapshots", accountSnaps.sizeString(), accountSnaps.countString()},
+		{"Database", "Storage snapshots", storageSnaps.sizeString(), storageSnaps.countString()},
+		{"Database", "Account tries", accountTries.sizeString(), accountTries.countString()},
+		{"Database", "Storage tries", storageTries.sizeString(), storageTries.countString()},
+		{"Database", "Account snapshots access", accountSnapsAccess.sizeString(), accountSnapsAccess.countString()},
+		{"Database", "Storage snapshots access", storageSnapsAccess.sizeString(), storageSnapsAccess.countString()},
+		{"Database", "Account nodes access", accountNodesAccess.sizeString(), accountNodesAccess.countString()},
+		{"Database", "Storage nodes access", storageNodesAccess.sizeString(), storageNodesAccess.countString()},
+	})
+	table.Render()
+
+	return nil
+}
+
 // This is the list of known 'metadata' keys stored in the databasse.
 var knownMetadataKeys = [][]byte{
 	databaseVersionKey, headHeaderKey, headBlockKey, headFastBlockKey, headFinalizedBlockKey,
@@ -776,5 +870,257 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 			count = 0
 		}
 	}
+	return batch.Write()
+}
+
+func PruneExpired(db ethdb.KeyValueStore) error {
+	const batchSize = 1000000
+
+	if err := processExpiredAccounts(db, batchSize); err != nil {
+		return err
+	}
+
+	if err := processExpiredStorage(db, batchSize); err != nil {
+		return err
+	}
+
+	if err := processExpiredAccountNode(db, batchSize); err != nil {
+		return err
+	}
+
+	if err := processExpiredStorageNode(db, batchSize); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func processExpiredAccounts(db ethdb.KeyValueStore, batchSize int) error {
+	start := []byte{}
+
+	for {
+		accounts, hasMore, err := collectAccountsBatch(db, start, batchSize)
+		if err != nil {
+			return err
+		}
+
+		if len(accounts) == 0 || !hasMore {
+			break // No more accounts to process
+		}
+
+		// Delete collected accounts in batch
+		if err := deleteAccountsBatch(db, accounts); err != nil {
+			return err
+		}
+
+		// Continue from the last processed key
+		start = accounts[len(accounts)-1]
+	}
+
+	return nil
+}
+
+func collectAccountsBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
+	it := db.NewIterator(AccessAccountPrefix, start)
+	defer it.Release()
+
+	var accounts [][]byte
+	count := 0
+
+	for it.Next() {
+		key := it.Key()
+		addr := key[len(AccessAccountPrefix):]
+		accounts = append(accounts, addr)
+
+		count++
+		if count >= batchSize {
+			return accounts, true, nil // hasMore = true
+		}
+	}
+
+	return accounts, false, nil // hasMore = false (reached end)
+}
+
+func deleteAccountsBatch(db ethdb.KeyValueStore, accounts [][]byte) error {
+	batch := db.NewBatch()
+	defer batch.Reset() // Clean up batch resources
+
+	for _, addr := range accounts {
+		if err := batch.Delete(accountSnapshotKey(crypto.Keccak256Hash(addr))); err != nil {
+			return err
+		}
+	}
+
+	return batch.Write()
+}
+
+func processExpiredStorage(db ethdb.KeyValueStore, batchSize int) error {
+	start := []byte{}
+
+	for {
+		storage, hasMore, err := collectStorageBatch(db, start, batchSize)
+		if err != nil {
+			return err
+		}
+
+		if len(storage) == 0 || !hasMore {
+			break // No more storage to process
+		}
+
+		// Delete collected storage in batch
+		if err := deleteStorageBatch(db, storage); err != nil {
+			return err
+		}
+
+		// Continue from the last processed key
+		start = storage[len(storage)-1]
+	}
+
+	return nil
+}
+
+func collectStorageBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
+	it := db.NewIterator(AccessSlotPrefix, start)
+	defer it.Release()
+
+	var storage [][]byte
+	count := 0
+
+	for it.Next() {
+		key := it.Key()
+		k := key[len(AccessSlotPrefix):]
+		storage = append(storage, k)
+
+		count++
+		if count >= batchSize {
+			return storage, true, nil
+		}
+	}
+
+	return storage, false, nil
+}
+
+func deleteStorageBatch(db ethdb.KeyValueStore, storage [][]byte) error {
+	batch := db.NewBatch()
+	defer batch.Reset() // Clean up batch resources
+
+	for _, key := range storage {
+		addr := key[:common.AddressLength]
+		slot := key[common.AddressLength:]
+		batch.Delete(storageSnapshotKey(crypto.Keccak256Hash(addr), crypto.Keccak256Hash(slot)))
+	}
+
+	return batch.Write()
+}
+
+func processExpiredAccountNode(db ethdb.KeyValueStore, batchSize int) error {
+	start := []byte{}
+
+	for {
+		accNodes, hasMore, err := collectAccountNodeBatch(db, start, batchSize)
+		if err != nil {
+			return err
+		}
+
+		if len(accNodes) == 0 || !hasMore {
+			break // No more account nodes to process
+		}
+
+		// Delete collected account nodes in batch
+		if err := deleteAccountNodeBatch(db, accNodes); err != nil {
+			return err
+		}
+
+		// Continue from the last processed key
+		start = accNodes[len(accNodes)-1]
+	}
+
+	return nil
+}
+
+func collectAccountNodeBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
+	it := db.NewIterator(AccessNodeAccountPrefix, start)
+	defer it.Release()
+
+	var accNodes [][]byte
+	count := 0
+
+	for it.Next() {
+		key := it.Key()
+		accNodes = append(accNodes, key[len(AccessNodeAccountPrefix):])
+
+		count++
+		if count >= batchSize {
+			return accNodes, true, nil
+		}
+	}
+
+	return accNodes, false, nil
+}
+
+func deleteAccountNodeBatch(db ethdb.KeyValueStore, accNodes [][]byte) error {
+	batch := db.NewBatch()
+	defer batch.Reset() // Clean up batch resources
+
+	for _, key := range accNodes {
+		batch.Delete(accessNodeAccountKey(key))
+	}
+
+	return batch.Write()
+}
+
+func processExpiredStorageNode(db ethdb.KeyValueStore, batchSize int) error {
+	start := []byte{}
+
+	for {
+		storageNodes, hasMore, err := collectStorageNodeBatch(db, start, batchSize)
+		if err != nil {
+			return err
+		}
+
+		if len(storageNodes) == 0 || !hasMore {
+			break // No more storage nodes to process
+		}
+
+		// Delete collected storage nodes in batch
+		if err := deleteStorageNodeBatch(db, storageNodes); err != nil {
+			return err
+		}
+
+		// Continue from the last processed key
+		start = storageNodes[len(storageNodes)-1]
+	}
+
+	return nil
+}
+
+func collectStorageNodeBatch(db ethdb.KeyValueStore, start []byte, batchSize int) ([][]byte, bool, error) {
+	it := db.NewIterator(AccessNodeSlotPrefix, start)
+	defer it.Release()
+
+	var storageNodes [][]byte
+	count := 0
+
+	for it.Next() {
+		key := it.Key()
+		storageNodes = append(storageNodes, key[len(AccessNodeSlotPrefix):])
+
+		count++
+		if count >= batchSize {
+			return storageNodes, true, nil
+		}
+	}
+
+	return storageNodes, false, nil
+}
+
+func deleteStorageNodeBatch(db ethdb.KeyValueStore, storageNodes [][]byte) error {
+	batch := db.NewBatch()
+	defer batch.Reset() // Clean up batch resources
+
+	for _, key := range storageNodes {
+		batch.Delete(accessNodeSlotKey(common.BytesToHash(key[:common.HashLength]), key[common.HashLength:]))
+	}
+
 	return batch.Write()
 }
