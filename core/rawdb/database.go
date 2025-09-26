@@ -902,7 +902,7 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 }
 
 func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
-	const batchSize = 100_000
+	const batchSize = 10_000_000
 
 	done := make(chan struct{})
 	startTime := time.Now()
