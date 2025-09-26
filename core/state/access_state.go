@@ -1,6 +1,10 @@
 package state
 
-import "github.com/ethereum/go-ethereum/common"
+import (
+	"maps"
+
+	"github.com/ethereum/go-ethereum/common"
+)
 
 type AccessState struct {
 	Address map[common.Address]struct{}
@@ -34,4 +38,11 @@ func (a *AccessState) AddSlot(address common.Address, slot common.Hash) {
 func (a *AccessState) Reset() {
 	a.Address = make(map[common.Address]struct{})
 	a.Slots = make(map[common.Address]map[common.Hash]struct{})
+}
+
+func (a *AccessState) Copy() *AccessState {
+	return &AccessState{
+		Address: maps.Clone(a.Address),
+		Slots:   maps.Clone(a.Slots),
+	}
 }

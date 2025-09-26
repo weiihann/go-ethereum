@@ -1,6 +1,8 @@
 package trie
 
 import (
+	"maps"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
@@ -36,4 +38,10 @@ func (t *AccessTrie) AddNodeSet(nodes *trienode.NodeSet) {
 
 func (t *AccessTrie) Reset() {
 	t.Nodes = make(map[common.Hash]map[string]struct{})
+}
+
+func (t *AccessTrie) Copy() *AccessTrie {
+	return &AccessTrie{
+		Nodes: maps.Clone(t.Nodes),
+	}
 }
