@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/holiman/uint256"
 )
@@ -584,4 +585,8 @@ func (s *stateObject) Nonce() uint64 {
 
 func (s *stateObject) Root() common.Hash {
 	return s.data.Root
+}
+
+func (s *stateObject) Access() *trie.AccessTrie {
+	return s.trie.Access()
 }
