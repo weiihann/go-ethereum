@@ -960,7 +960,7 @@ func processExpiredAccounts(ctx context.Context, sourceDB, targetDB ethdb.KeyVal
 		}
 		count.Add(uint64(len(accounts)))
 
-		if len(accounts) == 0 || !hasMore {
+		if !hasMore {
 			break // No more accounts to process
 		}
 
@@ -1040,7 +1040,7 @@ func processExpiredStorage(ctx context.Context, sourceDB, targetDB ethdb.KeyValu
 
 		count.Add(uint64(len(storage)))
 
-		if len(storage) == 0 || !hasMore {
+		if !hasMore {
 			break // No more storage to process
 		}
 
@@ -1119,7 +1119,7 @@ func processExpiredAccountNode(ctx context.Context, sourceDB, targetDB ethdb.Key
 		}
 		count.Add(uint64(len(accNodes)))
 
-		if len(accNodes) == 0 || !hasMore {
+		if !hasMore {
 			break // No more account nodes to process
 		}
 
@@ -1196,7 +1196,7 @@ func processExpiredStorageNode(ctx context.Context, sourceDB, targetDB ethdb.Key
 
 		count.Add(uint64(len(storageNodes)))
 
-		if len(storageNodes) == 0 || !hasMore {
+		if !hasMore {
 			break // No more storage nodes to process
 		}
 
