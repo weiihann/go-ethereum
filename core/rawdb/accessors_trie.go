@@ -116,6 +116,16 @@ func WriteAccessNodeSlot(db ethdb.KeyValueWriter, accountHash common.Hash, path 
 	}
 }
 
+func HasAccessNodeAccount(db ethdb.KeyValueReader, path []byte) bool {
+	ok, _ := db.Has(accessNodeAccountKey(path))
+	return ok
+}
+
+func HasAccessNodeSlot(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) bool {
+	ok, _ := db.Has(accessNodeSlotKey(accountHash, path))
+	return ok
+}
+
 // ReadLegacyTrieNode retrieves the legacy trie node with the given
 // associated node hash.
 func ReadLegacyTrieNode(db ethdb.KeyValueReader, hash common.Hash) []byte {

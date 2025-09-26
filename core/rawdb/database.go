@@ -1147,7 +1147,7 @@ func collectAccountNodeBatch(ctx context.Context, sourceDB, targetDB ethdb.KeyVa
 		key := it.Key()
 		accPath := key[len(TrieNodeAccountPrefix):]
 
-		if !HasAccountTrieNode(sourceDB, accPath) {
+		if !HasAccessNodeAccount(sourceDB, accPath) {
 			accNodes = append(accNodes, accPath)
 			count++
 			if count >= batchSize {
@@ -1221,9 +1221,12 @@ func collectStorageNodeBatch(ctx context.Context, sourceDB, targetDB ethdb.KeyVa
 
 	for it.Next() {
 		key := it.Key()
+		k := key[len(TrieNodeStoragePrefix):]
+		addrHash := k[:common.HashLength]
+		path := k[common.HashLength:]
 
-		if !HasStorageTrieNode(sourceDB, common.BytesToHash(key[:common.HashLength]), key[common.HashLength:]) {
-			storageNodes = append(storageNodes, key[len(TrieNodeStoragePrefix):])
+		if !HasAccessNodeSlot(sourceDB, common.BytesToHash(addrHash), path) {
+			storageNodes = append(storageNodes, k)
 			count++
 			if count >= batchSize {
 				return storageNodes, true, nil
