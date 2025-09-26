@@ -992,11 +992,10 @@ func collectAccountsBatch(ctx context.Context, sourceDB, targetDB ethdb.KeyValue
 		// If the account is not accessed, delete it
 		if !HasAccessAccount(sourceDB, common.BytesToHash(addrHash)) {
 			accounts = append(accounts, addrHash)
-		}
-
-		count++
-		if count >= batchSize {
-			return accounts, true, nil // hasMore = true
+			count++
+			if count >= batchSize {
+				return accounts, true, nil // hasMore = true
+			}
 		}
 
 		select {
@@ -1072,11 +1071,11 @@ func collectStorageBatch(ctx context.Context, sourceDB, targetDB ethdb.KeyValueS
 		// If the storage is not accessed, delete it
 		if !HasAccessSlot(sourceDB, common.BytesToHash(k[:common.HashLength]), common.BytesToHash(k[common.HashLength:])) {
 			storage = append(storage, k)
-		}
+			count++
+			if count >= batchSize {
+				return storage, true, nil
+			}
 
-		count++
-		if count >= batchSize {
-			return storage, true, nil
 		}
 
 		select {
@@ -1150,11 +1149,10 @@ func collectAccountNodeBatch(ctx context.Context, sourceDB, targetDB ethdb.KeyVa
 
 		if !HasAccountTrieNode(sourceDB, accPath) {
 			accNodes = append(accNodes, accPath)
-		}
-
-		count++
-		if count >= batchSize {
-			return accNodes, true, nil
+			count++
+			if count >= batchSize {
+				return accNodes, true, nil
+			}
 		}
 
 		select {
@@ -1226,11 +1224,10 @@ func collectStorageNodeBatch(ctx context.Context, sourceDB, targetDB ethdb.KeyVa
 
 		if !HasStorageTrieNode(sourceDB, common.BytesToHash(key[:common.HashLength]), key[common.HashLength:]) {
 			storageNodes = append(storageNodes, key[len(TrieNodeStoragePrefix):])
-		}
-
-		count++
-		if count >= batchSize {
-			return storageNodes, true, nil
+			count++
+			if count >= batchSize {
+				return storageNodes, true, nil
+			}
 		}
 
 		select {
