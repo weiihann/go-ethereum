@@ -937,7 +937,7 @@ func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 		return err
 	}
 
-	return nil
+	return InspectState(targetDB.(ethdb.Database))
 }
 
 func processExpiredAccounts(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, count *atomic.Uint64) error {
