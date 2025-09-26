@@ -83,6 +83,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbPruneExpiredCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -207,6 +208,19 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
 	}
+	dbPruneExpiredCmd = &cli.Command{
+		Action:      pruneExpired,
+		Name:        "prune-expired",
+		Usage:       "Prune expired access nodes",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Description: "This command prunes expired state",
+	}
+	dbInspectStateCmd = &cli.Command{
+		Action: inspectState,
+		Name:   "inspect-state",
+		Usage:  "Inspect the state of the database",
+		Flags:  slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+	}
 )
 
 func removeDB(ctx *cli.Context) error {
@@ -330,6 +344,16 @@ func inspect(ctx *cli.Context) error {
 	defer db.Close()
 
 	return rawdb.InspectDatabase(db, prefix, start)
+}
+
+func inspectState(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	return rawdb.InspectState(db)
 }
 
 func checkStateContent(ctx *cli.Context) error {
@@ -906,4 +930,14 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+func pruneExpired(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, false)
+	defer db.Close()
+
+	return rawdb.PruneExpired(db)
 }
