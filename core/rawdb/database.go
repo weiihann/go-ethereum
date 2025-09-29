@@ -938,8 +938,12 @@ func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 	// 	return err
 	// }
 
-	log.Info("Pruning storage trie nodes")
-	if err := pruneStorageNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+	// log.Info("Pruning storage trie nodes")
+	// if err := pruneStorageNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+	// 	return err
+	// }
+
+	if err := copyStorageNodes(sourceDB, targetDB); err != nil {
 		return err
 	}
 
@@ -1176,7 +1180,7 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 			k := key[len(TrieNodeStoragePrefix):]
 
 			// Check if we need to load more source keys
-			if sourceHasMore && sourceLastKey != nil && bytes.Compare(key, sourceLastKey) > 0 {
+			if sourceHasMore && sourceLastKey != nil && bytes.Compare(k, sourceLastKey) > 0 {
 				// Target key has exceeded our current source batch, load next batch
 				if err := loadSourceBatch(); err != nil {
 					targetIt.Release()
@@ -1220,6 +1224,52 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 
 		// If no more items, we're done
 		if !targetHasMore {
+			break
+		}
+	}
+
+	return nil
+}
+
+func copyStorageNodes(sourceDB, targetDB ethdb.KeyValueStore) error {
+	batchSize := 5_000_000
+
+	it := sourceDB.NewIterator(TrieNodeStoragePrefix, nil)
+	defer it.Release()
+
+	batch := targetDB.NewBatch()
+
+	for {
+		hasMore := false
+		count := 0
+		for it.Next() {
+			key := it.Key()
+			val := it.Value()
+
+			if err := batch.Put(key, val); err != nil {
+				return err
+			}
+
+			count++
+			if count >= batchSize {
+				hasMore = true
+				break
+			}
+		}
+
+		if err := it.Error(); err != nil {
+			return err
+		}
+
+		if batch.ValueSize() > 0 {
+			if err := batch.Write(); err != nil {
+				return err
+			}
+			log.Info("Committed storage node batch", "size", batch.ValueSize(), "items", count)
+			batch.Reset()
+		}
+
+		if !hasMore {
 			break
 		}
 	}
