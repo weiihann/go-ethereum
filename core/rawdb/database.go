@@ -923,15 +923,15 @@ func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 	}()
 	defer close(done)
 
-	log.Info("Pruning account snapshots")
-	if err := pruneAccountSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-		return err
-	}
+	// log.Info("Pruning account snapshots")
+	// if err := pruneAccountSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+	// 	return err
+	// }
 
-	log.Info("Pruning storage snapshots")
-	if err := pruneStorageSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-		return err
-	}
+	// log.Info("Pruning storage snapshots")
+	// if err := pruneStorageSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+	// 	return err
+	// }
 
 	log.Info("Pruning account trie nodes")
 	if err := pruneAccountNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
