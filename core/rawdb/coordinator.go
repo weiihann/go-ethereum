@@ -32,8 +32,8 @@ const (
 	iteratorAccounts iteratorType = iota
 	iteratorStorage
 	iteratorAccountNodes
-	iteratorStorageNodes
-	numIterators = 4
+	// iteratorStorageNodes
+	numIterators = 3
 )
 
 type batchResult struct {
@@ -178,8 +178,8 @@ func (c *batchCoordinator) runIterator(iterType iteratorType, state *iteratorSta
 		batch, hasMore, err = c.collectStorageBatch(state.start)
 	case iteratorAccountNodes:
 		batch, hasMore, err = c.collectAccountNodeBatch(state.start)
-	case iteratorStorageNodes:
-		batch, hasMore, err = c.collectStorageNodeBatch(state.start)
+		// case iteratorStorageNodes:
+		// 	batch, hasMore, err = c.collectStorageNodeBatch(state.start)
 	}
 
 	select {
@@ -242,6 +242,7 @@ func (c *batchCoordinator) collectAccountsBatch(start []byte) (ethdb.Batch, bool
 		}
 	}
 
+	log.Info("End of accounts batch", "count", count)
 	return batch, false, it.Error()
 }
 
@@ -280,6 +281,7 @@ func (c *batchCoordinator) collectStorageBatch(start []byte) (ethdb.Batch, bool,
 		}
 	}
 
+	log.Info("End of storage batch", "count", count)
 	return batch, false, it.Error()
 }
 
@@ -318,45 +320,47 @@ func (c *batchCoordinator) collectAccountNodeBatch(start []byte) (ethdb.Batch, b
 		}
 	}
 
+	log.Info("End of account nodes batch", "count", count)
 	return batch, false, it.Error()
 }
 
-func (c *batchCoordinator) collectStorageNodeBatch(start []byte) (ethdb.Batch, bool, error) {
-	it := c.targetDB.NewIterator(TrieNodeStoragePrefix, start)
-	defer it.Release()
+// func (c *batchCoordinator) collectStorageNodeBatch(start []byte) (ethdb.Batch, bool, error) {
+// 	it := c.targetDB.NewIterator(TrieNodeStoragePrefix, start)
+// 	defer it.Release()
 
-	batch := c.targetDB.NewBatch()
-	count := 0
-	var lastKey []byte
+// 	batch := c.targetDB.NewBatch()
+// 	count := 0
+// 	var lastKey []byte
 
-	for it.Next() {
-		key := it.Key()
-		k := key[len(TrieNodeStoragePrefix):]
-		addrHash := k[:common.HashLength]
-		path := k[common.HashLength:]
+// 	for it.Next() {
+// 		key := it.Key()
+// 		k := key[len(TrieNodeStoragePrefix):]
+// 		addrHash := k[:common.HashLength]
+// 		path := k[common.HashLength:]
 
-		if !HasAccessNodeSlot(c.sourceDB, common.BytesToHash(addrHash), path) {
-			if err := batch.Delete(key); err != nil {
-				return nil, false, err
-			}
-		}
+// 		if !HasAccessNodeSlot(c.sourceDB, common.BytesToHash(addrHash), path) {
+// 			if err := batch.Delete(key); err != nil {
+// 				return nil, false, err
+// 			}
+// 		}
 
-		lastKey = k
-		count++
-		c.count.Add(1)
+// 		lastKey = k
+// 		count++
+// 		c.count.Add(1)
 
-		if count >= c.batchSize {
-			// Update the start position for next batch
-			c.iterStates[iteratorStorageNodes].start = lastKey
-			return batch, true, nil
-		}
+// 		if count >= c.batchSize {
+// 			// Update the start position for next batch
+// 			c.iterStates[iteratorStorageNodes].start = lastKey
+// 			return batch, true, nil
+// 		}
 
-		select {
-		case <-c.ctx.Done():
-			return nil, false, c.ctx.Err()
-		default:
-		}
-	}
+// 		select {
+// 		case <-c.ctx.Done():
+// 			return nil, false, c.ctx.Err()
+// 		default:
+// 		}
+// 	}
 
-	return batch, false, it.Error()
-}
+// 	log.Info("End of storage nodes batch", "count", count)
+// 	return batch, false, it.Error()
+// }
