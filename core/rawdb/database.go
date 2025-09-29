@@ -938,14 +938,14 @@ func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 	// 	return err
 	// }
 
-	// log.Info("Pruning storage trie nodes")
-	// if err := pruneStorageNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-	// 	return err
-	// }
-
-	if err := copyStorageNodes(sourceDB, targetDB); err != nil {
+	log.Info("Pruning storage trie nodes")
+	if err := pruneStorageNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
 		return err
 	}
+
+	// if err := copyStorageNodes(sourceDB, targetDB); err != nil {
+	// 	return err
+	// }
 
 	log.Info("Pruning complete", "total_count", totalCount.Load(), "elapsed", common.PrettyDuration(time.Since(startTime)))
 	return InspectState(targetDB.(ethdb.Database))
