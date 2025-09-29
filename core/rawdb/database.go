@@ -923,15 +923,15 @@ func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 	}()
 	defer close(done)
 
-	// log.Info("Pruning account snapshots")
-	// if err := pruneAccountSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-	// 	return err
-	// }
+	log.Info("Pruning account snapshots")
+	if err := pruneAccountSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+		return err
+	}
 
-	// log.Info("Pruning storage snapshots")
-	// if err := pruneStorageSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-	// 	return err
-	// }
+	log.Info("Pruning storage snapshots")
+	if err := pruneStorageSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+		return err
+	}
 
 	log.Info("Pruning account trie nodes")
 	if err := pruneAccountNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
@@ -978,7 +978,7 @@ func pruneAccountSnapshots(sourceDB, targetDB ethdb.KeyValueStore, batchSize int
 
 			// Stop if we've reached the batch size limit
 			if batchDeleteCount >= batchSize {
-				lastKey = common.CopyBytes(key)
+				lastKey = common.CopyBytes(addrHash)
 				hasMore = true
 				break
 			}
@@ -1034,7 +1034,7 @@ func pruneStorageSnapshots(sourceDB, targetDB ethdb.KeyValueStore, batchSize int
 
 			// Stop if we've reached the batch size limit
 			if batchDeleteCount >= batchSize {
-				lastKey = common.CopyBytes(key)
+				lastKey = common.CopyBytes(k)
 				hasMore = true
 				break
 			}
@@ -1090,7 +1090,7 @@ func pruneAccountNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 
 			// Stop if we've reached the batch size limit
 			if batchDeleteCount >= batchSize {
-				lastKey = common.CopyBytes(key)
+				lastKey = common.CopyBytes(accPath)
 				hasMore = true
 				break
 			}
@@ -1130,7 +1130,7 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 	// Memory map for source keys and tracking
 	sourceKeys := make(map[string]struct{}, memBatchSize)
 	var sourceLastKey []byte
-	sourceHasMore := true
+	sourceHasMore := false
 
 	// Function to load next batch of source keys into memory
 	loadSourceBatch := func() error {
@@ -1153,6 +1153,10 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 
 		if err := sourceIt.Error(); err != nil {
 			return err
+		}
+
+		if count < memBatchSize {
+			sourceHasMore = false
 		}
 
 		if count > 0 {
@@ -1188,8 +1192,8 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 				}
 			}
 
-			// Check if key exists in source
-			if _, exists := sourceKeys[string(k)]; !exists {
+			// Delete if key doesn't exist in source or source is exhausted
+			if _, exists := sourceKeys[string(k)]; !sourceHasMore || !exists {
 				if err := batch.Delete(key); err != nil {
 					targetIt.Release()
 					return err
