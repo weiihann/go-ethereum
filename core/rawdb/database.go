@@ -1140,12 +1140,12 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 		for sourceIt.Next() {
 			key := sourceIt.Key()
 			// Store just the part after the prefix for comparison
-			k := key[len(TrieNodeStoragePrefix):]
+			k := key[len(AccessNodeSlotPrefix):]
 			sourceKeys[string(k)] = struct{}{}
 			count++
 
 			if count >= memBatchSize {
-				sourceLastKey = common.CopyBytes(key)
+				sourceLastKey = common.CopyBytes(k)
 				sourceHasMore = true
 				break
 			}
