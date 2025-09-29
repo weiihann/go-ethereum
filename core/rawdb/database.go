@@ -1284,6 +1284,20 @@ func copyStorageNodes(sourceDB, targetDB ethdb.KeyValueStore) error {
 
 func deleteStorageNodes(targetDB ethdb.KeyValueStore) error {
 	batch := targetDB.NewBatch()
-	batch.DeleteRange(TrieNodeStoragePrefix, nil)
+	batch.DeleteRange(TrieNodeStoragePrefix, upperBound(TrieNodeStoragePrefix))
 	return batch.Write()
+}
+
+func upperBound(prefix []byte) (limit []byte) {
+	for i := len(prefix) - 1; i >= 0; i-- {
+		c := prefix[i]
+		if c == 0xff {
+			continue
+		}
+		limit = make([]byte, i+1)
+		copy(limit, prefix)
+		limit[i] = c + 1
+		break
+	}
+	return limit
 }
