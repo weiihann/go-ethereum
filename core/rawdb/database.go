@@ -1119,126 +1119,163 @@ func pruneAccountNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 	return nil
 }
 
-// pruneStorageNodes iterates through storage trie nodes and deletes ones that don't have access
-func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, totalCount *atomic.Uint64) error {
-	const memBatchSize = 1_000_000 // Number of source keys to keep in memory at once
+// sourceBatch manages loading and querying batches of source keys for pruning.
+type sourceBatch struct {
+	it           ethdb.Iterator
+	keys         map[string]struct{}
+	lastKey      []byte
+	hasMore      bool
+	maxBatchSize int
+}
 
-	// Initialize source iterator
-	sourceIt := sourceDB.NewIterator(AccessNodeSlotPrefix, nil)
-	defer sourceIt.Release()
+// newSourceBatch creates a new source batch iterator.
+func newSourceBatch(db ethdb.KeyValueStore, prefix []byte, maxBatchSize int) *sourceBatch {
+	return &sourceBatch{
+		it:           db.NewIterator(prefix, nil),
+		keys:         make(map[string]struct{}, maxBatchSize),
+		maxBatchSize: maxBatchSize,
+	}
+}
 
-	// Memory map for source keys and tracking
-	sourceKeys := make(map[string]struct{}, memBatchSize)
-	var sourceLastKey []byte
-	sourceHasMore := false
+// loadNext loads the next batch of keys into memory.
+func (sb *sourceBatch) loadNext(prefix []byte) error {
+	// Clear previous batch
+	sb.keys = make(map[string]struct{}, sb.maxBatchSize)
+	count := 0
 
-	// Function to load next batch of source keys into memory
-	loadSourceBatch := func() error {
-		sourceKeys = make(map[string]struct{}, memBatchSize) // Clear previous batch
-		count := 0
+	for sb.it.Next() {
+		key := sb.it.Key()
+		// Store only the part after the prefix for comparison
+		k := key[len(prefix):]
+		sb.keys[string(k)] = struct{}{}
+		count++
 
-		for sourceIt.Next() {
-			key := sourceIt.Key()
-			// Store just the part after the prefix for comparison
-			k := key[len(AccessNodeSlotPrefix):]
-			sourceKeys[string(k)] = struct{}{}
-			count++
-
-			sourceLastKey = k
-			if count >= memBatchSize {
-				sourceHasMore = true
-				break
-			}
+		sb.lastKey = k
+		if count >= sb.maxBatchSize {
+			sb.hasMore = true
+			return sb.it.Error()
 		}
-
-		if err := sourceIt.Error(); err != nil {
-			return err
-		}
-
-		if count < memBatchSize {
-			sourceHasMore = false
-		}
-
-		if count > 0 {
-			log.Info("Loaded source keys batch", "count", count, "hasMore", sourceHasMore)
-		}
-
-		return nil
 	}
 
-	// Load initial batch
-	if err := loadSourceBatch(); err != nil {
+	if err := sb.it.Error(); err != nil {
 		return err
 	}
 
+	sb.hasMore = (count >= sb.maxBatchSize)
+
+	if count > 0 {
+		log.Info("Loaded source keys batch",
+			"count", count,
+			"hasMore", sb.hasMore)
+	}
+
+	return nil
+}
+
+// contains checks if the batch contains the given key.
+func (sb *sourceBatch) contains(key []byte) bool {
+	_, exists := sb.keys[string(key)]
+	return exists
+}
+
+// release releases the underlying iterator.
+func (sb *sourceBatch) release() {
+	if sb.it != nil {
+		sb.it.Release()
+	}
+}
+
+// shouldDeleteKey determines if a target key should be deleted based on
+// source batch state.
+func (sb *sourceBatch) shouldDeleteKey(targetKey []byte) bool {
+	// If target key exceeds last source key and no more source data exists,
+	// all remaining targets should be deleted
+	if !sb.hasMore && bytes.Compare(targetKey, sb.lastKey) > 0 {
+		return true
+	}
+
+	// Delete if key doesn't exist in current batch
+	return !sb.contains(targetKey)
+}
+
+// pruneStorageNodes iterates through storage trie nodes and deletes nodes
+// that don't have corresponding access entries in the source database.
+// It uses memory-efficient batching to handle large datasets.
+func pruneStorageNodes(
+	sourceDB, targetDB ethdb.KeyValueStore,
+	batchSize int,
+	totalCount *atomic.Uint64,
+) error {
+	const memBatchSize = 1_000_000 // Number of source keys per memory batch
+
+	// Initialize source batch loader
+	srcBatch := newSourceBatch(sourceDB, AccessNodeSlotPrefix, memBatchSize)
+	defer srcBatch.release()
+
+	// Load initial source batch
+	if err := srcBatch.loadNext(AccessNodeSlotPrefix); err != nil {
+		return fmt.Errorf("failed to load initial source batch: %w", err)
+	}
+
+	// Process target database in batches
 	var targetLastKey []byte
 	for {
 		targetIt := targetDB.NewIterator(TrieNodeStoragePrefix, targetLastKey)
 		batch := targetDB.NewBatch()
-		count := 0
-		batchDeleteCount := 0
-		var targetHasMore bool
+		processedCount := 0
+		deleteCount := 0
+		targetHasMore := false
 
-		deleteAll := false
 		for targetIt.Next() {
 			key := targetIt.Key()
 			k := key[len(TrieNodeStoragePrefix):]
 
-			// Check if we need to load more source keys
-			if sourceHasMore {
-				if bytes.Compare(k, sourceLastKey) > 0 {
-					// Target key has exceeded our current source batch, load next batch
-					if err := loadSourceBatch(); err != nil {
-						targetIt.Release()
-						return err
-					}
-				}
-			} else {
-				if !deleteAll {
-					if bytes.Compare(k, sourceLastKey) > 0 {
-						deleteAll = true
-					}
+			// Load next source batch if current target key exceeds current batch
+			if srcBatch.hasMore && bytes.Compare(k, srcBatch.lastKey) > 0 {
+				if err := srcBatch.loadNext(AccessNodeSlotPrefix); err != nil {
+					targetIt.Release()
+					return fmt.Errorf(
+						"failed to load source batch: %w",
+						err,
+					)
 				}
 			}
 
-			// Delete if key doesn't exist in source or source is exhausted
-			if deleteAll {
+			// Delete if key should be pruned
+			if srcBatch.shouldDeleteKey(k) {
 				if err := batch.Delete(key); err != nil {
 					targetIt.Release()
-					return err
+					return fmt.Errorf("failed to delete key: %w", err)
 				}
-				batchDeleteCount++
-			} else if _, exists := sourceKeys[string(k)]; !exists {
-				if err := batch.Delete(key); err != nil {
-					targetIt.Release()
-					return err
-				}
-				batchDeleteCount++
+				deleteCount++
 			}
 
-			count++
+			processedCount++
 			totalCount.Add(1)
 
 			// Stop if we've reached the batch size limit
-			if batchDeleteCount >= batchSize {
-				targetLastKey = common.CopyBytes(key)
+			targetLastKey = k
+			if deleteCount >= batchSize {
 				targetHasMore = true
 				break
 			}
 		}
 
-		// Release iterator before committing batch
+		// Release iterator and check for errors
 		targetIt.Release()
 		if err := targetIt.Error(); err != nil {
-			return err
+			return fmt.Errorf("target iterator error: %w", err)
 		}
 
 		// Commit batch if we have deletions
-		if batchDeleteCount > 0 {
+		if deleteCount > 0 {
 			if err := batch.Write(); err != nil {
-				return err
+				return fmt.Errorf("failed to write batch: %w", err)
 			}
-			log.Info("Committed storage node batch", "size", batch.ValueSize(), "deletes", batchDeleteCount, "processed", count)
+			log.Info("Committed storage node batch",
+				"size", batch.ValueSize(),
+				"deletes", deleteCount,
+				"processed", processedCount)
 		}
 
 		// If no more items, we're done
