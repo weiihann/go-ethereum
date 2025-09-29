@@ -1232,6 +1232,11 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 }
 
 func copyStorageNodes(sourceDB, targetDB ethdb.KeyValueStore) error {
+	// Delete all storage nodes from targetDB first because I'm dumb
+	if err := deleteStorageNodes(targetDB); err != nil {
+		return err
+	}
+
 	batchSize := 5_000_000
 
 	it := sourceDB.NewIterator(TrieNodeStoragePrefix, nil)
@@ -1275,4 +1280,10 @@ func copyStorageNodes(sourceDB, targetDB ethdb.KeyValueStore) error {
 	}
 
 	return nil
+}
+
+func deleteStorageNodes(targetDB ethdb.KeyValueStore) error {
+	batch := targetDB.NewBatch()
+	batch.DeleteRange(TrieNodeStoragePrefix, nil)
+	return batch.Write()
 }
