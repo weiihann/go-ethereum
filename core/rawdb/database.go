@@ -902,7 +902,7 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 }
 
 func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
-	const batchSize = 5_000_000
+	const batchSize = 1_000_000
 
 	done := make(chan struct{})
 	startTime := time.Now()
@@ -1117,23 +1117,77 @@ func pruneAccountNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 
 // pruneStorageNodes iterates through storage trie nodes and deletes ones that don't have access
 func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, totalCount *atomic.Uint64) error {
-	var lastKey []byte
+	const memBatchSize = 1_000_000 // Number of source keys to keep in memory at once
+
+	// Initialize source iterator
+	sourceIt := sourceDB.NewIterator(AccessNodeSlotPrefix, nil)
+	defer sourceIt.Release()
+
+	// Memory map for source keys and tracking
+	sourceKeys := make(map[string]struct{}, memBatchSize)
+	var sourceLastKey []byte
+	sourceHasMore := true
+
+	// Function to load next batch of source keys into memory
+	loadSourceBatch := func() error {
+		sourceKeys = make(map[string]struct{}, memBatchSize) // Clear previous batch
+		count := 0
+
+		for sourceIt.Next() {
+			key := sourceIt.Key()
+			// Store just the part after the prefix for comparison
+			k := key[len(TrieNodeStoragePrefix):]
+			sourceKeys[string(k)] = struct{}{}
+			count++
+
+			if count >= memBatchSize {
+				sourceLastKey = common.CopyBytes(key)
+				sourceHasMore = true
+				break
+			}
+		}
+
+		if err := sourceIt.Error(); err != nil {
+			return err
+		}
+
+		if count > 0 {
+			log.Info("Loaded source keys batch", "count", count, "hasMore", sourceHasMore)
+		}
+
+		return nil
+	}
+
+	// Load initial batch
+	if err := loadSourceBatch(); err != nil {
+		return err
+	}
+
+	var targetLastKey []byte
 	for {
-		it := targetDB.NewIterator(TrieNodeStoragePrefix, lastKey)
+		targetIt := targetDB.NewIterator(TrieNodeStoragePrefix, targetLastKey)
 		batch := targetDB.NewBatch()
 		count := 0
 		batchDeleteCount := 0
-		var hasMore bool
+		var targetHasMore bool
 
-		for it.Next() {
-			key := it.Key()
+		for targetIt.Next() {
+			key := targetIt.Key()
 			k := key[len(TrieNodeStoragePrefix):]
-			addrHash := k[:common.HashLength]
-			path := k[common.HashLength:]
 
-			if !HasAccessNodeSlot(sourceDB, common.BytesToHash(addrHash), path) {
+			// Check if we need to load more source keys
+			if sourceHasMore && sourceLastKey != nil && bytes.Compare(key, sourceLastKey) > 0 {
+				// Target key has exceeded our current source batch, load next batch
+				if err := loadSourceBatch(); err != nil {
+					targetIt.Release()
+					return err
+				}
+			}
+
+			// Check if key exists in source
+			if _, exists := sourceKeys[string(k)]; !exists {
 				if err := batch.Delete(key); err != nil {
-					it.Release()
+					targetIt.Release()
 					return err
 				}
 				batchDeleteCount++
@@ -1144,15 +1198,15 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 
 			// Stop if we've reached the batch size limit
 			if batchDeleteCount >= batchSize {
-				lastKey = common.CopyBytes(key)
-				hasMore = true
+				targetLastKey = common.CopyBytes(key)
+				targetHasMore = true
 				break
 			}
 		}
 
 		// Release iterator before committing batch
-		it.Release()
-		if err := it.Error(); err != nil {
+		targetIt.Release()
+		if err := targetIt.Error(); err != nil {
 			return err
 		}
 
@@ -1165,7 +1219,7 @@ func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, to
 		}
 
 		// If no more items, we're done
-		if !hasMore {
+		if !targetHasMore {
 			break
 		}
 	}
