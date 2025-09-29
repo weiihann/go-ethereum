@@ -29,11 +29,11 @@ import (
 type iteratorType int
 
 const (
-	iteratorAccounts iteratorType = iota
-	iteratorStorage
-	iteratorAccountNodes
+	// iteratorAccounts iteratorType = iota
+	// iteratorStorage
+	iteratorAccountNodes iteratorType = iota
 	// iteratorStorageNodes
-	numIterators = 3
+	numIterators = 1
 )
 
 type batchResult struct {
@@ -172,10 +172,10 @@ func (c *batchCoordinator) runIterator(iterType iteratorType, state *iteratorSta
 	)
 
 	switch iterType {
-	case iteratorAccounts:
-		batch, hasMore, err = c.collectAccountsBatch(state.start)
-	case iteratorStorage:
-		batch, hasMore, err = c.collectStorageBatch(state.start)
+	// case iteratorAccounts:
+	// 	batch, hasMore, err = c.collectAccountsBatch(state.start)
+	// case iteratorStorage:
+	// 	batch, hasMore, err = c.collectStorageBatch(state.start)
 	case iteratorAccountNodes:
 		batch, hasMore, err = c.collectAccountNodeBatch(state.start)
 		// case iteratorStorageNodes:
@@ -207,83 +207,83 @@ func (c *batchCoordinator) commitBatches(batches []ethdb.Batch) error {
 	return nil
 }
 
-func (c *batchCoordinator) collectAccountsBatch(start []byte) (ethdb.Batch, bool, error) {
-	it := c.targetDB.NewIterator(SnapshotAccountPrefix, start)
-	defer it.Release()
+// func (c *batchCoordinator) collectAccountsBatch(start []byte) (ethdb.Batch, bool, error) {
+// 	it := c.targetDB.NewIterator(SnapshotAccountPrefix, start)
+// 	defer it.Release()
 
-	batch := c.targetDB.NewBatch()
-	count := 0
-	var lastKey []byte
+// 	batch := c.targetDB.NewBatch()
+// 	count := 0
+// 	var lastKey []byte
 
-	for it.Next() {
-		key := it.Key()
-		addrHash := key[len(SnapshotAccountPrefix):]
+// 	for it.Next() {
+// 		key := it.Key()
+// 		addrHash := key[len(SnapshotAccountPrefix):]
 
-		if !HasAccessAccount(c.sourceDB, common.BytesToHash(addrHash)) {
-			if err := batch.Delete(key); err != nil {
-				return nil, false, err
-			}
-		}
+// 		if !HasAccessAccount(c.sourceDB, common.BytesToHash(addrHash)) {
+// 			if err := batch.Delete(key); err != nil {
+// 				return nil, false, err
+// 			}
+// 		}
 
-		lastKey = key[len(SnapshotAccountPrefix):]
-		count++
-		c.count.Add(1)
+// 		lastKey = key[len(SnapshotAccountPrefix):]
+// 		count++
+// 		c.count.Add(1)
 
-		if count >= c.batchSize {
-			// Update the start position for next batch
-			c.iterStates[iteratorAccounts].start = lastKey
-			return batch, true, nil
-		}
+// 		if count >= c.batchSize {
+// 			// Update the start position for next batch
+// 			c.iterStates[iteratorAccounts].start = lastKey
+// 			return batch, true, nil
+// 		}
 
-		select {
-		case <-c.ctx.Done():
-			return nil, false, c.ctx.Err()
-		default:
-		}
-	}
+// 		select {
+// 		case <-c.ctx.Done():
+// 			return nil, false, c.ctx.Err()
+// 		default:
+// 		}
+// 	}
 
-	log.Info("End of accounts batch", "count", count)
-	return batch, false, it.Error()
-}
+// 	log.Info("End of accounts batch", "count", count)
+// 	return batch, false, it.Error()
+// }
 
-func (c *batchCoordinator) collectStorageBatch(start []byte) (ethdb.Batch, bool, error) {
-	it := c.targetDB.NewIterator(SnapshotStoragePrefix, start)
-	defer it.Release()
+// func (c *batchCoordinator) collectStorageBatch(start []byte) (ethdb.Batch, bool, error) {
+// 	it := c.targetDB.NewIterator(SnapshotStoragePrefix, start)
+// 	defer it.Release()
 
-	batch := c.targetDB.NewBatch()
-	count := 0
-	var lastKey []byte
+// 	batch := c.targetDB.NewBatch()
+// 	count := 0
+// 	var lastKey []byte
 
-	for it.Next() {
-		key := it.Key()
-		k := key[len(SnapshotStoragePrefix):]
+// 	for it.Next() {
+// 		key := it.Key()
+// 		k := key[len(SnapshotStoragePrefix):]
 
-		if !HasAccessSlot(c.sourceDB, common.BytesToHash(k[:common.HashLength]), common.BytesToHash(k[common.HashLength:])) {
-			if err := batch.Delete(key); err != nil {
-				return nil, false, err
-			}
-		}
+// 		if !HasAccessSlot(c.sourceDB, common.BytesToHash(k[:common.HashLength]), common.BytesToHash(k[common.HashLength:])) {
+// 			if err := batch.Delete(key); err != nil {
+// 				return nil, false, err
+// 			}
+// 		}
 
-		lastKey = k
-		count++
-		c.count.Add(1)
+// 		lastKey = k
+// 		count++
+// 		c.count.Add(1)
 
-		if count >= c.batchSize {
-			// Update the start position for next batch
-			c.iterStates[iteratorStorage].start = lastKey
-			return batch, true, nil
-		}
+// 		if count >= c.batchSize {
+// 			// Update the start position for next batch
+// 			c.iterStates[iteratorStorage].start = lastKey
+// 			return batch, true, nil
+// 		}
 
-		select {
-		case <-c.ctx.Done():
-			return nil, false, c.ctx.Err()
-		default:
-		}
-	}
+// 		select {
+// 		case <-c.ctx.Done():
+// 			return nil, false, c.ctx.Err()
+// 		default:
+// 		}
+// 	}
 
-	log.Info("End of storage batch", "count", count)
-	return batch, false, it.Error()
-}
+// 	log.Info("End of storage batch", "count", count)
+// 	return batch, false, it.Error()
+// }
 
 func (c *batchCoordinator) collectAccountNodeBatch(start []byte) (ethdb.Batch, bool, error) {
 	it := c.targetDB.NewIterator(TrieNodeAccountPrefix, start)
