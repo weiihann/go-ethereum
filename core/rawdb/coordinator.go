@@ -30,10 +30,10 @@ type iteratorType int
 
 const (
 	// iteratorAccounts iteratorType = iota
-	iteratorStorage iteratorType = iota
+	// iteratorStorage iteratorType = iota
 	// iteratorAccountNodes iteratorType = iota
-	// iteratorStorageNodes
-	numIterators = 1
+	iteratorStorageNodes iteratorType = iota
+	numIterators                      = 1
 )
 
 type batchResult struct {
@@ -174,12 +174,12 @@ func (c *batchCoordinator) runIterator(iterType iteratorType, state *iteratorSta
 	switch iterType {
 	// case iteratorAccounts:
 	// 	batch, hasMore, err = c.collectAccountsBatch(state.start)
-	case iteratorStorage:
-		batch, hasMore, err = c.collectStorageBatch(state.start)
-		// case iteratorAccountNodes:
-		// 	batch, hasMore, err = c.collectAccountNodeBatch(state.start)
-		// case iteratorStorageNodes:
-		// 	batch, hasMore, err = c.collectStorageNodeBatch(state.start)
+	// case iteratorStorage:
+	// 	batch, hasMore, err = c.collectStorageBatch(state.start)
+	// case iteratorAccountNodes:
+	// 	batch, hasMore, err = c.collectAccountNodeBatch(state.start)
+	case iteratorStorageNodes:
+		batch, hasMore, err = c.collectStorageNodeBatch(state.start)
 	}
 
 	select {
@@ -246,44 +246,44 @@ func (c *batchCoordinator) commitBatches(batches []ethdb.Batch) error {
 // 	return batch, false, it.Error()
 // }
 
-func (c *batchCoordinator) collectStorageBatch(start []byte) (ethdb.Batch, bool, error) {
-	it := c.targetDB.NewIterator(SnapshotStoragePrefix, start)
-	defer it.Release()
+// func (c *batchCoordinator) collectStorageBatch(start []byte) (ethdb.Batch, bool, error) {
+// 	it := c.targetDB.NewIterator(SnapshotStoragePrefix, start)
+// 	defer it.Release()
 
-	batch := c.targetDB.NewBatch()
-	count := 0
-	var lastKey []byte
+// 	batch := c.targetDB.NewBatch()
+// 	count := 0
+// 	var lastKey []byte
 
-	for it.Next() {
-		key := it.Key()
-		k := key[len(SnapshotStoragePrefix):]
+// 	for it.Next() {
+// 		key := it.Key()
+// 		k := key[len(SnapshotStoragePrefix):]
 
-		if !HasAccessSlot(c.sourceDB, common.BytesToHash(k[:common.HashLength]), common.BytesToHash(k[common.HashLength:])) {
-			if err := batch.Delete(key); err != nil {
-				return nil, false, err
-			}
-		}
+// 		if !HasAccessSlot(c.sourceDB, common.BytesToHash(k[:common.HashLength]), common.BytesToHash(k[common.HashLength:])) {
+// 			if err := batch.Delete(key); err != nil {
+// 				return nil, false, err
+// 			}
+// 		}
 
-		lastKey = k
-		count++
-		c.count.Add(1)
+// 		lastKey = k
+// 		count++
+// 		c.count.Add(1)
 
-		if count >= c.batchSize {
-			// Update the start position for next batch
-			c.iterStates[iteratorStorage].start = lastKey
-			return batch, true, nil
-		}
+// 		if count >= c.batchSize {
+// 			// Update the start position for next batch
+// 			c.iterStates[iteratorStorage].start = lastKey
+// 			return batch, true, nil
+// 		}
 
-		select {
-		case <-c.ctx.Done():
-			return nil, false, c.ctx.Err()
-		default:
-		}
-	}
+// 		select {
+// 		case <-c.ctx.Done():
+// 			return nil, false, c.ctx.Err()
+// 		default:
+// 		}
+// 	}
 
-	log.Info("End of storage batch", "count", count)
-	return batch, false, it.Error()
-}
+// 	log.Info("End of storage batch", "count", count)
+// 	return batch, false, it.Error()
+// }
 
 // func (c *batchCoordinator) collectAccountNodeBatch(start []byte) (ethdb.Batch, bool, error) {
 // 	it := c.targetDB.NewIterator(TrieNodeAccountPrefix, start)
@@ -324,43 +324,43 @@ func (c *batchCoordinator) collectStorageBatch(start []byte) (ethdb.Batch, bool,
 // 	return batch, false, it.Error()
 // }
 
-// func (c *batchCoordinator) collectStorageNodeBatch(start []byte) (ethdb.Batch, bool, error) {
-// 	it := c.targetDB.NewIterator(TrieNodeStoragePrefix, start)
-// 	defer it.Release()
+func (c *batchCoordinator) collectStorageNodeBatch(start []byte) (ethdb.Batch, bool, error) {
+	it := c.targetDB.NewIterator(TrieNodeStoragePrefix, start)
+	defer it.Release()
 
-// 	batch := c.targetDB.NewBatch()
-// 	count := 0
-// 	var lastKey []byte
+	batch := c.targetDB.NewBatch()
+	count := 0
+	var lastKey []byte
 
-// 	for it.Next() {
-// 		key := it.Key()
-// 		k := key[len(TrieNodeStoragePrefix):]
-// 		addrHash := k[:common.HashLength]
-// 		path := k[common.HashLength:]
+	for it.Next() {
+		key := it.Key()
+		k := key[len(TrieNodeStoragePrefix):]
+		addrHash := k[:common.HashLength]
+		path := k[common.HashLength:]
 
-// 		if !HasAccessNodeSlot(c.sourceDB, common.BytesToHash(addrHash), path) {
-// 			if err := batch.Delete(key); err != nil {
-// 				return nil, false, err
-// 			}
-// 		}
+		if !HasAccessNodeSlot(c.sourceDB, common.BytesToHash(addrHash), path) {
+			if err := batch.Delete(key); err != nil {
+				return nil, false, err
+			}
+		}
 
-// 		lastKey = k
-// 		count++
-// 		c.count.Add(1)
+		lastKey = k
+		count++
+		c.count.Add(1)
 
-// 		if count >= c.batchSize {
-// 			// Update the start position for next batch
-// 			c.iterStates[iteratorStorageNodes].start = lastKey
-// 			return batch, true, nil
-// 		}
+		if count >= c.batchSize {
+			// Update the start position for next batch
+			c.iterStates[iteratorStorageNodes].start = lastKey
+			return batch, true, nil
+		}
 
-// 		select {
-// 		case <-c.ctx.Done():
-// 			return nil, false, c.ctx.Err()
-// 		default:
-// 		}
-// 	}
+		select {
+		case <-c.ctx.Done():
+			return nil, false, c.ctx.Err()
+		default:
+		}
+	}
 
-// 	log.Info("End of storage nodes batch", "count", count)
-// 	return batch, false, it.Error()
-// }
+	log.Info("End of storage nodes batch", "count", count)
+	return batch, false, it.Error()
+}
