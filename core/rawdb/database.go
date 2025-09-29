@@ -906,14 +906,16 @@ func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 
 	done := make(chan struct{})
 	startTime := time.Now()
-	var count atomic.Uint64
+	var totalCount atomic.Uint64
+
+	// Progress reporter
 	go func() {
 		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				log.Info("Pruning expired state", "count", count.Load(), "elapsed", common.PrettyDuration(time.Since(startTime)))
+				log.Info("Pruning expired state", "count", totalCount.Load(), "elapsed", common.PrettyDuration(time.Since(startTime)))
 			case <-done:
 				return
 			}
@@ -921,10 +923,253 @@ func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 	}()
 	defer close(done)
 
-	coordinator := newBatchCoordinator(sourceDB, targetDB, batchSize, &count)
-	if err := coordinator.run(); err != nil {
+	// Process all types sequentially
+	log.Info("Pruning account snapshots")
+	if err := pruneAccountSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
 		return err
 	}
 
+	log.Info("Pruning storage snapshots")
+	if err := pruneStorageSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+		return err
+	}
+
+	log.Info("Pruning account trie nodes")
+	if err := pruneAccountNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+		return err
+	}
+
+	log.Info("Pruning storage trie nodes")
+	if err := pruneStorageNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+		return err
+	}
+
+	log.Info("Pruning complete", "total_count", totalCount.Load(), "elapsed", common.PrettyDuration(time.Since(startTime)))
 	return InspectState(targetDB.(ethdb.Database))
+}
+
+// pruneAccountSnapshots iterates through account snapshots and deletes ones that don't have access
+func pruneAccountSnapshots(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, totalCount *atomic.Uint64) error {
+	var lastKey []byte
+	for {
+		it := targetDB.NewIterator(SnapshotAccountPrefix, lastKey)
+		batch := targetDB.NewBatch()
+		count := 0
+		batchDeleteCount := 0
+		var hasMore bool
+
+		for it.Next() {
+			key := it.Key()
+			addrHash := key[len(SnapshotAccountPrefix):]
+
+			if !HasAccessAccount(sourceDB, common.BytesToHash(addrHash)) {
+				if err := batch.Delete(key); err != nil {
+					it.Release()
+					return err
+				}
+				batchDeleteCount++
+			}
+
+			count++
+			totalCount.Add(1)
+
+			// Stop if we've reached the batch size limit
+			if batchDeleteCount >= batchSize {
+				lastKey = common.CopyBytes(key)
+				hasMore = true
+				break
+			}
+		}
+
+		// Release iterator before committing batch
+		it.Release()
+		if err := it.Error(); err != nil {
+			return err
+		}
+
+		// Commit batch if we have deletions
+		if batchDeleteCount > 0 {
+			if err := batch.Write(); err != nil {
+				return err
+			}
+			log.Info("Committed account snapshot batch", "size", batch.ValueSize(), "deletes", batchDeleteCount, "processed", count)
+		}
+
+		// If no more items, we're done
+		if !hasMore {
+			break
+		}
+	}
+
+	return nil
+}
+
+// pruneStorageSnapshots iterates through storage snapshots and deletes ones that don't have access
+func pruneStorageSnapshots(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, totalCount *atomic.Uint64) error {
+	var lastKey []byte
+	for {
+		it := targetDB.NewIterator(SnapshotStoragePrefix, lastKey)
+		batch := targetDB.NewBatch()
+		count := 0
+		batchDeleteCount := 0
+		var hasMore bool
+
+		for it.Next() {
+			key := it.Key()
+			k := key[len(SnapshotStoragePrefix):]
+
+			if !HasAccessSlot(sourceDB, common.BytesToHash(k[:common.HashLength]), common.BytesToHash(k[common.HashLength:])) {
+				if err := batch.Delete(key); err != nil {
+					it.Release()
+					return err
+				}
+				batchDeleteCount++
+			}
+
+			count++
+			totalCount.Add(1)
+
+			// Stop if we've reached the batch size limit
+			if batchDeleteCount >= batchSize {
+				lastKey = common.CopyBytes(key)
+				hasMore = true
+				break
+			}
+		}
+
+		// Release iterator before committing batch
+		it.Release()
+		if err := it.Error(); err != nil {
+			return err
+		}
+
+		// Commit batch if we have deletions
+		if batchDeleteCount > 0 {
+			if err := batch.Write(); err != nil {
+				return err
+			}
+			log.Info("Committed storage snapshot batch", "size", batch.ValueSize(), "deletes", batchDeleteCount, "processed", count)
+		}
+
+		// If no more items, we're done
+		if !hasMore {
+			break
+		}
+	}
+
+	return nil
+}
+
+// pruneAccountNodes iterates through account trie nodes and deletes ones that don't have access
+func pruneAccountNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, totalCount *atomic.Uint64) error {
+	var lastKey []byte
+	for {
+		it := targetDB.NewIterator(TrieNodeAccountPrefix, lastKey)
+		batch := targetDB.NewBatch()
+		count := 0
+		batchDeleteCount := 0
+		var hasMore bool
+
+		for it.Next() {
+			key := it.Key()
+			accPath := key[len(TrieNodeAccountPrefix):]
+
+			if !HasAccessNodeAccount(sourceDB, accPath) {
+				if err := batch.Delete(key); err != nil {
+					it.Release()
+					return err
+				}
+				batchDeleteCount++
+			}
+
+			count++
+			totalCount.Add(1)
+
+			// Stop if we've reached the batch size limit
+			if batchDeleteCount >= batchSize {
+				lastKey = common.CopyBytes(key)
+				hasMore = true
+				break
+			}
+		}
+
+		// Release iterator before committing batch
+		it.Release()
+		if err := it.Error(); err != nil {
+			return err
+		}
+
+		// Commit batch if we have deletions
+		if batchDeleteCount > 0 {
+			if err := batch.Write(); err != nil {
+				return err
+			}
+			log.Info("Committed account node batch", "size", batch.ValueSize(), "deletes", batchDeleteCount, "processed", count)
+		}
+
+		// If no more items, we're done
+		if !hasMore {
+			break
+		}
+	}
+
+	return nil
+}
+
+// pruneStorageNodes iterates through storage trie nodes and deletes ones that don't have access
+func pruneStorageNodes(sourceDB, targetDB ethdb.KeyValueStore, batchSize int, totalCount *atomic.Uint64) error {
+	var lastKey []byte
+	for {
+		it := targetDB.NewIterator(TrieNodeStoragePrefix, lastKey)
+		batch := targetDB.NewBatch()
+		count := 0
+		batchDeleteCount := 0
+		var hasMore bool
+
+		for it.Next() {
+			key := it.Key()
+			k := key[len(TrieNodeStoragePrefix):]
+			addrHash := k[:common.HashLength]
+			path := k[common.HashLength:]
+
+			if !HasAccessNodeSlot(sourceDB, common.BytesToHash(addrHash), path) {
+				if err := batch.Delete(key); err != nil {
+					it.Release()
+					return err
+				}
+				batchDeleteCount++
+			}
+
+			count++
+			totalCount.Add(1)
+
+			// Stop if we've reached the batch size limit
+			if batchDeleteCount >= batchSize {
+				lastKey = common.CopyBytes(key)
+				hasMore = true
+				break
+			}
+		}
+
+		// Release iterator before committing batch
+		it.Release()
+		if err := it.Error(); err != nil {
+			return err
+		}
+
+		// Commit batch if we have deletions
+		if batchDeleteCount > 0 {
+			if err := batch.Write(); err != nil {
+				return err
+			}
+			log.Info("Committed storage node batch", "size", batch.ValueSize(), "deletes", batchDeleteCount, "processed", count)
+		}
+
+		// If no more items, we're done
+		if !hasMore {
+			break
+		}
+	}
+
+	return nil
 }
