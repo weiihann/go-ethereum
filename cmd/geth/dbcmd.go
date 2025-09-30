@@ -975,7 +975,7 @@ func pruneExpired(ctx *cli.Context) error {
 		return fmt.Errorf("at least one of account, storage, account-trie, or storage-trie must be set")
 	}
 
-	log.Info("Pruning expired state from source database", "path", sourceDBPath)
+	log.Info("Pruning expired state from source database", "path", sourceDBPath, "account", account, "storage", storage, "account-trie", accountTrie, "storage-trie", storageTrie)
 
 	// This is a hack
 	stack.Config().DataDir = sourceDBPath
