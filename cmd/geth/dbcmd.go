@@ -218,6 +218,22 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 				Name:  "source-db",
 				Usage: "Path to the source database",
 			},
+			&cli.BoolFlag{
+				Name:  "account",
+				Usage: "Prune account data",
+			},
+			&cli.BoolFlag{
+				Name:  "storage",
+				Usage: "Prune storage data",
+			},
+			&cli.BoolFlag{
+				Name:  "account-trie",
+				Usage: "Prune account trie data",
+			},
+			&cli.BoolFlag{
+				Name:  "storage-trie",
+				Usage: "Prune storage trie data",
+			},
 		}),
 		Description: "This command prunes expired state",
 	}
@@ -950,6 +966,15 @@ func pruneExpired(ctx *cli.Context) error {
 		return fmt.Errorf("source-db is required")
 	}
 
+	account := ctx.Bool("account")
+	storage := ctx.Bool("storage")
+	accountTrie := ctx.Bool("account-trie")
+	storageTrie := ctx.Bool("storage-trie")
+
+	if !account && !storage && !accountTrie && !storageTrie {
+		return fmt.Errorf("at least one of account, storage, account-trie, or storage-trie must be set")
+	}
+
 	log.Info("Pruning expired state from source database", "path", sourceDBPath)
 
 	// This is a hack
@@ -957,5 +982,5 @@ func pruneExpired(ctx *cli.Context) error {
 	sourceDB := utils.MakeChainDatabase(ctx, stack, true)
 	defer sourceDB.Close()
 
-	return rawdb.PruneExpired(sourceDB, targetDB)
+	return rawdb.PruneExpired(sourceDB, targetDB, account, storage, accountTrie, storageTrie)
 }
