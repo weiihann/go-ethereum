@@ -901,7 +901,7 @@ func SafeDeleteRange(db ethdb.KeyValueStore, start, end []byte, hashScheme bool,
 	return batch.Write()
 }
 
-func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
+func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore, account, storage, accountTrie, storageTrie bool) error {
 	const batchSize = 5_000_000
 
 	done := make(chan struct{})
@@ -923,29 +923,33 @@ func PruneExpired(sourceDB, targetDB ethdb.KeyValueStore) error {
 	}()
 	defer close(done)
 
-	log.Info("Pruning account snapshots")
-	if err := pruneAccountSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-		return err
+	if account {
+		log.Info("Pruning account snapshots")
+		if err := pruneAccountSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+			return err
+		}
 	}
 
-	log.Info("Pruning storage snapshots")
-	if err := pruneStorageSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-		return err
+	if storage {
+		log.Info("Pruning storage snapshots")
+		if err := pruneStorageSnapshots(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+			return err
+		}
 	}
 
-	log.Info("Pruning account trie nodes")
-	if err := pruneAccountNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-		return err
+	if accountTrie {
+		log.Info("Pruning account trie nodes")
+		if err := pruneAccountNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+			return err
+		}
 	}
 
-	log.Info("Pruning storage trie nodes")
-	if err := pruneStorageNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
-		return err
+	if storageTrie {
+		log.Info("Pruning storage trie nodes")
+		if err := pruneStorageNodes(sourceDB, targetDB, batchSize, &totalCount); err != nil {
+			return err
+		}
 	}
-
-	// if err := copyStorageNodes(sourceDB, targetDB); err != nil {
-	// 	return err
-	// }
 
 	log.Info("Pruning complete", "total_count", totalCount.Load(), "elapsed", common.PrettyDuration(time.Since(startTime)))
 	return InspectState(targetDB.(ethdb.Database))
