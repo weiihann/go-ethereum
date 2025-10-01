@@ -1353,17 +1353,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 	}
 
 	if db := s.db.TrieDB().Disk(); db != nil {
-		batch := db.NewBatch()
-		for addr := range s.accessState.Address {
-			rawdb.WriteAccessAccount(batch, addr)
-			for slot := range s.accessState.Slots[addr] {
-				rawdb.WriteAccessSlot(batch, addr, slot)
-			}
-		}
-		if err := batch.Write(); err != nil {
-			return nil, err
-		}
-
+		s.accessState.Commit(db)
 		s.accessState.Reset()
 	}
 
@@ -1535,4 +1525,9 @@ func (s *StateDB) Witness() *stateless.Witness {
 
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
+}
+
+func (s *StateDB) CommitAccessState() {
+	s.accessState.Commit(s.db.TrieDB().Disk())
+	s.accessState.Reset()
 }
