@@ -402,7 +402,7 @@ func checkStateAccess(ctx *cli.Context) error {
 	defer db.Close()
 
 	address := ctx.String("address")
-	if address != "" {
+	if address == "" {
 		return fmt.Errorf("address is required")
 	}
 	slot := ctx.String("slot")
