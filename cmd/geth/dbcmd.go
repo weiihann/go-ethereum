@@ -85,6 +85,7 @@ Remove blockchain and state databases`,
 			dbInspectHistoryCmd,
 			dbPruneExpiredCmd,
 			dbInspectStateCmd,
+			dbCheckStateAccessCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -243,6 +244,21 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Usage:  "Inspect the state of the database",
 		Flags:  slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 	}
+	dbCheckStateAccessCmd = &cli.Command{
+		Action: checkStateAccess,
+		Name:   "check-state-access",
+		Usage:  "Check the access in the source database",
+		Flags: slices.Concat(utils.NetworkFlags, utils.DatabaseFlags, []cli.Flag{
+			&cli.StringFlag{
+				Name:  "address",
+				Usage: "Address to check",
+			},
+			&cli.StringFlag{
+				Name:  "slot",
+				Usage: "Slot to check",
+			},
+		}),
+	}
 )
 
 func removeDB(ctx *cli.Context) error {
@@ -376,6 +392,24 @@ func inspectState(ctx *cli.Context) error {
 	defer db.Close()
 
 	return rawdb.InspectState(db)
+}
+
+func checkStateAccess(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	address := ctx.String("address")
+	if address != "" {
+		return fmt.Errorf("address is required")
+	}
+	slot := ctx.String("slot")
+
+	log.Info("Checking state access", "address", address, "slot", slot)
+
+	return rawdb.CheckStateAccess(db, address, slot)
 }
 
 func checkStateContent(ctx *cli.Context) error {
