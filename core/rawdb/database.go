@@ -1361,3 +1361,19 @@ func upperBound(prefix []byte) (limit []byte) {
 	}
 	return limit
 }
+
+func CheckStateAccess(db ethdb.KeyValueStore, address string, slot string) error {
+	addrHex := common.HexToAddress(address)
+
+	if slot == "" {
+		hasAcc := HasAccessAccount(db, common.Hash(crypto.Keccak256Hash(addrHex.Bytes())))
+		log.Info("Address access", "address", address, "hasAccess", hasAcc)
+		return nil
+	}
+
+	slotHex := common.HexToHash(slot)
+	hasSlot := HasAccessSlot(db, common.Hash(crypto.Keccak256Hash(addrHex.Bytes())), common.Hash(crypto.Keccak256Hash(slotHex.Bytes())))
+	log.Info("Slot access", "address", address, "slot", slot, "hasAccess", hasSlot)
+
+	return nil
+}
