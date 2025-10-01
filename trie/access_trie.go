@@ -5,6 +5,9 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
 
@@ -48,6 +51,28 @@ func (t *AccessTrie) AddNodeSet(nodes *trienode.NodeSet) {
 	}
 }
 
+func (t *AccessTrie) Commit(db ethdb.KeyValueStore) {
+	t.rw.Lock()
+	defer t.rw.Unlock()
+
+	dbw := db.NewBatch()
+	for owner, nodes := range t.Nodes {
+		if owner == (common.Hash{}) {
+			for path := range nodes {
+				rawdb.WriteAccessNodeAccount(dbw, []byte(path))
+			}
+		} else {
+			for path := range nodes {
+				rawdb.WriteAccessNodeSlot(dbw, owner, []byte(path))
+			}
+		}
+	}
+
+	if err := dbw.Write(); err != nil {
+		log.Crit("Failed to write access trie", "err", err)
+	}
+}
+
 func (t *AccessTrie) Reset() {
 	t.rw.Lock()
 	defer t.rw.Unlock()
@@ -59,7 +84,15 @@ func (t *AccessTrie) Copy() *AccessTrie {
 	t.rw.RLock()
 	defer t.rw.RUnlock()
 
-	return &AccessTrie{
-		Nodes: maps.Clone(t.Nodes),
+	// Create new AccessTrie with deep-copied Nodes
+	copied := &AccessTrie{
+		Nodes: make(map[common.Hash]map[string]struct{}, len(t.Nodes)),
 	}
+
+	// Deep copy each inner map
+	for owner, paths := range t.Nodes {
+		copied.Nodes[owner] = maps.Clone(paths)
+	}
+
+	return copied
 }
