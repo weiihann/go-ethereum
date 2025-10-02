@@ -30,6 +30,7 @@ func (a *AccessState) AddAddress(address common.Address) {
 func (a *AccessState) AddSlot(address common.Address, slot common.Hash) {
 	addrHash := crypto.Keccak256Hash(address.Bytes())
 	slotHash := crypto.Keccak256Hash(slot.Bytes())
+	log.Info("Add slot", "address", address.String(), "slot", slot.String(), "addrHash", addrHash.String(), "slotHash", slotHash.String())
 	a.Address[addrHash] = struct{}{} // Add the address to the access state
 	if _, ok := a.Slots[addrHash]; !ok {
 		a.Slots[addrHash] = make(map[common.Hash]struct{})
