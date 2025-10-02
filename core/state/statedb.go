@@ -470,6 +470,7 @@ func (s *StateDB) SetCode(addr common.Address, code []byte) (prev []byte) {
 }
 
 func (s *StateDB) SetState(addr common.Address, key, value common.Hash) common.Hash {
+	log.Info("SetState", "address", addr.String(), "key", key.String())
 	if stateObject := s.getOrNewStateObject(addr); stateObject != nil {
 		s.accessState.AddSlot(addr, key)
 		return stateObject.SetState(key, value)
