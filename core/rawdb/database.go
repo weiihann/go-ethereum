@@ -32,10 +32,12 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -1374,6 +1376,39 @@ func CheckStateAccess(db ethdb.KeyValueStore, address string, slot string) error
 	slotHex := common.HexToHash(slot)
 	hasSlot := HasAccessSlot(db, common.Hash(crypto.Keccak256Hash(addrHex.Bytes())), common.Hash(crypto.Keccak256Hash(slotHex.Bytes())))
 	log.Info("Slot access", "address", address, "slot", slot, "hasAccess", hasSlot)
+
+	return nil
+}
+
+func CheckAccountsWithEmptyCodeHash(db ethdb.KeyValueStore) error {
+	it := db.NewIterator(SnapshotAccountPrefix, nil)
+	defer it.Release()
+
+	emptyCount := 0
+	totalCount := 0
+	lastLogTime := time.Now()
+
+	for it.Next() {
+		totalCount++
+		key := it.Key()
+		val := it.Value()
+		acc := new(types.SlimAccount)
+		if err := rlp.DecodeBytes(val, &acc); err != nil {
+			return err
+		}
+		if bytes.Equal(acc.CodeHash, types.EmptyCodeHash.Bytes()) {
+			emptyCount++
+			log.Info("Account with empty code hash", "address", key)
+		}
+
+		// Log progress every 8 seconds
+		if time.Since(lastLogTime) >= 8*time.Second {
+			log.Info("Checking accounts progress", "total", totalCount, "empty", emptyCount)
+			lastLogTime = time.Now()
+		}
+	}
+
+	log.Info("Empty code hash accounts", "count", emptyCount, "total", totalCount)
 
 	return nil
 }
