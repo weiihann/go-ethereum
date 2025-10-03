@@ -86,6 +86,7 @@ Remove blockchain and state databases`,
 			dbPruneExpiredCmd,
 			dbInspectStateCmd,
 			dbCheckStateAccessCmd,
+			dbCheckAccountsWithEmptyCodeHashCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -258,6 +259,12 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 				Usage: "Slot to check",
 			},
 		}),
+	}
+	dbCheckAccountsWithEmptyCodeHashCmd = &cli.Command{
+		Action: checkAccountsWithEmptyCodeHash,
+		Name:   "check-accountsWithEmptyCodeHash",
+		Usage:  "Check the accounts with empty code hash",
+		Flags:  slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 	}
 )
 
@@ -1017,4 +1024,14 @@ func pruneExpired(ctx *cli.Context) error {
 	defer sourceDB.Close()
 
 	return rawdb.PruneExpired(sourceDB, targetDB, account, storage, accountTrie, storageTrie)
+}
+
+func checkAccountsWithEmptyCodeHash(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	return rawdb.CheckAccountsWithEmptyCodeHash(db)
 }
