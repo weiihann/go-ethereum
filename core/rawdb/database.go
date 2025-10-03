@@ -1390,15 +1390,13 @@ func CheckAccountsWithEmptyCodeHash(db ethdb.KeyValueStore) error {
 
 	for it.Next() {
 		totalCount++
-		key := it.Key()
 		val := it.Value()
 		acc := new(types.SlimAccount)
 		if err := rlp.DecodeBytes(val, &acc); err != nil {
 			return err
 		}
-		if bytes.Equal(acc.CodeHash, types.EmptyCodeHash.Bytes()) {
+		if acc.CodeHash == nil {
 			emptyCount++
-			log.Info("Account with empty code hash", "address", key)
 		}
 
 		// Log progress every 8 seconds
