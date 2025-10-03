@@ -1392,7 +1392,7 @@ func CheckAccountsWithEmptyCodeHash(db ethdb.KeyValueStore) error {
 		totalCount++
 		val := it.Value()
 		acc := new(types.SlimAccount)
-		if err := rlp.DecodeBytes(val, &acc); err != nil {
+		if err := rlp.DecodeBytes(val, acc); err != nil {
 			return err
 		}
 		if len(acc.CodeHash) == 0 {
