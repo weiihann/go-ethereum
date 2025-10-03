@@ -1395,7 +1395,7 @@ func CheckAccountsWithEmptyCodeHash(db ethdb.KeyValueStore) error {
 		if err := rlp.DecodeBytes(val, &acc); err != nil {
 			return err
 		}
-		if acc.CodeHash == nil {
+		if len(acc.CodeHash) == 0 {
 			emptyCount++
 		}
 
