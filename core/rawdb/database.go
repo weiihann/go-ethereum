@@ -37,7 +37,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -1391,14 +1390,13 @@ func CheckAccountsWithEmptyCodeHash(db ethdb.KeyValueStore) error {
 	for it.Next() {
 		totalCount++
 		val := it.Value()
-		acc := new(types.SlimAccount)
-		if err := rlp.DecodeBytes(val, acc); err != nil {
+		acc, err := types.FullAccount(val)
+		if err != nil {
 			return err
 		}
-		if len(acc.CodeHash) == 0 {
+		if bytes.Equal(acc.CodeHash, types.EmptyCodeHash[:]) {
 			emptyCount++
 		}
-
 		// Log progress every 8 seconds
 		if time.Since(lastLogTime) >= 8*time.Second {
 			log.Info("Checking accounts progress", "total", totalCount, "empty", emptyCount)
