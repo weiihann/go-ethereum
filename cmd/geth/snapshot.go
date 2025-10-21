@@ -39,21 +39,20 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var (
-	snapshotCommand = &cli.Command{
-		Name:        "snapshot",
-		Usage:       "A set of commands based on the snapshot",
-		Description: "",
-		Subcommands: []*cli.Command{
-			{
-				Name:      "prune-state",
-				Usage:     "Prune stale ethereum state data based on the snapshot",
-				ArgsUsage: "<root>",
-				Action:    pruneState,
-				Flags: slices.Concat([]cli.Flag{
-					utils.BloomFilterSizeFlag,
-				}, utils.NetworkFlags, utils.DatabaseFlags),
-				Description: `
+var snapshotCommand = &cli.Command{
+	Name:        "snapshot",
+	Usage:       "A set of commands based on the snapshot",
+	Description: "",
+	Subcommands: []*cli.Command{
+		{
+			Name:      "prune-state",
+			Usage:     "Prune stale ethereum state data based on the snapshot",
+			ArgsUsage: "<root>",
+			Action:    pruneState,
+			Flags: slices.Concat([]cli.Flag{
+				utils.BloomFilterSizeFlag,
+			}, utils.NetworkFlags, utils.DatabaseFlags),
+			Description: `
 geth snapshot prune-state <state-root>
 will prune historical state data with the help of the state snapshot.
 All trie nodes and contract codes that do not belong to the specified
@@ -64,49 +63,49 @@ The default pruning target is the HEAD-127 state.
 
 WARNING: it's only supported in hash mode(--state.scheme=hash)".
 `,
-			},
-			{
-				Name:      "verify-state",
-				Usage:     "Recalculate state hash based on the snapshot for verification",
-				ArgsUsage: "<root>",
-				Action:    verifyState,
-				Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
-				Description: `
+		},
+		{
+			Name:      "verify-state",
+			Usage:     "Recalculate state hash based on the snapshot for verification",
+			ArgsUsage: "<root>",
+			Action:    verifyState,
+			Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+			Description: `
 geth snapshot verify-state <state-root>
 will traverse the whole accounts and storages set based on the specified
 snapshot and recalculate the root hash of state for verification.
 In other words, this command does the snapshot to trie conversion.
 `,
-			},
-			{
-				Name:      "check-dangling-storage",
-				Usage:     "Check that there is no 'dangling' snap storage",
-				ArgsUsage: "<root>",
-				Action:    checkDanglingStorage,
-				Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
-				Description: `
+		},
+		{
+			Name:      "check-dangling-storage",
+			Usage:     "Check that there is no 'dangling' snap storage",
+			ArgsUsage: "<root>",
+			Action:    checkDanglingStorage,
+			Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+			Description: `
 geth snapshot check-dangling-storage <state-root> traverses the snap storage
 data, and verifies that all snapshot storage data has a corresponding account.
 `,
-			},
-			{
-				Name:      "inspect-account",
-				Usage:     "Check all snapshot layers for the specific account",
-				ArgsUsage: "<address | hash>",
-				Action:    checkAccount,
-				Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
-				Description: `
+		},
+		{
+			Name:      "inspect-account",
+			Usage:     "Check all snapshot layers for the specific account",
+			ArgsUsage: "<address | hash>",
+			Action:    checkAccount,
+			Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+			Description: `
 geth snapshot inspect-account <address | hash> checks all snapshot layers and prints out
 information about the specified address.
 `,
-			},
-			{
-				Name:      "traverse-state",
-				Usage:     "Traverse the state with given root hash and perform quick verification",
-				ArgsUsage: "<root>",
-				Action:    traverseState,
-				Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
-				Description: `
+		},
+		{
+			Name:      "traverse-state",
+			Usage:     "Traverse the state with given root hash and perform quick verification",
+			ArgsUsage: "<root>",
+			Action:    traverseState,
+			Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+			Description: `
 geth snapshot traverse-state <state-root>
 will traverse the whole state from the given state root and will abort if any
 referenced trie node or contract code is missing. This command can be used for
@@ -114,14 +113,14 @@ state integrity verification. The default checking target is the HEAD state.
 
 It's also usable without snapshot enabled.
 `,
-			},
-			{
-				Name:      "traverse-rawstate",
-				Usage:     "Traverse the state with given root hash and perform detailed verification",
-				ArgsUsage: "<root>",
-				Action:    traverseRawState,
-				Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
-				Description: `
+		},
+		{
+			Name:      "traverse-rawstate",
+			Usage:     "Traverse the state with given root hash and perform detailed verification",
+			ArgsUsage: "<root>",
+			Action:    traverseRawState,
+			Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+			Description: `
 geth snapshot traverse-rawstate <state-root>
 will traverse the whole state from the given root and will abort if any referenced
 trie node or contract code is missing. This command can be used for state integrity
@@ -130,40 +129,49 @@ to traverse-state, but the check granularity is smaller.
 
 It's also usable without snapshot enabled.
 `,
-			},
-			{
-				Name:      "dump",
-				Usage:     "Dump a specific block from storage (same as 'geth dump' but using snapshots)",
-				ArgsUsage: "[? <blockHash> | <blockNum>]",
-				Action:    dumpState,
-				Flags: slices.Concat([]cli.Flag{
-					utils.ExcludeCodeFlag,
-					utils.ExcludeStorageFlag,
-					utils.StartKeyFlag,
-					utils.DumpLimitFlag,
-				}, utils.NetworkFlags, utils.DatabaseFlags),
-				Description: `
+		},
+		{
+			Name:      "dump",
+			Usage:     "Dump a specific block from storage (same as 'geth dump' but using snapshots)",
+			ArgsUsage: "[? <blockHash> | <blockNum>]",
+			Action:    dumpState,
+			Flags: slices.Concat([]cli.Flag{
+				utils.ExcludeCodeFlag,
+				utils.ExcludeStorageFlag,
+				utils.StartKeyFlag,
+				utils.DumpLimitFlag,
+			}, utils.NetworkFlags, utils.DatabaseFlags),
+			Description: `
 This command is semantically equivalent to 'geth dump', but uses the snapshots
 as the backend data source, making this command a lot faster.
 
 The argument is interpreted as block number or hash. If none is provided, the latest
 block is used.
 `,
-			},
-			{
-				Action:    snapshotExportPreimages,
-				Name:      "export-preimages",
-				Usage:     "Export the preimage in snapshot enumeration order",
-				ArgsUsage: "<dumpfile> [<root>]",
-				Flags:     utils.DatabaseFlags,
-				Description: `
+		},
+		{
+			Action:    snapshotExportPreimages,
+			Name:      "export-preimages",
+			Usage:     "Export the preimage in snapshot enumeration order",
+			ArgsUsage: "<dumpfile> [<root>]",
+			Flags:     utils.DatabaseFlags,
+			Description: `
 The export-preimages command exports hash preimages to a flat file, in exactly
 the expected order for the overlay tree migration.
 `,
-			},
 		},
-	}
-)
+		{
+			Action:    checkBranchNodesFull,
+			Name:      "check-branch-nodes-full",
+			Usage:     "Check if all branch nodes are full",
+			ArgsUsage: "",
+			Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+			Description: `
+This command outputs the number of full branch nodes in the state trie.
+`,
+		},
+	},
+}
 
 // Deprecation: this command should be deprecated once the hash-based
 // scheme is deprecated.
@@ -700,5 +708,129 @@ func checkAccount(ctx *cli.Context) error {
 		return err
 	}
 	log.Info("Checked the snapshot journalled storage", "time", common.PrettyDuration(time.Since(start)))
+	return nil
+}
+
+func checkBranchNodesFull(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	chaindb := utils.MakeChainDatabase(ctx, stack, true)
+	defer chaindb.Close()
+
+	triedb := utils.MakeTrieDatabase(ctx, chaindb, false, true, false)
+	defer triedb.Close()
+
+	headBlock := rawdb.ReadHeadBlock(chaindb)
+	if headBlock == nil {
+		log.Error("Failed to load head block")
+		return errors.New("no head block")
+	}
+
+	log.Info("Checking branch nodes full", "block", headBlock.NumberU64())
+	root := headBlock.Root()
+	t, err := trie.NewStateTrie(trie.StateTrieID(root), triedb)
+	if err != nil {
+		log.Error("Failed to open trie", "root", root, "err", err)
+		return err
+	}
+
+	accIter, err := t.NodeIterator(nil)
+	if err != nil {
+		log.Error("Failed to open iterator", "root", root, "err", err)
+		return err
+	}
+
+	reader, err := triedb.NodeReader(root)
+	if err != nil {
+		log.Error("Failed to open node reader", "root", root, "err", err)
+		return err
+	}
+
+	nodes := 0
+	accounts := 0
+	storage := 0
+	fullBranchesAcc := 0
+	fullBranchesStorage := 0
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				log.Info("Traversing state", "nodes", nodes, "accounts", accounts, "storage", storage, "fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage, "elapsed", common.PrettyDuration(time.Since(start)))
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	for accIter.Next(true) {
+		nodes += 1
+		node := accIter.Hash()
+		if node != (common.Hash{}) {
+			blob, _ := reader.Node(common.Hash{}, accIter.Path(), node)
+			if len(blob) == 0 {
+				log.Error("Missing trie node(account)", "hash", node)
+				return errors.New("missing account")
+			}
+
+			ok, err := trie.DecodeAndCheck(node.Bytes(), blob)
+			if err != nil {
+				log.Error("Failed to decode trie node", "hash", node, "err", err)
+				return err
+			}
+			if ok {
+				fullBranchesAcc += 1
+			}
+		}
+
+		if accIter.Leaf() {
+			nodes += 1
+			accounts += 1
+			var acc types.StateAccount
+			if err := rlp.DecodeBytes(accIter.LeafBlob(), &acc); err != nil {
+				log.Error("Invalid account encountered during traversal", "err", err)
+				return errors.New("invalid account")
+			}
+			if acc.Root != types.EmptyRootHash {
+				id := trie.StorageTrieID(root, common.BytesToHash(accIter.LeafKey()), acc.Root)
+				storageTrie, err := trie.NewStateTrie(id, triedb)
+				if err != nil {
+					log.Error("Failed to open storage trie", "root", acc.Root, "err", err)
+					return errors.New("missing storage trie")
+				}
+				storageIter, err := storageTrie.NodeIterator(nil)
+				if err != nil {
+					log.Error("Failed to open storage iterator", "root", acc.Root, "err", err)
+					return err
+				}
+				for storageIter.Next(true) {
+					storage += 1
+					node := storageIter.Hash()
+					if node != (common.Hash{}) {
+						blob, _ := reader.Node(common.BytesToHash(accIter.LeafKey()), storageIter.Path(), node)
+						if len(blob) == 0 {
+							log.Error("Missing trie node(storage)", "hash", node)
+							return errors.New("missing storage")
+						}
+
+						ok, err := trie.DecodeAndCheck(node.Bytes(), blob)
+						if err != nil {
+							log.Error("Failed to decode trie node", "hash", node, "err", err)
+							return err
+						}
+						if ok {
+							fullBranchesStorage += 1
+						}
+					}
+				}
+			}
+		}
+	}
+	log.Info("State is complete", "nodes", nodes, "accounts", accounts, "storage", storage, "fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage, "elapsed", common.PrettyDuration(time.Since(start)))
 	return nil
 }

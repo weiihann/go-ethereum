@@ -172,6 +172,24 @@ func decodeNodeUnsafe(hash, buf []byte) (node, error) {
 	}
 }
 
+func DecodeAndCheck(hash, buf []byte) (bool, error) {
+	n, err := decodeNodeUnsafe(hash, buf)
+	if err != nil {
+		return false, err
+	}
+	fn, ok := n.(*fullNode)
+	if !ok {
+		return false, nil
+	}
+	for _, child := range fn.Children {
+		if child == nil {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
 func decodeShort(hash, elems []byte) (node, error) {
 	kbuf, rest, err := rlp.SplitString(elems)
 	if err != nil {
