@@ -742,7 +742,12 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 		for {
 			select {
 			case <-ticker.C:
-				log.Info("Traversing state", "nodes", nodes, "accounts", accounts, "storage", storage, "fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage, "elapsed", common.PrettyDuration(time.Since(start)))
+				log.Info(
+					"Traversing state",
+					"nodes", nodes, "accounts", accounts, "storage", storage,
+					"fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage,
+					"branchAcc", branchAcc, "branchStorage", branchStorage,
+					"elapsed", common.PrettyDuration(time.Since(start)))
 			case <-done:
 				return
 			}
@@ -785,6 +790,10 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 	}
 	storageIt.Release()
 
-	log.Info("State is complete", "nodes", nodes, "accounts", accounts, "storage", storage, "fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage, "elapsed", common.PrettyDuration(time.Since(start)))
+	log.Info("State is complete",
+		"nodes", nodes, "accounts", accounts, "storage", storage,
+		"fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage,
+		"branchAcc", branchAcc, "branchStorage", branchStorage,
+		"elapsed", common.PrettyDuration(time.Since(start)))
 	return nil
 }
