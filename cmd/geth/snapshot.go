@@ -718,9 +718,6 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 	chaindb := utils.MakeChainDatabase(ctx, stack, true)
 	defer chaindb.Close()
 
-	triedb := utils.MakeTrieDatabase(ctx, chaindb, false, false, false)
-	defer triedb.Close()
-
 	headBlock := rawdb.ReadHeadBlock(chaindb)
 	if headBlock == nil {
 		log.Error("Failed to load head block")
@@ -728,24 +725,6 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 	}
 
 	log.Info("Checking branch nodes full", "block", headBlock.NumberU64())
-	root := headBlock.Root()
-	t, err := trie.NewStateTrie(trie.StateTrieID(root), triedb)
-	if err != nil {
-		log.Error("Failed to open trie", "root", root, "err", err)
-		return err
-	}
-
-	accIter, err := t.NodeIterator(nil)
-	if err != nil {
-		log.Error("Failed to open iterator", "root", root, "err", err)
-		return err
-	}
-
-	reader, err := triedb.NodeReader(root)
-	if err != nil {
-		log.Error("Failed to open node reader", "root", root, "err", err)
-		return err
-	}
 
 	nodes := 0
 	accounts := 0
@@ -768,69 +747,34 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 		}
 	}()
 
-	for accIter.Next(true) {
+	accIt := chaindb.NewIterator(rawdb.TrieNodeAccountPrefix, nil)
+	for accIt.Next() {
 		nodes += 1
-		node := accIter.Hash()
-		if node != (common.Hash{}) {
-			blob, _ := reader.Node(common.Hash{}, accIter.Path(), node)
-			if len(blob) == 0 {
-				log.Error("Missing trie node(account)", "hash", node)
-				return errors.New("missing account")
-			}
-
-			ok, err := trie.DecodeAndCheck(node.Bytes(), blob)
-			if err != nil {
-				log.Error("Failed to decode trie node", "hash", node, "err", err)
-				return err
-			}
-			if ok {
-				fullBranchesAcc += 1
-			}
+		val := accIt.Value()
+		ifFullBranch, err := trie.DecodeAndCheck(nil, val)
+		if err != nil {
+			return fmt.Errorf("failed to decode and check node: %v", err)
 		}
-
-		if accIter.Leaf() {
-			nodes += 1
-			accounts += 1
-			var acc types.StateAccount
-			if err := rlp.DecodeBytes(accIter.LeafBlob(), &acc); err != nil {
-				log.Error("Invalid account encountered during traversal", "err", err)
-				return errors.New("invalid account")
-			}
-			if acc.Root != types.EmptyRootHash {
-				id := trie.StorageTrieID(root, common.BytesToHash(accIter.LeafKey()), acc.Root)
-				storageTrie, err := trie.NewStateTrie(id, triedb)
-				if err != nil {
-					log.Error("Failed to open storage trie", "root", acc.Root, "err", err)
-					return errors.New("missing storage trie")
-				}
-				storageIter, err := storageTrie.NodeIterator(nil)
-				if err != nil {
-					log.Error("Failed to open storage iterator", "root", acc.Root, "err", err)
-					return err
-				}
-				for storageIter.Next(true) {
-					storage += 1
-					node := storageIter.Hash()
-					if node != (common.Hash{}) {
-						blob, _ := reader.Node(common.BytesToHash(accIter.LeafKey()), storageIter.Path(), node)
-						if len(blob) == 0 {
-							log.Error("Missing trie node(storage)", "hash", node)
-							return errors.New("missing storage")
-						}
-
-						ok, err := trie.DecodeAndCheck(node.Bytes(), blob)
-						if err != nil {
-							log.Error("Failed to decode trie node", "hash", node, "err", err)
-							return err
-						}
-						if ok {
-							fullBranchesStorage += 1
-						}
-					}
-				}
-			}
+		if ifFullBranch {
+			fullBranchesAcc += 1
 		}
 	}
+	accIt.Release()
+
+	storageIt := chaindb.NewIterator(rawdb.TrieNodeStoragePrefix, nil)
+	for storageIt.Next() {
+		nodes += 1
+		val := storageIt.Value()
+		ifFullBranch, err := trie.DecodeAndCheck(nil, val)
+		if err != nil {
+			return fmt.Errorf("failed to decode and check node: %v", err)
+		}
+		if ifFullBranch {
+			fullBranchesStorage += 1
+		}
+	}
+	storageIt.Release()
+
 	log.Info("State is complete", "nodes", nodes, "accounts", accounts, "storage", storage, "fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage, "elapsed", common.PrettyDuration(time.Since(start)))
 	return nil
 }
