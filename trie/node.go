@@ -174,22 +174,24 @@ func decodeNodeUnsafe(hash, buf []byte) (node, error) {
 	}
 }
 
-func DecodeAndCheck(hash, buf []byte) (bool, bool, error) {
+func DecodeAndCheck(hash, buf []byte) (int, error) {
 	n, err := decodeNodeUnsafe(hash, buf)
 	if err != nil {
-		return false, false, err
+		return 0, err
 	}
 	fn, ok := n.(*fullNode)
 	if !ok {
-		return false, false, nil
+		return 0, nil
 	}
+
+	childCount := 0
 	for _, child := range fn.Children {
-		if child == nil {
-			return false, true, nil
+		if child != nil {
+			childCount += 1
 		}
 	}
 
-	return true, true, nil
+	return childCount, nil
 }
 
 func decodeShort(hash, elems []byte) (node, error) {
