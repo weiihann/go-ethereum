@@ -718,7 +718,7 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 	chaindb := utils.MakeChainDatabase(ctx, stack, true)
 	defer chaindb.Close()
 
-	triedb := utils.MakeTrieDatabase(ctx, chaindb, false, true, false)
+	triedb := utils.MakeTrieDatabase(ctx, chaindb, false, false, false)
 	defer triedb.Close()
 
 	headBlock := rawdb.ReadHeadBlock(chaindb)
