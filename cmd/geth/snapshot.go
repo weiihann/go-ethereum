@@ -729,10 +729,11 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 	nodes := 0
 	accounts := 0
 	storage := 0
-	fullBranchesAcc := 0
-	branchAcc := 0
-	fullBranchesStorage := 0
-	branchStorage := 0
+
+	accBranchCount := 0
+	storageBranchCount := 0
+	accChildMap := make(map[int]int)
+	storageChildMap := make(map[int]int)
 
 	start := time.Now()
 	done := make(chan struct{})
@@ -745,8 +746,8 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 				log.Info(
 					"Traversing state",
 					"nodes", nodes, "accounts", accounts, "storage", storage,
-					"fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage,
-					"branchAcc", branchAcc, "branchStorage", branchStorage,
+					"accBranchCount", accBranchCount, "storageBranchCount", storageBranchCount,
+					"accChildMap[17]", accChildMap[17], "storageChildMap[17]", storageChildMap[17],
 					"elapsed", common.PrettyDuration(time.Since(start)))
 			case <-done:
 				return
@@ -759,41 +760,45 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 		nodes += 1
 		accounts += 1
 		val := accIt.Value()
-		ifFullBranch, ifBranch, err := trie.DecodeAndCheck(nil, val)
+		childCount, err := trie.DecodeAndCheck(nil, val)
 		if err != nil {
 			return fmt.Errorf("failed to decode and check node: %v", err)
 		}
-		if ifFullBranch {
-			fullBranchesAcc += 1
-		}
-		if ifBranch {
-			branchAcc += 1
+		if childCount > 0 {
+			accBranchCount += 1
+			accChildMap[childCount] += 1
 		}
 	}
 	accIt.Release()
+
+	for k, v := range accChildMap {
+		log.Info("Account child count", "childNum", k, "count", v)
+	}
 
 	storageIt := chaindb.NewIterator(rawdb.TrieNodeStoragePrefix, nil)
 	for storageIt.Next() {
 		nodes += 1
 		storage += 1
 		val := storageIt.Value()
-		ifFullBranch, ifBranch, err := trie.DecodeAndCheck(nil, val)
+		childCount, err := trie.DecodeAndCheck(nil, val)
 		if err != nil {
 			return fmt.Errorf("failed to decode and check node: %v", err)
 		}
-		if ifFullBranch {
-			fullBranchesStorage += 1
-		}
-		if ifBranch {
-			branchStorage += 1
+		if childCount > 0 {
+			storageBranchCount += 1
+			storageChildMap[childCount] += 1
 		}
 	}
 	storageIt.Release()
 
 	log.Info("State is complete",
 		"nodes", nodes, "accounts", accounts, "storage", storage,
-		"fullBranchesAcc", fullBranchesAcc, "fullBranchesStorage", fullBranchesStorage,
-		"branchAcc", branchAcc, "branchStorage", branchStorage,
+		"accBranchCount", accBranchCount, "storageBranchCount", storageBranchCount,
+		"accChildMap[17]", accChildMap[17], "storageChildMap[17]", storageChildMap[17],
 		"elapsed", common.PrettyDuration(time.Since(start)))
+
+	for k, v := range storageChildMap {
+		log.Info("Storage child count", "childNum", k, "count", v)
+	}
 	return nil
 }
