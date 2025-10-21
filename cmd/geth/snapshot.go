@@ -730,7 +730,9 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 	accounts := 0
 	storage := 0
 	fullBranchesAcc := 0
+	branchAcc := 0
 	fullBranchesStorage := 0
+	branchStorage := 0
 
 	start := time.Now()
 	done := make(chan struct{})
@@ -750,13 +752,17 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 	accIt := chaindb.NewIterator(rawdb.TrieNodeAccountPrefix, nil)
 	for accIt.Next() {
 		nodes += 1
+		accounts += 1
 		val := accIt.Value()
-		ifFullBranch, err := trie.DecodeAndCheck(nil, val)
+		ifFullBranch, ifBranch, err := trie.DecodeAndCheck(nil, val)
 		if err != nil {
 			return fmt.Errorf("failed to decode and check node: %v", err)
 		}
 		if ifFullBranch {
 			fullBranchesAcc += 1
+		}
+		if ifBranch {
+			branchAcc += 1
 		}
 	}
 	accIt.Release()
@@ -764,13 +770,17 @@ func checkBranchNodesFull(ctx *cli.Context) error {
 	storageIt := chaindb.NewIterator(rawdb.TrieNodeStoragePrefix, nil)
 	for storageIt.Next() {
 		nodes += 1
+		storage += 1
 		val := storageIt.Value()
-		ifFullBranch, err := trie.DecodeAndCheck(nil, val)
+		ifFullBranch, ifBranch, err := trie.DecodeAndCheck(nil, val)
 		if err != nil {
 			return fmt.Errorf("failed to decode and check node: %v", err)
 		}
 		if ifFullBranch {
 			fullBranchesStorage += 1
+		}
+		if ifBranch {
+			branchStorage += 1
 		}
 	}
 	storageIt.Release()

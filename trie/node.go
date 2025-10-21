@@ -114,9 +114,11 @@ func (n *fullNode) fstring(ind string) string {
 func (n *shortNode) fstring(ind string) string {
 	return fmt.Sprintf("{%x: %v} ", n.Key, n.Val.fstring(ind+"  "))
 }
+
 func (n hashNode) fstring(ind string) string {
 	return fmt.Sprintf("<%x> ", []byte(n))
 }
+
 func (n valueNode) fstring(ind string) string {
 	return fmt.Sprintf("%x ", []byte(n))
 }
@@ -172,22 +174,22 @@ func decodeNodeUnsafe(hash, buf []byte) (node, error) {
 	}
 }
 
-func DecodeAndCheck(hash, buf []byte) (bool, error) {
+func DecodeAndCheck(hash, buf []byte) (bool, bool, error) {
 	n, err := decodeNodeUnsafe(hash, buf)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	fn, ok := n.(*fullNode)
 	if !ok {
-		return false, nil
+		return false, false, nil
 	}
 	for _, child := range fn.Children {
 		if child == nil {
-			return false, nil
+			return false, true, nil
 		}
 	}
 
-	return true, nil
+	return true, true, nil
 }
 
 func decodeShort(hash, elems []byte) (node, error) {
