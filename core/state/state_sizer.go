@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	statEvictThreshold = 128 // the depth of statistic to be preserved
+	statEvictThresholdDefault = 10000 // the default depth of statistic to be preserved
 )
 
 // Database key scheme for states.
@@ -270,12 +270,16 @@ type SizeTracker struct {
 	aborted  chan struct{}
 	updateCh chan *StateUpdate
 	queryCh  chan *stateSizeQuery
+	depth    uint64 // the depth of statistics to be preserved
 }
 
 // NewSizeTracker creates a new state size tracker and starts it automatically
-func NewSizeTracker(db ethdb.KeyValueStore, triedb *triedb.Database) (*SizeTracker, error) {
+func NewSizeTracker(db ethdb.KeyValueStore, triedb *triedb.Database, depth uint64) (*SizeTracker, error) {
 	if triedb.Scheme() != rawdb.PathScheme {
 		return nil, errors.New("state size tracker is not compatible with hash mode")
+	}
+	if depth == 0 {
+		depth = statEvictThresholdDefault
 	}
 	t := &SizeTracker{
 		db:       db,
@@ -284,6 +288,7 @@ func NewSizeTracker(db ethdb.KeyValueStore, triedb *triedb.Database) (*SizeTrack
 		aborted:  make(chan struct{}),
 		updateCh: make(chan *StateUpdate),
 		queryCh:  make(chan *stateSizeQuery),
+		depth:    depth,
 	}
 	go t.run()
 	return t, nil
@@ -347,7 +352,7 @@ func (t *SizeTracker) run() {
 
 			// Evict the stale statistics
 			heap.Push(&h, stats[u.Root])
-			for len(h) > 0 && u.BlockNumber-h[0].BlockNumber > statEvictThreshold {
+			for len(h) > 0 && u.BlockNumber-h[0].BlockNumber > t.depth {
 				delete(stats, h[0].StateRoot)
 				heap.Pop(&h)
 			}
