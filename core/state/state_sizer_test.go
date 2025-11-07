@@ -128,7 +128,7 @@ func TestSizeTracker(t *testing.T) {
 	baseline := baselineResult.stat
 
 	// Now start the tracker and notify it of updates that happen AFTER the baseline
-	tracker, err := NewSizeTracker(db, tdb)
+	tracker, err := NewSizeTracker(db, tdb, 128)
 	if err != nil {
 		t.Fatalf("Failed to create size tracker: %v", err)
 	}

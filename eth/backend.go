@@ -245,9 +245,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			// within the data directory. The corresponding paths will be either:
 			// - DATADIR/triedb/merkle.journal
 			// - DATADIR/triedb/verkle.journal
-			TrieJournalDirectory: stack.ResolvePath("triedb"),
-			StateSizeTracking:    config.EnableStateSizeTracking,
-			SlowBlockThreshold:   config.SlowBlockThreshold,
+			TrieJournalDirectory:   stack.ResolvePath("triedb"),
+			StateSizeTracking:      config.EnableStateSizeTracking,
+			StateSizeTrackingDepth: config.StateSizeTrackingDepth,
+			SlowBlockThreshold:     config.SlowBlockThreshold,
 
 			StatelessSelfValidation: config.StatelessSelfValidation,
 			EnableWitnessStats:      config.EnableWitnessStats,
