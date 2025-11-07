@@ -198,6 +198,9 @@ type BlockChainConfig struct {
 
 	// StateSizeTracking indicates whether the state size tracking is enabled.
 	StateSizeTracking bool
+
+	// StateSizeTrackingDepth is the number of recent block state sizes to track.
+	StateSizeTrackingDepth uint64
 }
 
 // DefaultConfig returns the default config.
@@ -532,10 +535,10 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 
 	// Start state size tracker
 	if bc.cfg.StateSizeTracking {
-		stateSizer, err := state.NewSizeTracker(bc.db, bc.triedb)
+		stateSizer, err := state.NewSizeTracker(bc.db, bc.triedb, bc.cfg.StateSizeTrackingDepth)
 		if err == nil {
 			bc.stateSizer = stateSizer
-			log.Info("Enabled state size metrics")
+			log.Info("Enabled state size metrics", "depth", bc.cfg.StateSizeTrackingDepth)
 		} else {
 			log.Info("Failed to setup size tracker", "err", err)
 		}
