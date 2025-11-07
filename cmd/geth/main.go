@@ -209,6 +209,7 @@ var (
 		utils.MetricsInfluxDBBucketFlag,
 		utils.MetricsInfluxDBOrganizationFlag,
 		utils.StateSizeTrackingFlag,
+		utils.StateSizeTrackingDepthFlag,
 	}
 )
 

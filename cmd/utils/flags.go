@@ -289,6 +289,12 @@ var (
 		Value:    ethconfig.Defaults.EnableStateSizeTracking,
 		Category: flags.StateCategory,
 	}
+	StateSizeTrackingDepthFlag = &cli.Uint64Flag{
+		Name:     "state.size-tracking-depth",
+		Usage:    "Number of recent block state sizes to track (default = 10000, 0 = disabled)",
+		Value:    10000,
+		Category: flags.StateCategory,
+	}
 	StateHistoryFlag = &cli.Uint64Flag{
 		Name:     "history.state",
 		Usage:    "Number of recent blocks to retain state history for, only relevant in state.scheme=path (default = 90,000 blocks, 0 = entire chain)",
@@ -1789,6 +1795,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	}
 	if ctx.Bool(StateSizeTrackingFlag.Name) {
 		cfg.EnableStateSizeTracking = true
+	}
+	if ctx.IsSet(StateSizeTrackingDepthFlag.Name) {
+		cfg.StateSizeTrackingDepth = ctx.Uint64(StateSizeTrackingDepthFlag.Name)
 	}
 	// Override any default configs for hard coded networks.
 	switch {
