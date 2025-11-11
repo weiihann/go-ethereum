@@ -1278,14 +1278,14 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 				return err
 			}
 
-			hasCode := false
+			addCode := false
 			if update.code != nil {
-				hasCode = s.reader.HasCode(update.code.hash)
+				addCode = !s.reader.HasCode(update.code.hash)
 			}
 
 			lock.Lock()
 			updates[obj.addrHash] = update
-			if !hasCode {
+			if addCode {
 				codes[update.code.hash] = update.code.blob
 			}
 			s.StorageCommits = time.Since(start) // overwrite with the longest storage commit runtime
