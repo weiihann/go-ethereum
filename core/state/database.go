@@ -37,6 +37,9 @@ const (
 	// Number of codehash->size associations to keep.
 	codeSizeCacheSize = 1_000_000 // 4 megabytes in total
 
+	// Number of codehash->existence associations to keep.
+	codeExistsCacheSize = 1_000_000 // 4 megabytes in total
+
 	// Cache size granted for caching clean code.
 	codeCacheSize = 256 * 1024 * 1024
 
@@ -159,6 +162,7 @@ type CachingDB struct {
 	snap          *snapshot.Tree
 	codeCache     *lru.SizeConstrainedCache[common.Hash, []byte]
 	codeSizeCache *lru.Cache[common.Hash, int]
+	codeExists    *lru.Cache[common.Hash, bool]
 	pointCache    *utils.PointCache
 
 	// Transition-specific fields
@@ -173,6 +177,7 @@ func NewDatabase(triedb *triedb.Database, snap *snapshot.Tree) *CachingDB {
 		snap:                   snap,
 		codeCache:              lru.NewSizeConstrainedCache[common.Hash, []byte](codeCacheSize),
 		codeSizeCache:          lru.NewCache[common.Hash, int](codeSizeCacheSize),
+		codeExists:             lru.NewCache[common.Hash, bool](codeExistsCacheSize),
 		pointCache:             utils.NewPointCache(pointCacheSize),
 		TransitionStatePerRoot: lru.NewCache[common.Hash, *overlay.TransitionState](1000),
 	}
@@ -219,7 +224,7 @@ func (db *CachingDB) Reader(stateRoot common.Hash) (Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newReader(newCachingCodeReader(db.disk, db.codeCache, db.codeSizeCache), combined), nil
+	return newReader(newCachingCodeReader(db.disk, db.codeCache, db.codeSizeCache, db.codeExists), combined), nil
 }
 
 // ReadersWithCacheStats creates a pair of state readers sharing the same internal cache and

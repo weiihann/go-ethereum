@@ -105,6 +105,7 @@ type HistoricDB struct {
 	triedb        *triedb.Database
 	codeCache     *lru.SizeConstrainedCache[common.Hash, []byte]
 	codeSizeCache *lru.Cache[common.Hash, int]
+	codeExists    *lru.Cache[common.Hash, bool]
 	pointCache    *utils.PointCache
 }
 
@@ -115,6 +116,7 @@ func NewHistoricDatabase(disk ethdb.KeyValueStore, triedb *triedb.Database) *His
 		triedb:        triedb,
 		codeCache:     lru.NewSizeConstrainedCache[common.Hash, []byte](codeCacheSize),
 		codeSizeCache: lru.NewCache[common.Hash, int](codeSizeCacheSize),
+		codeExists:    lru.NewCache[common.Hash, bool](codeExistsCacheSize),
 		pointCache:    utils.NewPointCache(pointCacheSize),
 	}
 }
@@ -125,7 +127,7 @@ func (db *HistoricDB) Reader(stateRoot common.Hash) (Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newReader(newCachingCodeReader(db.disk, db.codeCache, db.codeSizeCache), newHistoricReader(hr)), nil
+	return newReader(newCachingCodeReader(db.disk, db.codeCache, db.codeSizeCache, db.codeExists), newHistoricReader(hr)), nil
 }
 
 // OpenTrie opens the main account trie. It's not supported by historic database.
