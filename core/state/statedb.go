@@ -1278,7 +1278,10 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 				return err
 			}
 
-			hasCode := s.reader.HasCode(update.code.hash)
+			hasCode := false
+			if update.code != nil {
+				hasCode = s.reader.HasCode(update.code.hash)
+			}
 
 			lock.Lock()
 			updates[obj.addrHash] = update
