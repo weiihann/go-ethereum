@@ -82,3 +82,10 @@ func (c *SizeConstrainedCache[K, V]) Get(key K) (V, bool) {
 
 	return c.lru.Get(key)
 }
+
+func (c *SizeConstrainedCache[K, V]) Has(key K) bool {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	return c.lru.Contains(key)
+}

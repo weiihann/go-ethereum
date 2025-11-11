@@ -50,6 +50,9 @@ type ContractCodeReader interface {
 	//   doesn't exist
 	// - Returns an error only if an unexpected issue occurs
 	CodeSize(addr common.Address, codeHash common.Hash) (int, error)
+
+	// HasCode checks if a provided code hash already exists or not.
+	HasCode(codeHash common.Hash) bool
 }
 
 // StateReader defines the interface for accessing accounts and storage slots
@@ -109,14 +112,16 @@ type cachingCodeReader struct {
 	// they are natively thread-safe.
 	codeCache     *lru.SizeConstrainedCache[common.Hash, []byte]
 	codeSizeCache *lru.Cache[common.Hash, int]
+	codeExists    *lru.Cache[common.Hash, bool]
 }
 
 // newCachingCodeReader constructs the code reader.
-func newCachingCodeReader(db ethdb.KeyValueReader, codeCache *lru.SizeConstrainedCache[common.Hash, []byte], codeSizeCache *lru.Cache[common.Hash, int]) *cachingCodeReader {
+func newCachingCodeReader(db ethdb.KeyValueReader, codeCache *lru.SizeConstrainedCache[common.Hash, []byte], codeSizeCache *lru.Cache[common.Hash, int], codeExists *lru.Cache[common.Hash, bool]) *cachingCodeReader {
 	return &cachingCodeReader{
 		db:            db,
 		codeCache:     codeCache,
 		codeSizeCache: codeSizeCache,
+		codeExists:    codeExists,
 	}
 }
 
@@ -131,6 +136,7 @@ func (r *cachingCodeReader) Code(addr common.Address, codeHash common.Hash) ([]b
 	if len(code) > 0 {
 		r.codeCache.Add(codeHash, code)
 		r.codeSizeCache.Add(codeHash, len(code))
+		r.codeExists.Add(codeHash, true)
 	}
 	return code, nil
 }
@@ -146,6 +152,20 @@ func (r *cachingCodeReader) CodeSize(addr common.Address, codeHash common.Hash) 
 		return 0, err
 	}
 	return len(code), nil
+}
+
+// HasCode checks if the contract code corresponding to the provided code hash
+// is already present in the cache or the database.
+func (r *cachingCodeReader) HasCode(codeHash common.Hash) bool {
+	hasCode := r.codeExists.Contains(codeHash)
+	if hasCode {
+		return true
+	}
+	hasCode = rawdb.HasCode(r.db, codeHash)
+	if hasCode {
+		r.codeExists.Add(codeHash, true)
+	}
+	return hasCode
 }
 
 // flatReader wraps a database state reader and is safe for concurrent access.

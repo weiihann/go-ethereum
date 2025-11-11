@@ -1181,6 +1181,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 		lock    sync.Mutex                                               // protect two maps below
 		nodes   = trienode.NewMergedNodeSet()                            // aggregated trie nodes
 		updates = make(map[common.Hash]*accountUpdate, len(s.mutations)) // aggregated account updates
+		codes   = make(map[common.Hash][]byte)                           // contract codes
 
 		// merge aggregates the dirty trie nodes into the global set.
 		//
@@ -1276,8 +1277,14 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 			if err := merge(set); err != nil {
 				return err
 			}
+
+			hasCode := s.reader.HasCode(update.code.hash)
+
 			lock.Lock()
 			updates[obj.addrHash] = update
+			if !hasCode {
+				codes[update.code.hash] = update.code.blob
+			}
 			s.StorageCommits = time.Since(start) // overwrite with the longest storage commit runtime
 			lock.Unlock()
 			return nil
@@ -1311,7 +1318,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 	origin := s.originalRoot
 	s.originalRoot = root
 
-	return newStateUpdate(noStorageWiping, origin, root, blockNumber, deletes, updates, nodes), nil
+	return newStateUpdate(noStorageWiping, origin, root, blockNumber, deletes, updates, nodes, codes), nil
 }
 
 // commitAndFlush is a wrapper of commit which also commits the state mutations
@@ -1324,8 +1331,8 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 	// Commit dirty contract code if any exists
 	if db := s.db.TrieDB().Disk(); db != nil && len(ret.codes) > 0 {
 		batch := db.NewBatch()
-		for _, code := range ret.codes {
-			rawdb.WriteCode(batch, code.hash, code.blob)
+		for hash, code := range ret.codes {
+			rawdb.WriteCode(batch, hash, code)
 		}
 		if err := batch.Write(); err != nil {
 			return nil, err
