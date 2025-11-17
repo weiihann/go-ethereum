@@ -47,6 +47,7 @@ type testBackend struct {
 	logsFeed        event.Feed
 	rmLogsFeed      event.Feed
 	chainFeed       event.Feed
+	stateUpdateFeed event.Feed
 	pendingBlock    *types.Block
 	pendingReceipts types.Receipts
 }
@@ -158,6 +159,10 @@ func (b *testBackend) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscript
 
 func (b *testBackend) SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription {
 	return b.chainFeed.Subscribe(ch)
+}
+
+func (b *testBackend) SubscribeStateUpdateEvent(ch chan<- core.StateUpdateEvent) event.Subscription {
+	return b.stateUpdateFeed.Subscribe(ch)
 }
 
 func (b *testBackend) CurrentView() *filtermaps.ChainView {
@@ -921,4 +926,116 @@ func TestTransactionReceiptsSubscription(t *testing.T) {
 			<-sub.Err()
 		})
 	}
+}
+
+// TestStateUpdateSubscription tests if a state update subscription receives state change events.
+// It verifies that:
+// - Multiple subscriptions can coexist
+// - All subscriptions receive the same events
+// - Events are delivered in order
+// - Unsubscribe works correctly
+func TestStateUpdateSubscription(t *testing.T) {
+	t.Parallel()
+
+	var (
+		db           = rawdb.NewMemoryDatabase()
+		backend, sys = newTestFilterSystem(db, Config{})
+		api          = NewFilterAPI(sys)
+
+		// Dummy test data for state update events
+		stateUpdates = []core.StateUpdateEvent{
+			{
+				BlockNumber: 1,
+				Accounts: map[common.Hash][]byte{
+					common.HexToHash("0x01"): {0x01, 0x02, 0x03},
+					common.HexToHash("0x02"): {0x04, 0x05, 0x06},
+				},
+				Storages: map[common.Hash]map[common.Hash][]byte{
+					common.HexToHash("0x01"): {
+						common.HexToHash("0x10"): []byte{0x0a, 0x0b},
+					},
+				},
+				Codes: map[common.Hash][]byte{
+					common.HexToHash("0x03"): {0x60, 0x60, 0x60},
+				},
+			},
+			{
+				BlockNumber: 2,
+				Accounts: map[common.Hash][]byte{
+					common.HexToHash("0x03"): {0x07, 0x08, 0x09},
+				},
+				Storages: map[common.Hash]map[common.Hash][]byte{
+					common.HexToHash("0x03"): {
+						common.HexToHash("0x20"): []byte{0x0c, 0x0d},
+						common.HexToHash("0x21"): []byte{0x0e, 0x0f},
+					},
+				},
+				Codes: map[common.Hash][]byte{},
+			},
+			{
+				BlockNumber: 3,
+				Accounts: map[common.Hash][]byte{
+					common.HexToHash("0x04"): {0x0a, 0x0b, 0x0c},
+				},
+				Storages: map[common.Hash]map[common.Hash][]byte{},
+				Codes: map[common.Hash][]byte{
+					common.HexToHash("0x05"): {0x61, 0x61, 0x61},
+				},
+			},
+		}
+	)
+
+	chan0 := make(chan core.StateUpdateEvent)
+	sub0 := api.events.SubscribeStateUpdates(chan0)
+	chan1 := make(chan core.StateUpdateEvent)
+	sub1 := api.events.SubscribeStateUpdates(chan1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		i1, i2 := 0, 0
+		for i1 != len(stateUpdates) || i2 != len(stateUpdates) {
+			select {
+			case update := <-chan0:
+				if i1 >= len(stateUpdates) {
+					t.Errorf("sub0 received more events than expected")
+					return
+				}
+				if !reflect.DeepEqual(update, stateUpdates[i1]) {
+					t.Errorf("sub0 received invalid state update on index %d, want %+v, got %+v", i1, stateUpdates[i1], update)
+				}
+				if update.BlockNumber != stateUpdates[i1].BlockNumber {
+					t.Errorf("sub0 received wrong block number on index %d, want %d, got %d", i1, stateUpdates[i1].BlockNumber, update.BlockNumber)
+				}
+				i1++
+			case update := <-chan1:
+				if i2 >= len(stateUpdates) {
+					t.Errorf("sub1 received more events than expected")
+					return
+				}
+				if !reflect.DeepEqual(update, stateUpdates[i2]) {
+					t.Errorf("sub1 received invalid state update on index %d, want %+v, got %+v", i2, stateUpdates[i2], update)
+				}
+				if update.BlockNumber != stateUpdates[i2].BlockNumber {
+					t.Errorf("sub1 received wrong block number on index %d, want %d, got %d", i2, stateUpdates[i2].BlockNumber, update.BlockNumber)
+				}
+				i2++
+			case <-time.After(5 * time.Second):
+				t.Errorf("timeout waiting for events, received i1=%d, i2=%d, expected=%d", i1, i2, len(stateUpdates))
+				return
+			}
+		}
+
+		sub0.Unsubscribe()
+		sub1.Unsubscribe()
+	}()
+
+	time.Sleep(1 * time.Second)
+	for _, update := range stateUpdates {
+		backend.stateUpdateFeed.Send(update)
+	}
+
+	<-done
+	<-sub0.Err()
+	<-sub1.Err()
 }

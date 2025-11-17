@@ -319,6 +319,10 @@ func (b *EthAPIBackend) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscri
 	return b.eth.BlockChain().SubscribeLogsEvent(ch)
 }
 
+func (b *EthAPIBackend) SubscribeStateUpdateEvent(ch chan<- core.StateUpdateEvent) event.Subscription {
+	return b.eth.BlockChain().SubscribeStateUpdateEvent(ch)
+}
+
 func (b *EthAPIBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {
 	err := b.eth.txPool.Add([]*types.Transaction{signedTx}, false)[0]
 

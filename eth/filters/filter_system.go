@@ -71,6 +71,7 @@ type Backend interface {
 	SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription
 	SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEvent) event.Subscription
 	SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscription
+	SubscribeStateUpdateEvent(ch chan<- core.StateUpdateEvent) event.Subscription
 
 	CurrentView() *filtermaps.ChainView
 	NewMatcherBackend() filtermaps.MatcherBackend
@@ -160,6 +161,8 @@ const (
 	BlocksSubscription
 	// TransactionReceiptsSubscription queries for transaction receipts when transactions are included in blocks
 	TransactionReceiptsSubscription
+	// StateUpdateSubscription queries for state update events
+	StateUpdateSubscription
 	// LastIndexSubscription keeps track of the last index
 	LastIndexSubscription
 )
@@ -174,20 +177,23 @@ const (
 	logsChanSize = 10
 	// chainEvChanSize is the size of channel listening to ChainEvent.
 	chainEvChanSize = 10
+	// stateUpdateChanSize is the size of channel listening to StateUpdateEvent.
+	stateUpdateChanSize = 10
 )
 
 type subscription struct {
-	id        rpc.ID
-	typ       Type
-	created   time.Time
-	logsCrit  ethereum.FilterQuery
-	logs      chan []*types.Log
-	txs       chan []*types.Transaction
-	headers   chan *types.Header
-	receipts  chan []*ReceiptWithTx
-	txHashes  map[common.Hash]bool // contains transaction hashes for transactionReceipts subscription filtering
-	installed chan struct{}        // closed when the filter is installed
-	err       chan error           // closed when the filter is uninstalled
+	id           rpc.ID
+	typ          Type
+	created      time.Time
+	logsCrit     ethereum.FilterQuery
+	logs         chan []*types.Log
+	txs          chan []*types.Transaction
+	headers      chan *types.Header
+	receipts     chan []*ReceiptWithTx
+	stateUpdates chan core.StateUpdateEvent
+	txHashes     map[common.Hash]bool // contains transaction hashes for transactionReceipts subscription filtering
+	installed    chan struct{}        // closed when the filter is installed
+	err          chan error           // closed when the filter is uninstalled
 }
 
 // EventSystem creates subscriptions, processes events and broadcasts them to the
@@ -197,18 +203,20 @@ type EventSystem struct {
 	sys     *FilterSystem
 
 	// Subscriptions
-	txsSub    event.Subscription // Subscription for new transaction event
-	logsSub   event.Subscription // Subscription for new log event
-	rmLogsSub event.Subscription // Subscription for removed log event
-	chainSub  event.Subscription // Subscription for new chain event
+	txsSub         event.Subscription // Subscription for new transaction event
+	logsSub        event.Subscription // Subscription for new log event
+	rmLogsSub      event.Subscription // Subscription for removed log event
+	chainSub       event.Subscription // Subscription for new chain event
+	stateUpdateSub event.Subscription // Subscription for state update event
 
 	// Channels
-	install   chan *subscription         // install filter for event notification
-	uninstall chan *subscription         // remove filter for event notification
-	txsCh     chan core.NewTxsEvent      // Channel to receive new transactions event
-	logsCh    chan []*types.Log          // Channel to receive new log event
-	rmLogsCh  chan core.RemovedLogsEvent // Channel to receive removed log event
-	chainCh   chan core.ChainEvent       // Channel to receive new chain event
+	install       chan *subscription         // install filter for event notification
+	uninstall     chan *subscription         // remove filter for event notification
+	txsCh         chan core.NewTxsEvent      // Channel to receive new transactions event
+	logsCh        chan []*types.Log          // Channel to receive new log event
+	rmLogsCh      chan core.RemovedLogsEvent // Channel to receive removed log event
+	chainCh       chan core.ChainEvent       // Channel to receive new chain event
+	stateUpdateCh chan core.StateUpdateEvent // Channel to receive state update event
 }
 
 // NewEventSystem creates a new manager that listens for event on the given mux,
@@ -219,14 +227,15 @@ type EventSystem struct {
 // or by stopping the given mux.
 func NewEventSystem(sys *FilterSystem) *EventSystem {
 	m := &EventSystem{
-		sys:       sys,
-		backend:   sys.backend,
-		install:   make(chan *subscription),
-		uninstall: make(chan *subscription),
-		txsCh:     make(chan core.NewTxsEvent, txChanSize),
-		logsCh:    make(chan []*types.Log, logsChanSize),
-		rmLogsCh:  make(chan core.RemovedLogsEvent, rmLogsChanSize),
-		chainCh:   make(chan core.ChainEvent, chainEvChanSize),
+		sys:           sys,
+		backend:       sys.backend,
+		install:       make(chan *subscription),
+		uninstall:     make(chan *subscription),
+		txsCh:         make(chan core.NewTxsEvent, txChanSize),
+		logsCh:        make(chan []*types.Log, logsChanSize),
+		rmLogsCh:      make(chan core.RemovedLogsEvent, rmLogsChanSize),
+		chainCh:       make(chan core.ChainEvent, chainEvChanSize),
+		stateUpdateCh: make(chan core.StateUpdateEvent, stateUpdateChanSize),
 	}
 
 	// Subscribe events
@@ -234,9 +243,10 @@ func NewEventSystem(sys *FilterSystem) *EventSystem {
 	m.logsSub = m.backend.SubscribeLogsEvent(m.logsCh)
 	m.rmLogsSub = m.backend.SubscribeRemovedLogsEvent(m.rmLogsCh)
 	m.chainSub = m.backend.SubscribeChainEvent(m.chainCh)
+	m.stateUpdateSub = m.backend.SubscribeStateUpdateEvent(m.stateUpdateCh)
 
 	// Make sure none of the subscriptions are empty
-	if m.txsSub == nil || m.logsSub == nil || m.rmLogsSub == nil || m.chainSub == nil {
+	if m.txsSub == nil || m.logsSub == nil || m.rmLogsSub == nil || m.chainSub == nil || m.stateUpdateSub == nil {
 		log.Crit("Subscribe for event system failed")
 	}
 
@@ -273,6 +283,7 @@ func (sub *Subscription) Unsubscribe() {
 			case <-sub.f.txs:
 			case <-sub.f.headers:
 			case <-sub.f.receipts:
+			case <-sub.f.stateUpdates:
 			}
 		}
 
@@ -351,16 +362,17 @@ func (es *EventSystem) SubscribeLogs(crit ethereum.FilterQuery, logs chan []*typ
 // given criteria to the given logs channel.
 func (es *EventSystem) subscribeLogs(crit ethereum.FilterQuery, logs chan []*types.Log) *Subscription {
 	sub := &subscription{
-		id:        rpc.NewID(),
-		typ:       LogsSubscription,
-		logsCrit:  crit,
-		created:   time.Now(),
-		logs:      logs,
-		txs:       make(chan []*types.Transaction),
-		headers:   make(chan *types.Header),
-		receipts:  make(chan []*ReceiptWithTx),
-		installed: make(chan struct{}),
-		err:       make(chan error),
+		id:           rpc.NewID(),
+		typ:          LogsSubscription,
+		logsCrit:     crit,
+		created:      time.Now(),
+		logs:         logs,
+		txs:          make(chan []*types.Transaction),
+		headers:      make(chan *types.Header),
+		receipts:     make(chan []*ReceiptWithTx),
+		stateUpdates: make(chan core.StateUpdateEvent),
+		installed:    make(chan struct{}),
+		err:          make(chan error),
 	}
 	return es.subscribe(sub)
 }
@@ -369,15 +381,16 @@ func (es *EventSystem) subscribeLogs(crit ethereum.FilterQuery, logs chan []*typ
 // imported in the chain.
 func (es *EventSystem) SubscribeNewHeads(headers chan *types.Header) *Subscription {
 	sub := &subscription{
-		id:        rpc.NewID(),
-		typ:       BlocksSubscription,
-		created:   time.Now(),
-		logs:      make(chan []*types.Log),
-		txs:       make(chan []*types.Transaction),
-		headers:   headers,
-		receipts:  make(chan []*ReceiptWithTx),
-		installed: make(chan struct{}),
-		err:       make(chan error),
+		id:           rpc.NewID(),
+		typ:          BlocksSubscription,
+		created:      time.Now(),
+		logs:         make(chan []*types.Log),
+		txs:          make(chan []*types.Transaction),
+		headers:      headers,
+		receipts:     make(chan []*ReceiptWithTx),
+		stateUpdates: make(chan core.StateUpdateEvent),
+		installed:    make(chan struct{}),
+		err:          make(chan error),
 	}
 	return es.subscribe(sub)
 }
@@ -386,15 +399,16 @@ func (es *EventSystem) SubscribeNewHeads(headers chan *types.Header) *Subscripti
 // transactions that enter the transaction pool.
 func (es *EventSystem) SubscribePendingTxs(txs chan []*types.Transaction) *Subscription {
 	sub := &subscription{
-		id:        rpc.NewID(),
-		typ:       PendingTransactionsSubscription,
-		created:   time.Now(),
-		logs:      make(chan []*types.Log),
-		txs:       txs,
-		headers:   make(chan *types.Header),
-		receipts:  make(chan []*ReceiptWithTx),
-		installed: make(chan struct{}),
-		err:       make(chan error),
+		id:           rpc.NewID(),
+		typ:          PendingTransactionsSubscription,
+		created:      time.Now(),
+		logs:         make(chan []*types.Log),
+		txs:          txs,
+		headers:      make(chan *types.Header),
+		receipts:     make(chan []*ReceiptWithTx),
+		stateUpdates: make(chan core.StateUpdateEvent),
+		installed:    make(chan struct{}),
+		err:          make(chan error),
 	}
 	return es.subscribe(sub)
 }
@@ -408,16 +422,34 @@ func (es *EventSystem) SubscribeTransactionReceipts(txHashes []common.Hash, rece
 		hashSet[h] = true
 	}
 	sub := &subscription{
-		id:        rpc.NewID(),
-		typ:       TransactionReceiptsSubscription,
-		created:   time.Now(),
-		logs:      make(chan []*types.Log),
-		txs:       make(chan []*types.Transaction),
-		headers:   make(chan *types.Header),
-		receipts:  receipts,
-		txHashes:  hashSet,
-		installed: make(chan struct{}),
-		err:       make(chan error),
+		id:           rpc.NewID(),
+		typ:          TransactionReceiptsSubscription,
+		created:      time.Now(),
+		logs:         make(chan []*types.Log),
+		txs:          make(chan []*types.Transaction),
+		headers:      make(chan *types.Header),
+		stateUpdates: make(chan core.StateUpdateEvent),
+		receipts:     receipts,
+		txHashes:     hashSet,
+		installed:    make(chan struct{}),
+		err:          make(chan error),
+	}
+	return es.subscribe(sub)
+}
+
+func (es *EventSystem) SubscribeStateUpdates(stateUpdates chan core.StateUpdateEvent) *Subscription {
+	sub := &subscription{
+		id:           rpc.NewID(),
+		typ:          StateUpdateSubscription,
+		created:      time.Now(),
+		logs:         make(chan []*types.Log),
+		txs:          make(chan []*types.Transaction),
+		headers:      make(chan *types.Header),
+		receipts:     make(chan []*ReceiptWithTx),
+		txHashes:     make(map[common.Hash]bool),
+		stateUpdates: stateUpdates,
+		installed:    make(chan struct{}),
+		err:          make(chan error),
 	}
 	return es.subscribe(sub)
 }
@@ -456,6 +488,12 @@ func (es *EventSystem) handleChainEvent(filters filterIndex, ev core.ChainEvent)
 	}
 }
 
+func (es *EventSystem) handleStateUpdateEvent(filters filterIndex, ev core.StateUpdateEvent) {
+	for _, f := range filters[StateUpdateSubscription] {
+		f.stateUpdates <- ev
+	}
+}
+
 // eventLoop (un)installs filters and processes mux events.
 func (es *EventSystem) eventLoop() {
 	// Ensure all subscriptions get cleaned up
@@ -464,6 +502,7 @@ func (es *EventSystem) eventLoop() {
 		es.logsSub.Unsubscribe()
 		es.rmLogsSub.Unsubscribe()
 		es.chainSub.Unsubscribe()
+		es.stateUpdateSub.Unsubscribe()
 	}()
 
 	index := make(filterIndex)
@@ -481,7 +520,8 @@ func (es *EventSystem) eventLoop() {
 			es.handleLogs(index, ev.Logs)
 		case ev := <-es.chainCh:
 			es.handleChainEvent(index, ev)
-
+		case ev := <-es.stateUpdateCh:
+			es.handleStateUpdateEvent(index, ev)
 		case f := <-es.install:
 			index[f.typ][f.id] = f
 			close(f.installed)
@@ -498,6 +538,8 @@ func (es *EventSystem) eventLoop() {
 		case <-es.rmLogsSub.Err():
 			return
 		case <-es.chainSub.Err():
+			return
+		case <-es.stateUpdateSub.Err():
 			return
 		}
 	}

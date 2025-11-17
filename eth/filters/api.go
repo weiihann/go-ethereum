@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/history"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
@@ -705,6 +706,33 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// StateUpdates creates a subscription that fires for state changes.
+func (api *FilterAPI) StateUpdates(ctx context.Context) (*rpc.Subscription, error) {
+	notifier, supported := rpc.NotifierFromContext(ctx)
+	if !supported {
+		return &rpc.Subscription{}, rpc.ErrNotificationsUnsupported
+	}
+
+	rpcSub := notifier.CreateSubscription()
+
+	go func() {
+		states := make(chan core.StateUpdateEvent)
+		statesSub := api.events.SubscribeStateUpdates(states)
+		defer statesSub.Unsubscribe()
+
+		for {
+			select {
+			case state := <-states:
+				notifier.Notify(rpcSub.ID, state)
+			case <-rpcSub.Err():
+				return
+			}
+		}
+	}()
+
+	return rpcSub, nil
 }
 
 func decodeAddress(s string) (common.Address, error) {
