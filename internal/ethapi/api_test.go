@@ -606,6 +606,11 @@ func (b testBackend) SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscr
 func (b testBackend) SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription {
 	panic("implement me")
 }
+
+func (b testBackend) SubscribeStateUpdateEvent(ch chan<- core.StateUpdateEvent) event.Subscription {
+	panic("implement me")
+}
+
 func (b *testBackend) SendTx(ctx context.Context, tx *types.Transaction) error {
 	b.sentTx = tx
 	b.sentTxHash = tx.Hash()

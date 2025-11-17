@@ -468,3 +468,17 @@ func (dl *diffLayer) StorageList(accountHash common.Hash) []common.Hash {
 	dl.memory += uint64(len(dl.storageList)*common.HashLength + common.HashLength)
 	return storageList
 }
+
+func (dl *diffLayer) AccountData() map[common.Hash][]byte {
+	dl.lock.RLock()
+	defer dl.lock.RUnlock()
+
+	return dl.accountData
+}
+
+func (dl *diffLayer) StorageData() map[common.Hash]map[common.Hash][]byte {
+	dl.lock.RLock()
+	defer dl.lock.RUnlock()
+
+	return dl.storageData
+}

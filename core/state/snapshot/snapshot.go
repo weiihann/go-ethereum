@@ -774,7 +774,6 @@ func (t *Tree) Verify(root common.Hash) error {
 		}
 		return hash, nil
 	}, newGenerateStats(), true)
-
 	if err != nil {
 		return err
 	}
@@ -856,4 +855,22 @@ func (t *Tree) Size() (diffs common.StorageSize, buf common.StorageSize) {
 		}
 	}
 	return size, 0
+}
+
+func (t *Tree) Diff(root common.Hash) *diffLayer {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	layer := t.layers[root]
+	if layer == nil {
+		return nil
+	}
+	switch layer := layer.(type) {
+	case *diffLayer:
+		return layer
+	case *diskLayer:
+		return nil
+	default:
+		panic(fmt.Sprintf("%T: undefined layer", layer))
+	}
 }
