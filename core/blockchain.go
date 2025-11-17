@@ -304,6 +304,7 @@ type BlockChain struct {
 	chainFeed        event.Feed
 	chainHeadFeed    event.Feed
 	logsFeed         event.Feed
+	stateUpdateFeed  event.Feed
 	blockProcFeed    event.Feed
 	blockProcCounter int32
 	scope            event.SubscriptionScope
@@ -1669,6 +1670,13 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		}
 		bc.triedb.Dereference(root)
 	}
+
+	bc.stateUpdateFeed.Send(StateUpdateEvent{
+		BlockNumber: block.NumberU64(),
+		Accounts:    stateUpdate.Accounts(),
+		Storages:    stateUpdate.Storages(),
+		Codes:       stateUpdate.Codes(),
+	})
 	return nil
 }
 

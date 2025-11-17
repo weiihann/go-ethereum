@@ -190,3 +190,19 @@ func (sc *stateUpdate) stateSet() *triedb.StateSet {
 		RawStorageKey:  sc.rawStorageKey,
 	}
 }
+
+func (sc *stateUpdate) Accounts() map[common.Hash][]byte {
+	return sc.accounts
+}
+
+func (sc *stateUpdate) Storages() map[common.Hash]map[common.Hash][]byte {
+	return sc.storages
+}
+
+func (sc *stateUpdate) Codes() map[common.Hash][]byte {
+	codes := make(map[common.Hash][]byte, len(sc.codes))
+	for _, code := range sc.codes {
+		codes[code.hash] = code.blob
+	}
+	return codes
+}

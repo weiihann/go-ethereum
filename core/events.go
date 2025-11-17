@@ -17,6 +17,7 @@
 package core
 
 import (
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -34,4 +35,18 @@ type ChainEvent struct {
 
 type ChainHeadEvent struct {
 	Header *types.Header
+}
+
+type StateUpdateEvent struct {
+	BlockNumber uint64 `json:"blockNumber"`
+
+	// accounts stores mutated accounts in 'slim RLP' encoding
+	Accounts map[common.Hash][]byte `json:"accounts"`
+
+	// storages stores mutated slots in 'prefix-zero-trimmed' RLP format.
+	// The value is keyed by account hash and **storage slot key hash**.
+	Storages map[common.Hash]map[common.Hash][]byte `json:"storages"`
+
+	// Bytecodes added
+	Codes map[common.Hash][]byte `json:"codes"`
 }
