@@ -1672,10 +1672,12 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	}
 
 	bc.stateUpdateFeed.Send(StateUpdateEvent{
-		BlockNumber: block.NumberU64(),
-		Accounts:    stateUpdate.Accounts(),
-		Storages:    stateUpdate.Storages(),
-		Codes:       stateUpdate.Codes(),
+		Header:   block.Header(),
+		Body:     block.Body(),
+		Receipts: receipts,
+		Accounts: stateUpdate.Accounts(),
+		Storages: stateUpdate.Storages(),
+		Codes:    stateUpdate.Codes(),
 	})
 	return nil
 }
