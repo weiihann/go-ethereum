@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
@@ -190,7 +191,7 @@ type subscription struct {
 	txs          chan []*types.Transaction
 	headers      chan *types.Header
 	receipts     chan []*ReceiptWithTx
-	stateUpdates chan core.StateUpdateEvent
+	stateUpdates chan *types.EncodedBlockWithStateUpdates
 	txHashes     map[common.Hash]bool // contains transaction hashes for transactionReceipts subscription filtering
 	installed    chan struct{}        // closed when the filter is installed
 	err          chan error           // closed when the filter is uninstalled
@@ -370,7 +371,7 @@ func (es *EventSystem) subscribeLogs(crit ethereum.FilterQuery, logs chan []*typ
 		txs:          make(chan []*types.Transaction),
 		headers:      make(chan *types.Header),
 		receipts:     make(chan []*ReceiptWithTx),
-		stateUpdates: make(chan core.StateUpdateEvent),
+		stateUpdates: make(chan *types.EncodedBlockWithStateUpdates),
 		installed:    make(chan struct{}),
 		err:          make(chan error),
 	}
@@ -388,7 +389,7 @@ func (es *EventSystem) SubscribeNewHeads(headers chan *types.Header) *Subscripti
 		txs:          make(chan []*types.Transaction),
 		headers:      headers,
 		receipts:     make(chan []*ReceiptWithTx),
-		stateUpdates: make(chan core.StateUpdateEvent),
+		stateUpdates: make(chan *types.EncodedBlockWithStateUpdates),
 		installed:    make(chan struct{}),
 		err:          make(chan error),
 	}
@@ -406,7 +407,7 @@ func (es *EventSystem) SubscribePendingTxs(txs chan []*types.Transaction) *Subsc
 		txs:          txs,
 		headers:      make(chan *types.Header),
 		receipts:     make(chan []*ReceiptWithTx),
-		stateUpdates: make(chan core.StateUpdateEvent),
+		stateUpdates: make(chan *types.EncodedBlockWithStateUpdates),
 		installed:    make(chan struct{}),
 		err:          make(chan error),
 	}
@@ -428,7 +429,7 @@ func (es *EventSystem) SubscribeTransactionReceipts(txHashes []common.Hash, rece
 		logs:         make(chan []*types.Log),
 		txs:          make(chan []*types.Transaction),
 		headers:      make(chan *types.Header),
-		stateUpdates: make(chan core.StateUpdateEvent),
+		stateUpdates: make(chan *types.EncodedBlockWithStateUpdates),
 		receipts:     receipts,
 		txHashes:     hashSet,
 		installed:    make(chan struct{}),
@@ -437,7 +438,7 @@ func (es *EventSystem) SubscribeTransactionReceipts(txHashes []common.Hash, rece
 	return es.subscribe(sub)
 }
 
-func (es *EventSystem) SubscribeStateUpdates(stateUpdates chan core.StateUpdateEvent) *Subscription {
+func (es *EventSystem) SubscribeStateUpdates(stateUpdates chan *types.EncodedBlockWithStateUpdates) *Subscription {
 	sub := &subscription{
 		id:           rpc.NewID(),
 		typ:          StateUpdateSubscription,
@@ -489,8 +490,35 @@ func (es *EventSystem) handleChainEvent(filters filterIndex, ev core.ChainEvent)
 }
 
 func (es *EventSystem) handleStateUpdateEvent(filters filterIndex, ev core.StateUpdateEvent) {
+	// Encode the header, body and receipts to minimize response size
+	encHeader, err := rlp.EncodeToBytes(ev.Header)
+	if err != nil {
+		log.Crit("Failed to encode header", "err", err)
+	}
+
+	encBody, err := rlp.EncodeToBytes(ev.Body)
+	if err != nil {
+		log.Crit("Failed to encode body", "err", err)
+	}
+
+	storageReceipts := make([]*types.ReceiptForStorage, len(ev.Receipts))
+	for i, receipt := range ev.Receipts {
+		storageReceipts[i] = (*types.ReceiptForStorage)(receipt)
+	}
+	encReceipts, err := rlp.EncodeToBytes(storageReceipts)
+	if err != nil {
+		log.Crit("Failed to encode receipts", "err", err)
+	}
+
 	for _, f := range filters[StateUpdateSubscription] {
-		f.stateUpdates <- ev
+		f.stateUpdates <- &types.EncodedBlockWithStateUpdates{
+			Header:   encHeader,
+			Body:     encBody,
+			Receipts: encReceipts,
+			Accounts: ev.Accounts,
+			Storages: ev.Storages,
+			Codes:    ev.Codes,
+		}
 	}
 }
 

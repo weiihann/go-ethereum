@@ -38,15 +38,10 @@ type ChainHeadEvent struct {
 }
 
 type StateUpdateEvent struct {
-	BlockNumber uint64 `json:"blockNumber"`
-
-	// accounts stores mutated accounts in 'slim RLP' encoding
-	Accounts map[common.Hash][]byte `json:"accounts"`
-
-	// storages stores mutated slots in 'prefix-zero-trimmed' RLP format.
-	// The value is keyed by account hash and **storage slot key hash**.
-	Storages map[common.Hash]map[common.Hash][]byte `json:"storages"`
-
-	// Bytecodes added
-	Codes map[common.Hash][]byte `json:"codes"`
+	Header   *types.Header
+	Body     *types.Body
+	Receipts []*types.Receipt
+	Accounts map[common.Hash][]byte
+	Storages map[common.Hash]map[common.Hash][]byte
+	Codes    map[common.Hash][]byte
 }

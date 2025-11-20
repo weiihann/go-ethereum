@@ -28,7 +28,6 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/history"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
@@ -718,7 +717,7 @@ func (api *FilterAPI) StateUpdates(ctx context.Context) (*rpc.Subscription, erro
 	rpcSub := notifier.CreateSubscription()
 
 	go func() {
-		states := make(chan core.StateUpdateEvent)
+		states := make(chan *types.EncodedBlockWithStateUpdates)
 		statesSub := api.events.SubscribeStateUpdates(states)
 		defer statesSub.Unsubscribe()
 

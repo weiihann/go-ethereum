@@ -36,8 +36,10 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/triedb"
+	"github.com/stretchr/testify/assert"
 )
 
 type testBackend struct {
@@ -945,7 +947,9 @@ func TestStateUpdateSubscription(t *testing.T) {
 		// Dummy test data for state update events
 		stateUpdates = []core.StateUpdateEvent{
 			{
-				BlockNumber: 1,
+				Header:   &types.Header{Number: big.NewInt(1)},
+				Body:     &types.Body{},
+				Receipts: []*types.Receipt{},
 				Accounts: map[common.Hash][]byte{
 					common.HexToHash("0x01"): {0x01, 0x02, 0x03},
 					common.HexToHash("0x02"): {0x04, 0x05, 0x06},
@@ -960,7 +964,9 @@ func TestStateUpdateSubscription(t *testing.T) {
 				},
 			},
 			{
-				BlockNumber: 2,
+				Header:   &types.Header{Number: big.NewInt(2)},
+				Body:     &types.Body{},
+				Receipts: []*types.Receipt{},
 				Accounts: map[common.Hash][]byte{
 					common.HexToHash("0x03"): {0x07, 0x08, 0x09},
 				},
@@ -973,7 +979,9 @@ func TestStateUpdateSubscription(t *testing.T) {
 				Codes: map[common.Hash][]byte{},
 			},
 			{
-				BlockNumber: 3,
+				Header:   &types.Header{Number: big.NewInt(3)},
+				Body:     &types.Body{},
+				Receipts: []*types.Receipt{},
 				Accounts: map[common.Hash][]byte{
 					common.HexToHash("0x04"): {0x0a, 0x0b, 0x0c},
 				},
@@ -985,9 +993,17 @@ func TestStateUpdateSubscription(t *testing.T) {
 		}
 	)
 
-	chan0 := make(chan core.StateUpdateEvent)
+	decodeHeader := func(header []byte) (*types.Header, error) {
+		h := &types.Header{}
+		if err := rlp.DecodeBytes(header, h); err != nil {
+			return nil, err
+		}
+		return h, nil
+	}
+
+	chan0 := make(chan *types.EncodedBlockWithStateUpdates)
 	sub0 := api.events.SubscribeStateUpdates(chan0)
-	chan1 := make(chan core.StateUpdateEvent)
+	chan1 := make(chan *types.EncodedBlockWithStateUpdates)
 	sub1 := api.events.SubscribeStateUpdates(chan1)
 
 	done := make(chan struct{})
@@ -1001,24 +1017,37 @@ func TestStateUpdateSubscription(t *testing.T) {
 					t.Errorf("sub0 received more events than expected")
 					return
 				}
-				if !reflect.DeepEqual(update, stateUpdates[i1]) {
-					t.Errorf("sub0 received invalid state update on index %d, want %+v, got %+v", i1, stateUpdates[i1], update)
+
+				header, err := decodeHeader(update.Header)
+				if err != nil {
+					t.Errorf("failed to decode header: %v", err)
 				}
-				if update.BlockNumber != stateUpdates[i1].BlockNumber {
-					t.Errorf("sub0 received wrong block number on index %d, want %d, got %d", i1, stateUpdates[i1].BlockNumber, update.BlockNumber)
+				if header.Number.Uint64() != stateUpdates[i1].Header.Number.Uint64() {
+					t.Errorf("sub0 received wrong block number on index %d, want %d, got %d", i1, stateUpdates[i1].Header.Number.Uint64(), header.Number.Uint64())
 				}
+
+				assert.Equal(t, update.Accounts, stateUpdates[i1].Accounts)
+				assert.Equal(t, update.Storages, stateUpdates[i1].Storages)
+				assert.Equal(t, update.Codes, stateUpdates[i1].Codes)
+
 				i1++
 			case update := <-chan1:
 				if i2 >= len(stateUpdates) {
 					t.Errorf("sub1 received more events than expected")
 					return
 				}
-				if !reflect.DeepEqual(update, stateUpdates[i2]) {
-					t.Errorf("sub1 received invalid state update on index %d, want %+v, got %+v", i2, stateUpdates[i2], update)
+				header, err := decodeHeader(update.Header)
+				if err != nil {
+					t.Errorf("failed to decode header: %v", err)
 				}
-				if update.BlockNumber != stateUpdates[i2].BlockNumber {
-					t.Errorf("sub1 received wrong block number on index %d, want %d, got %d", i2, stateUpdates[i2].BlockNumber, update.BlockNumber)
+				if header.Number.Uint64() != stateUpdates[i2].Header.Number.Uint64() {
+					t.Errorf("sub1 received wrong block number on index %d, want %d, got %d", i2, stateUpdates[i2].Header.Number.Uint64(), header.Number.Uint64())
 				}
+
+				assert.Equal(t, update.Accounts, stateUpdates[i2].Accounts)
+				assert.Equal(t, update.Storages, stateUpdates[i2].Storages)
+				assert.Equal(t, update.Codes, stateUpdates[i2].Codes)
+
 				i2++
 			case <-time.After(5 * time.Second):
 				t.Errorf("timeout waiting for events, received i1=%d, i2=%d, expected=%d", i1, i2, len(stateUpdates))
