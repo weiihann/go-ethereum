@@ -439,6 +439,7 @@ func (es *EventSystem) SubscribeTransactionReceipts(txHashes []common.Hash, rece
 }
 
 func (es *EventSystem) SubscribeStateUpdates(stateUpdates chan *types.EncodedBlockWithStateUpdates) *Subscription {
+	log.Debug("SubscribeStateUpdates: creating subscription")
 	sub := &subscription{
 		id:           rpc.NewID(),
 		typ:          StateUpdateSubscription,
@@ -491,30 +492,16 @@ func (es *EventSystem) handleChainEvent(filters filterIndex, ev core.ChainEvent)
 
 func (es *EventSystem) handleStateUpdateEvent(filters filterIndex, ev core.StateUpdateEvent) {
 	// Encode the header, body and receipts to minimize response size
-	encHeader, err := rlp.EncodeToBytes(ev.Header)
+	encBlock, err := rlp.EncodeToBytes(ev.Block)
 	if err != nil {
-		log.Crit("Failed to encode header", "err", err)
+		log.Crit("Failed to encode block", "err", err)
 	}
-
-	encBody, err := rlp.EncodeToBytes(ev.Body)
-	if err != nil {
-		log.Crit("Failed to encode body", "err", err)
-	}
-
-	storageReceipts := make([]*types.ReceiptForStorage, len(ev.Receipts))
-	for i, receipt := range ev.Receipts {
-		storageReceipts[i] = (*types.ReceiptForStorage)(receipt)
-	}
-	encReceipts, err := rlp.EncodeToBytes(storageReceipts)
-	if err != nil {
-		log.Crit("Failed to encode receipts", "err", err)
-	}
+	log.Debug("handleStateUpdateEvent: encBlock")
 
 	for _, f := range filters[StateUpdateSubscription] {
+		log.Debug("handleStateUpdateEvent: sending state updates to subscription")
 		f.stateUpdates <- &types.EncodedBlockWithStateUpdates{
-			Header:   encHeader,
-			Body:     encBody,
-			Receipts: encReceipts,
+			Block:    encBlock,
 			Accounts: ev.Accounts,
 			Storages: ev.Storages,
 			Codes:    ev.Codes,
@@ -547,8 +534,10 @@ func (es *EventSystem) eventLoop() {
 		case ev := <-es.rmLogsCh:
 			es.handleLogs(index, ev.Logs)
 		case ev := <-es.chainCh:
+			log.Debug("eventLoop: handleChainEvent")
 			es.handleChainEvent(index, ev)
 		case ev := <-es.stateUpdateCh:
+			log.Debug("eventLoop: handleStateUpdateEvent")
 			es.handleStateUpdateEvent(index, ev)
 		case f := <-es.install:
 			index[f.typ][f.id] = f

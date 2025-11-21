@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/history"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
@@ -256,6 +257,7 @@ func (api *FilterAPI) NewHeads(ctx context.Context) (*rpc.Subscription, error) {
 		for {
 			select {
 			case h := <-headers:
+				log.Debug("NewHeads: sending header to client", "header", h.Hash(), "rpcSub.ID", rpcSub.ID)
 				notifier.Notify(rpcSub.ID, h)
 			case <-rpcSub.Err():
 				return
@@ -715,6 +717,7 @@ func (api *FilterAPI) StateUpdates(ctx context.Context) (*rpc.Subscription, erro
 	}
 
 	rpcSub := notifier.CreateSubscription()
+	log.Debug("StateUpdates: created subscription", "rpcSub.ID", rpcSub.ID)
 
 	go func() {
 		states := make(chan *types.EncodedBlockWithStateUpdates)
@@ -724,6 +727,7 @@ func (api *FilterAPI) StateUpdates(ctx context.Context) (*rpc.Subscription, erro
 		for {
 			select {
 			case state := <-states:
+				log.Debug("StateUpdates: sending state update to client", "rpcSub.ID", rpcSub.ID)
 				notifier.Notify(rpcSub.ID, state)
 			case <-rpcSub.Err():
 				return

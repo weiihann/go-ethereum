@@ -947,9 +947,7 @@ func TestStateUpdateSubscription(t *testing.T) {
 		// Dummy test data for state update events
 		stateUpdates = []core.StateUpdateEvent{
 			{
-				Header:   &types.Header{Number: big.NewInt(1)},
-				Body:     &types.Body{},
-				Receipts: []*types.Receipt{},
+				Block: types.NewBlockWithHeader(&types.Header{Number: big.NewInt(1)}),
 				Accounts: map[common.Hash][]byte{
 					common.HexToHash("0x01"): {0x01, 0x02, 0x03},
 					common.HexToHash("0x02"): {0x04, 0x05, 0x06},
@@ -964,9 +962,7 @@ func TestStateUpdateSubscription(t *testing.T) {
 				},
 			},
 			{
-				Header:   &types.Header{Number: big.NewInt(2)},
-				Body:     &types.Body{},
-				Receipts: []*types.Receipt{},
+				Block: types.NewBlockWithHeader(&types.Header{Number: big.NewInt(2)}),
 				Accounts: map[common.Hash][]byte{
 					common.HexToHash("0x03"): {0x07, 0x08, 0x09},
 				},
@@ -979,9 +975,7 @@ func TestStateUpdateSubscription(t *testing.T) {
 				Codes: map[common.Hash][]byte{},
 			},
 			{
-				Header:   &types.Header{Number: big.NewInt(3)},
-				Body:     &types.Body{},
-				Receipts: []*types.Receipt{},
+				Block: types.NewBlockWithHeader(&types.Header{Number: big.NewInt(3)}),
 				Accounts: map[common.Hash][]byte{
 					common.HexToHash("0x04"): {0x0a, 0x0b, 0x0c},
 				},
@@ -993,12 +987,12 @@ func TestStateUpdateSubscription(t *testing.T) {
 		}
 	)
 
-	decodeHeader := func(header []byte) (*types.Header, error) {
-		h := &types.Header{}
-		if err := rlp.DecodeBytes(header, h); err != nil {
+	decodeBlock := func(enc []byte) (*types.Block, error) {
+		b := &types.Block{}
+		if err := rlp.DecodeBytes(enc, b); err != nil {
 			return nil, err
 		}
-		return h, nil
+		return b, nil
 	}
 
 	chan0 := make(chan *types.EncodedBlockWithStateUpdates)
@@ -1018,12 +1012,12 @@ func TestStateUpdateSubscription(t *testing.T) {
 					return
 				}
 
-				header, err := decodeHeader(update.Header)
+				block, err := decodeBlock(update.Block)
 				if err != nil {
-					t.Errorf("failed to decode header: %v", err)
+					t.Errorf("failed to decode block: %v", err)
 				}
-				if header.Number.Uint64() != stateUpdates[i1].Header.Number.Uint64() {
-					t.Errorf("sub0 received wrong block number on index %d, want %d, got %d", i1, stateUpdates[i1].Header.Number.Uint64(), header.Number.Uint64())
+				if block.NumberU64() != stateUpdates[i1].Block.NumberU64() {
+					t.Errorf("sub0 received wrong block number on index %d, want %d, got %d", i1, stateUpdates[i1].Block.NumberU64(), block.NumberU64())
 				}
 
 				assert.Equal(t, update.Accounts, stateUpdates[i1].Accounts)
@@ -1036,12 +1030,12 @@ func TestStateUpdateSubscription(t *testing.T) {
 					t.Errorf("sub1 received more events than expected")
 					return
 				}
-				header, err := decodeHeader(update.Header)
+				block, err := decodeBlock(update.Block)
 				if err != nil {
-					t.Errorf("failed to decode header: %v", err)
+					t.Errorf("failed to decode block: %v", err)
 				}
-				if header.Number.Uint64() != stateUpdates[i2].Header.Number.Uint64() {
-					t.Errorf("sub1 received wrong block number on index %d, want %d, got %d", i2, stateUpdates[i2].Header.Number.Uint64(), header.Number.Uint64())
+				if block.NumberU64() != stateUpdates[i2].Block.NumberU64() {
+					t.Errorf("sub1 received wrong block number on index %d, want %d, got %d", i2, stateUpdates[i2].Block.NumberU64(), block.NumberU64())
 				}
 
 				assert.Equal(t, update.Accounts, stateUpdates[i2].Accounts)

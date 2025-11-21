@@ -1590,6 +1590,7 @@ func (bc *BlockChain) writeKnownBlock(block *types.Block) error {
 // writeBlockWithState writes block, metadata and corresponding state data to the
 // database.
 func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.Receipt, statedb *state.StateDB) error {
+	log.Debug("writeBlockWithState: writing block with state")
 	if !bc.HasHeader(block.ParentHash(), block.NumberU64()-1) {
 		return consensus.ErrUnknownAncestor
 	}
@@ -1613,6 +1614,15 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if bc.stateSizer != nil {
 		bc.stateSizer.Notify(stateUpdate)
 	}
+
+	log.Debug("writeBlockWithState: sending state update to state update feed", "block", block.Number(), "hash", block.Hash())
+	bc.stateUpdateFeed.Send(StateUpdateEvent{
+		Block:    block,
+		Accounts: stateUpdate.Accounts(),
+		Storages: stateUpdate.Storages(),
+		Codes:    stateUpdate.Codes(),
+	})
+
 	// If node is running in path mode, skip explicit gc operation
 	// which is unnecessary in this mode.
 	if bc.triedb.Scheme() == rawdb.PathScheme {
@@ -1671,14 +1681,6 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		bc.triedb.Dereference(root)
 	}
 
-	bc.stateUpdateFeed.Send(StateUpdateEvent{
-		Header:   block.Header(),
-		Body:     block.Body(),
-		Receipts: receipts,
-		Accounts: stateUpdate.Accounts(),
-		Storages: stateUpdate.Storages(),
-		Codes:    stateUpdate.Codes(),
-	})
 	return nil
 }
 
@@ -1700,6 +1702,7 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 	// Set new head.
 	bc.writeHeadBlock(block)
 
+	log.Debug("writeBlockAndSetHead: sending chain event")
 	bc.chainFeed.Send(ChainEvent{
 		Header:       block.Header(),
 		Receipts:     receipts,
@@ -1725,6 +1728,7 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 // the index number of the failing block as well an error describing what went
 // wrong. After insertion is done, all accumulated events will be fired.
 func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
+	log.Debug("InsertChain: inserting chain")
 	// Sanity check that we have something meaningful to import
 	if len(chain) == 0 {
 		return 0, nil
@@ -1764,6 +1768,7 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 // is imported, but then new canon-head is added before the actual sidechain
 // completes, then the historic state could be pruned again
 func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness bool) (*stateless.Witness, int, error) {
+	log.Debug("insertChain: inserting chain")
 	// If the chain is terminating, don't even bother starting up.
 	if bc.insertStopped() {
 		return nil, 0, nil
@@ -2612,6 +2617,7 @@ func (bc *BlockChain) SetCanonical(head *types.Block) (common.Hash, error) {
 	// Emit events
 	receipts, logs := bc.collectReceiptsAndLogs(head, false)
 
+	log.Debug("SetCanonical: sending chain event")
 	bc.chainFeed.Send(ChainEvent{
 		Header:       head.Header(),
 		Receipts:     receipts,
