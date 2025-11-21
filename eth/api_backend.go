@@ -40,6 +40,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -320,6 +321,7 @@ func (b *EthAPIBackend) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscri
 }
 
 func (b *EthAPIBackend) SubscribeStateUpdateEvent(ch chan<- core.StateUpdateEvent) event.Subscription {
+	log.Debug("EthAPIBackend: SubscribeStateUpdateEvent: creating subscription")
 	return b.eth.BlockChain().SubscribeStateUpdateEvent(ch)
 }
 
