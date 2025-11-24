@@ -25,7 +25,7 @@ func New(stack *node.KroganNode, config *node.KroganConfig) (*Krogan, error) {
 	db := NewKroganDB(chain, nil) // TODO(weiihann): add disk db here
 	apiBackend := NewAPIBackend(chain, db)
 
-	syncer := NewSyncer(db)
+	syncer := NewSyncer(db, stack)
 
 	err := syncer.RegisterWSClient(config.WSSMasterNodes[0]) // TODO(weiihann): deal with multiple ws nodes
 	if err != nil {

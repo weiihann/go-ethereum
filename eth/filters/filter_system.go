@@ -507,6 +507,13 @@ func (es *EventSystem) handleStateUpdateEvent(filters filterIndex, ev core.State
 		log.Crit("Failed to encode receipts", "err", err)
 	}
 
+	// Sanity check: remove self-destructed accounts
+	for hash, account := range ev.Accounts {
+		if account == nil {
+			delete(ev.Accounts, hash)
+		}
+	}
+
 	for _, f := range filters[StateUpdateSubscription] {
 		log.Debug("handleStateUpdateEvent: sending state updates to subscription")
 		f.stateUpdates <- &types.EncodedBlockWithStateUpdates{
