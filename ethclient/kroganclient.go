@@ -51,8 +51,8 @@ func (ec *Client) Bytecodes(ctx context.Context, codeHashes []common.Hash) (*eth
 	return result, nil
 }
 
-func (ec *Client) StateDiffs(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*ethapi.StateDiffResult, error) {
-	var result *ethapi.StateDiffResult
+func (ec *Client) StateDiffs(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*ethapi.StateDiffsResult, error) {
+	var result *ethapi.StateDiffsResult
 	err := ec.c.CallContext(ctx, &result, "krogan_stateDiffs", blockNrOrHash)
 	if err != nil {
 		return nil, err

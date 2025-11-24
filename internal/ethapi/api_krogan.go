@@ -19,6 +19,8 @@ package ethapi
 import (
 	"context"
 	"errors"
+	"maps"
+	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -30,6 +32,7 @@ const (
 	accRangeLimitBytes     = 10 * 1024 * 1024 // 10MB
 	storageRangeLimitBytes = 10 * 1024 * 1024 // 10MB
 	codeLimitBytes         = 10 * 1024 * 1024 // 10MB
+	maxStateDiffBlocks     = 128
 )
 
 type KroganAPI struct {
@@ -175,24 +178,57 @@ func (api *KroganAPI) Bytecodes(ctx context.Context, codeHashes []common.Hash) (
 	return &BytecodeResult{Codes: codes}, nil
 }
 
-type StateDiffResult struct {
+type StateDiffsResult struct {
 	Accounts map[common.Hash][]byte                 `json:"accounts"`
 	Slots    map[common.Hash]map[common.Hash][]byte `json:"storage"`
 }
 
-func (api *KroganAPI) StateDiffs(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*StateDiffResult, error) {
-	state, head, err := api.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
-	if err != nil {
-		return nil, err
+// TODO(weiihann): deal with some limitations here:
+// - reached disk layer?
+func (api *KroganAPI) StateDiffs(ctx context.Context, blocks []rpc.BlockNumberOrHash) (*StateDiffsResult, error) {
+	accounts := make(map[common.Hash][]byte)
+	slots := make(map[common.Hash]map[common.Hash][]byte)
+
+	if len(blocks) > maxStateDiffBlocks {
+		return nil, errors.New("max number of blocks exceeded")
 	}
 
-	diff := state.Database().Snapshot().Diff(head.Root)
-	if diff == nil {
-		return nil, errors.New("no diff found")
+	// Sort blocks in ascending order
+	sort.Slice(blocks, func(i, j int) bool {
+		blockI, ok := blocks[i].Number()
+		if !ok {
+			return false
+		}
+		blockJ, ok := blocks[j].Number()
+		if !ok {
+			return true
+		}
+		return blockI < blockJ
+	})
+
+	for _, block := range blocks {
+		state, head, err := api.b.StateAndHeaderByNumberOrHash(ctx, block)
+		if err != nil {
+			return nil, err
+		}
+
+		diff := state.Database().Snapshot().Diff(head.Root)
+		if diff == nil {
+			continue
+		}
+
+		maps.Copy(accounts, diff.AccountData())
+
+		for addrHash, storage := range diff.StorageData() {
+			if _, ok := slots[addrHash]; !ok {
+				slots[addrHash] = make(map[common.Hash][]byte)
+			}
+			maps.Copy(slots[addrHash], storage)
+		}
 	}
 
-	return &StateDiffResult{
-		Accounts: diff.AccountData(),
-		Slots:    diff.StorageData(),
+	return &StateDiffsResult{
+		Accounts: accounts,
+		Slots:    slots,
 	}, nil
 }
