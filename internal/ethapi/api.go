@@ -23,6 +23,7 @@ import (
 	"fmt"
 	gomath "math"
 	"math/big"
+	"reflect"
 	"strings"
 	"time"
 
@@ -330,6 +331,11 @@ func (api *BlockChainAPI) GetBalance(ctx context.Context, address common.Address
 	if state == nil || err != nil {
 		return nil, err
 	}
+
+	testDb := state.Database()
+	snap := testDb.Snapshot()
+	log.Debug("debug(weiihann): GetBalance", "testDb", reflect.TypeOf(testDb), "snap", snap != nil)
+
 	b := state.GetBalance(address).ToBig()
 	return (*hexutil.Big)(b), state.Error()
 }

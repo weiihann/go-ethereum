@@ -19,17 +19,22 @@ package ethapi
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 )
+
+var ErrTriedbNotAvailable = errors.New("triedb not available")
 
 const (
 	accRangeLimitBytes     = 10 * 1024 * 1024 // 10MB
 	storageRangeLimitBytes = 10 * 1024 * 1024 // 10MB
 	codeLimitBytes         = 10 * 1024 * 1024 // 10MB
+	maxStateDiffBlocks     = 128
 )
 
 type KroganAPI struct {
@@ -51,17 +56,20 @@ type AccountRangeResult struct {
 }
 
 func (api *KroganAPI) AccountRange(ctx context.Context, startHash common.Hash) (*AccountRangeResult, error) {
-	head, err := api.b.HeaderByNumber(ctx, rpc.LatestBlockNumber)
+	block, err := api.b.HeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	accIt, err := state.Database().Snapshot().AccountIterator(head.Root, startHash)
+	// TODO(weiihann): path-based uses triedb, hash-based uses snapshot.Tree
+	triedb := state.Database().TrieDB()
+
+	accIt, err := triedb.AccountIterator(block.Root, startHash)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +93,7 @@ func (api *KroganAPI) AccountRange(ctx context.Context, startHash common.Hash) (
 	}
 
 	return &AccountRangeResult{
-		BlockNumber: hexutil.Uint64(head.Number.Uint64()),
+		BlockNumber: hexutil.Uint64(block.Number.Uint64()),
 		Accounts:    accounts,
 	}, nil
 }
@@ -101,17 +109,23 @@ type StorageRangeResult struct {
 }
 
 func (api *KroganAPI) StorageRange(ctx context.Context, addrHash common.Hash, startHash common.Hash) (*StorageRangeResult, error) {
-	head, err := api.b.HeaderByNumber(ctx, rpc.LatestBlockNumber)
+	block, err := api.b.HeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	storageIt, err := state.Database().Snapshot().StorageIterator(head.Root, addrHash, startHash)
+	// TODO(weiihann): path-based uses triedb, hash-based uses snapshot.Tree
+	triedb := state.Database().TrieDB()
+	if triedb == nil {
+		return nil, ErrTriedbNotAvailable
+	}
+
+	storageIt, err := triedb.StorageIterator(block.Root, addrHash, startHash)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +149,7 @@ func (api *KroganAPI) StorageRange(ctx context.Context, addrHash common.Hash, st
 	}
 
 	return &StorageRangeResult{
-		BlockNumber: hexutil.Uint64(head.Number.Uint64()),
+		BlockNumber: hexutil.Uint64(block.Number.Uint64()),
 		Slots:       slots,
 	}, nil
 }
@@ -145,12 +159,12 @@ type BytecodeResult struct {
 }
 
 func (api *KroganAPI) Bytecodes(ctx context.Context, codeHashes []common.Hash) (*BytecodeResult, error) {
-	head, err := api.b.HeaderByNumber(ctx, rpc.LatestBlockNumber)
+	head, err := api.b.HeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -175,24 +189,91 @@ func (api *KroganAPI) Bytecodes(ctx context.Context, codeHashes []common.Hash) (
 	return &BytecodeResult{Codes: codes}, nil
 }
 
-type StateDiffResult struct {
+type BlockAndStateDiffsResult struct {
+	BlockAndStateDiffs []BlockAndStateDiff `json:"blockAndStateDiffs"` // ordered by block number ascendingly
+}
+
+type BlockAndStateDiff struct {
+	Block    []byte                                 `json:"block"`
+	Receipts []byte                                 `json:"receipts"`
 	Accounts map[common.Hash][]byte                 `json:"accounts"`
 	Slots    map[common.Hash]map[common.Hash][]byte `json:"storage"`
 }
 
-func (api *KroganAPI) StateDiffs(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*StateDiffResult, error) {
-	state, head, err := api.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
-	if err != nil {
-		return nil, err
+// TODO(weiihann): deal with some limitations here:
+// - reached disk layer?
+func (api *KroganAPI) BlockAndStateDiffs(ctx context.Context, startBlock, endBlock rpc.BlockNumber) (*BlockAndStateDiffsResult, error) {
+	if startBlock < 0 {
+		start, err := api.b.HeaderByNumber(ctx, startBlock)
+		if err != nil {
+			return nil, err
+		}
+		startBlock = rpc.BlockNumber(start.Number.Uint64())
 	}
 
-	diff := state.Database().Snapshot().Diff(head.Root)
-	if diff == nil {
-		return nil, errors.New("no diff found")
+	if endBlock < 0 {
+		end, err := api.b.HeaderByNumber(ctx, endBlock)
+		if err != nil {
+			return nil, err
+		}
+		endBlock = rpc.BlockNumber(end.Number.Uint64())
 	}
 
-	return &StateDiffResult{
-		Accounts: diff.AccountData(),
-		Slots:    diff.StorageData(),
+	if startBlock > endBlock {
+		return nil, errors.New("start block must be less than or equal to end block")
+	}
+
+	var result []BlockAndStateDiff
+
+	for b := startBlock; b <= endBlock; b++ {
+		block, err := api.b.BlockByNumber(ctx, b)
+		if err != nil {
+			return nil, err
+		}
+
+		receipts, err := api.b.GetReceipts(ctx, block.Hash())
+		if err != nil {
+			return nil, err
+		}
+
+		encBlock, err := rlp.EncodeToBytes(block)
+		if err != nil {
+			return nil, err
+		}
+
+		storageReceipts := make([]*types.ReceiptForStorage, len(receipts))
+		for i, receipt := range receipts {
+			storageReceipts[i] = (*types.ReceiptForStorage)(receipt)
+		}
+		encReceipts, err := rlp.EncodeToBytes(storageReceipts)
+		if err != nil {
+			return nil, err
+		}
+
+		state, header, err := api.b.StateAndHeaderByNumber(ctx, b)
+		if err != nil {
+			return nil, err
+		}
+
+		triedb := state.Database().TrieDB()
+		if triedb == nil {
+			return nil, errors.New("snapshot not available")
+		}
+
+		accountDiff, storageDiff := triedb.AccountAndStorageDiff(header.Root)
+		if accountDiff == nil || storageDiff == nil { // It can be empty but not nil.
+			return nil, fmt.Errorf("no state diff for block %d", b)
+		}
+
+		result = append(result, BlockAndStateDiff{
+			Block:    encBlock,
+			Receipts: encReceipts,
+			Accounts: accountDiff,
+			Slots:    storageDiff,
+		})
+	}
+
+	return &BlockAndStateDiffsResult{
+		BlockAndStateDiffs: result,
 	}, nil
 }

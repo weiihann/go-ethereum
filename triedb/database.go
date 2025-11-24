@@ -384,3 +384,11 @@ func (db *Database) SnapshotCompleted() bool {
 	}
 	return pdb.SnapshotCompleted()
 }
+
+func (db *Database) AccountAndStorageDiff(root common.Hash) (map[common.Hash][]byte, map[common.Hash]map[common.Hash][]byte) {
+	pdb, ok := db.backend.(*pathdb.Database)
+	if !ok {
+		return nil, nil
+	}
+	return pdb.AccountAndStorageDiff(root)
+}
