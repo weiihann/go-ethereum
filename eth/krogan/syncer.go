@@ -34,15 +34,22 @@ type Syncer struct {
 	wsClient    *rpc.Client
 	httpClients []*rpc.Client
 
-	db *KroganDB
+	db    *KroganDB
+	stack StackCloser // Interface to allow node shutdown
 
 	wg     sync.WaitGroup
 	closed chan struct{}
 }
 
-func NewSyncer(db *KroganDB) *Syncer {
+// StackCloser defines the interface for closing the node stack
+type StackCloser interface {
+	Close() error
+}
+
+func NewSyncer(db *KroganDB, stack StackCloser) *Syncer {
 	return &Syncer{
 		db:     db,
+		stack:  stack,
 		closed: make(chan struct{}),
 	}
 }
@@ -91,8 +98,8 @@ func (s *Syncer) run() {
 	log.Debug("debug(weiihann): subscribing to state updates")
 	sub, err := s.wsClient.Subscribe(context.Background(), "eth", blocks, "stateUpdates")
 	if err != nil {
-		log.Error("Error subscribing to state updates", "err", err)
-		s.Stop()
+		log.Error("Failed to subscribe to state updates, shutting down node", "err", err)
+		go s.stack.Close() // async since we need to close ourselves
 		return
 	}
 	defer sub.Unsubscribe()
@@ -102,12 +109,15 @@ func (s *Syncer) run() {
 		select {
 		case <-s.closed:
 			log.Debug("debug(weiihann): closing syncer")
+			return
 		case err := <-sub.Err():
-			log.Error("Error subscribing to state updates", "err", err)
+			log.Error("Subscription error, shutting down node", "err", err)
+			go s.stack.Close() // async since we need to close ourselves
+			return
 		case b := <-blocks:
 			if err := s.processBlock(b); err != nil {
-				log.Error("Error processing block", "err", err)
-				s.Stop()
+				log.Error("Block processing error, shutting down node", "err", err)
+				go s.stack.Close() // async since we need to close ourselves
 				return
 			}
 		}
@@ -151,6 +161,7 @@ func (s *Syncer) processBlock(enc *types.EncodedBlockWithStateUpdates) error {
 		for hash, encAcc := range enc.Accounts {
 			account := new(types.SlimAccount)
 			if err := rlp.DecodeBytes(encAcc, account); err != nil {
+				log.Debug("debug(weiihann): error decoding account", "encAcc", encAcc)
 				return err
 			}
 			accounts[hash] = account
@@ -196,8 +207,6 @@ func (s *Syncer) processBlock(enc *types.EncodedBlockWithStateUpdates) error {
 
 	return nil
 }
-
-// TODO(weiihann): implement the syncing logic here
 
 func (s *Syncer) Progress() {
 	panic("TODO(weiihann): implement")
