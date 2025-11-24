@@ -1013,6 +1013,23 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Value:    metrics.DefaultConfig.InfluxDBOrganization,
 		Category: flags.MetricsCategory,
 	}
+
+	// Krogan flags
+	HttpMasterNodesFlag = &cli.StringSliceFlag{
+		Name:     "http-master-nodes",
+		Usage:    "The list of master node http endpoints to sync from. It must at least contain one endpoint. Example: ['http://127.0.0.1:8545']",
+		Category: flags.KroganCategory,
+	}
+	WsMasterNodesFlag = &cli.StringSliceFlag{
+		Name:     "ws-master-nodes",
+		Usage:    "The list of master node websocket endpoints to sync from. It must at least contain one endpoint. Example: ['ws://127.0.0.1:8546']",
+		Category: flags.KroganCategory,
+	}
+	ChainSizeFlag = &cli.Uint64Flag{
+		Name:     "chain-size",
+		Usage:    "The number of blocks to keep in the chain window.",
+		Category: flags.KroganCategory,
+	}
 )
 
 var (
@@ -2380,4 +2397,116 @@ func MakeTrieDatabase(ctx *cli.Context, stack *node.Node, disk ethdb.Database, p
 	pathConfig.JournalDirectory = stack.ResolvePath("triedb")
 	config.PathDB = &pathConfig
 	return triedb.NewDatabase(disk, config)
+}
+
+func SetKroganConfig(ctx *cli.Context, cfg *node.KroganConfig) {
+	setKroganIPC(ctx, cfg)
+	setKroganHTTP(ctx, cfg)
+	setKroganGraphQL(ctx, cfg)
+	setKroganWS(ctx, cfg)
+
+	if ctx.IsSet(HttpMasterNodesFlag.Name) {
+		fmt.Println("debug(weiihann): set http master nodes", ctx.StringSlice(HttpMasterNodesFlag.Name))
+		cfg.HTTPMasterNodes = ctx.StringSlice(HttpMasterNodesFlag.Name)
+	}
+	if ctx.IsSet(WsMasterNodesFlag.Name) {
+		fmt.Println("debug(weiihann): set ws master nodes", ctx.StringSlice(WsMasterNodesFlag.Name))
+		cfg.WSSMasterNodes = ctx.StringSlice(WsMasterNodesFlag.Name)
+	}
+	if ctx.IsSet(ChainSizeFlag.Name) {
+		fmt.Println("debug(weiihann): set chain size", ctx.Uint64(ChainSizeFlag.Name))
+		cfg.ChainSize = ctx.Uint64(ChainSizeFlag.Name)
+	}
+	if ctx.IsSet(DataDirFlag.Name) {
+		fmt.Println("debug(weiihann): set data dir", ctx.String(DataDirFlag.Name))
+		cfg.DataDir = ctx.String(DataDirFlag.Name)
+	}
+}
+
+// TODO(weiihann): reuse setHTTP
+func setKroganHTTP(ctx *cli.Context, cfg *node.KroganConfig) {
+	if ctx.Bool(HTTPEnabledFlag.Name) {
+		if cfg.HTTPHost == "" {
+			cfg.HTTPHost = "127.0.0.1"
+		}
+		if ctx.IsSet(HTTPListenAddrFlag.Name) {
+			cfg.HTTPHost = ctx.String(HTTPListenAddrFlag.Name)
+		}
+	}
+
+	if ctx.IsSet(HTTPPortFlag.Name) {
+		cfg.HTTPPort = ctx.Int(HTTPPortFlag.Name)
+	}
+
+	if ctx.IsSet(HTTPCORSDomainFlag.Name) {
+		cfg.HTTPCors = SplitAndTrim(ctx.String(HTTPCORSDomainFlag.Name))
+	}
+
+	if ctx.IsSet(HTTPVirtualHostsFlag.Name) {
+		cfg.HTTPVirtualHosts = SplitAndTrim(ctx.String(HTTPVirtualHostsFlag.Name))
+	}
+
+	if ctx.IsSet(HTTPPathPrefixFlag.Name) {
+		cfg.HTTPPathPrefix = ctx.String(HTTPPathPrefixFlag.Name)
+	}
+
+	if ctx.IsSet(AllowUnprotectedTxs.Name) {
+		cfg.AllowUnprotectedTxs = ctx.Bool(AllowUnprotectedTxs.Name)
+	}
+
+	if ctx.IsSet(BatchRequestLimit.Name) {
+		cfg.BatchRequestLimit = ctx.Int(BatchRequestLimit.Name)
+	}
+
+	if ctx.IsSet(BatchResponseMaxSize.Name) {
+		cfg.BatchResponseMaxSize = ctx.Int(BatchResponseMaxSize.Name)
+	}
+}
+
+// TODO(weiihann): reuse setGraphQL
+func setKroganGraphQL(ctx *cli.Context, cfg *node.KroganConfig) {
+	if ctx.IsSet(GraphQLCORSDomainFlag.Name) {
+		cfg.GraphQLCors = SplitAndTrim(ctx.String(GraphQLCORSDomainFlag.Name))
+	}
+	if ctx.IsSet(GraphQLVirtualHostsFlag.Name) {
+		cfg.GraphQLVirtualHosts = SplitAndTrim(ctx.String(GraphQLVirtualHostsFlag.Name))
+	}
+}
+
+// TODO(weiihann): reuse setWS
+func setKroganWS(ctx *cli.Context, cfg *node.KroganConfig) {
+	if ctx.Bool(WSEnabledFlag.Name) {
+		if cfg.WSHost == "" {
+			cfg.WSHost = "127.0.0.1"
+		}
+		if ctx.IsSet(WSListenAddrFlag.Name) {
+			cfg.WSHost = ctx.String(WSListenAddrFlag.Name)
+		}
+	}
+	if ctx.IsSet(WSPortFlag.Name) {
+		cfg.WSPort = ctx.Int(WSPortFlag.Name)
+	}
+
+	if ctx.IsSet(WSAllowedOriginsFlag.Name) {
+		cfg.WSOrigins = SplitAndTrim(ctx.String(WSAllowedOriginsFlag.Name))
+	}
+
+	if ctx.IsSet(WSApiFlag.Name) {
+		cfg.WSModules = SplitAndTrim(ctx.String(WSApiFlag.Name))
+	}
+
+	if ctx.IsSet(WSPathPrefixFlag.Name) {
+		cfg.WSPathPrefix = ctx.String(WSPathPrefixFlag.Name)
+	}
+}
+
+// TODO(weiihann): reuse setIPC
+func setKroganIPC(ctx *cli.Context, cfg *node.KroganConfig) {
+	flags.CheckExclusive(ctx, IPCDisabledFlag, IPCPathFlag)
+	switch {
+	case ctx.Bool(IPCDisabledFlag.Name):
+		cfg.IPCPath = ""
+	case ctx.IsSet(IPCPathFlag.Name):
+		cfg.IPCPath = ctx.String(IPCPathFlag.Name)
+	}
 }

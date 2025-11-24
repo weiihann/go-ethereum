@@ -460,3 +460,115 @@ func setAccountManagerBackends(conf *node.Config, am *accounts.Manager, keydir s
 
 	return nil
 }
+
+type kroganConfig struct {
+	Node    node.KroganConfig
+	Metrics metrics.Config
+}
+
+func makeConfigKroganNode(ctx *cli.Context) (*node.KroganNode, kroganConfig) {
+	cfg := loadBaseKroganConfig(ctx)
+	stack, err := node.NewKrogan(&cfg.Node)
+	if err != nil {
+		utils.Fatalf("Failed to create the protocol stack: %v", err)
+	}
+
+	applyMetricConfigKrogan(ctx, &cfg)
+
+	return stack, cfg
+}
+
+func loadBaseKroganConfig(ctx *cli.Context) kroganConfig {
+	cfg := kroganConfig{
+		Node:    node.DefaultKroganConfig,
+		Metrics: metrics.DefaultConfig,
+	}
+
+	if file := ctx.String(configFileFlag.Name); file != "" {
+		if err := loadKroganConfig(file, &cfg); err != nil {
+			utils.Fatalf("%v", err)
+		}
+	}
+
+	utils.SetKroganConfig(ctx, &cfg.Node)
+
+	return cfg
+}
+
+// TODO(weiihann): reuse loadConfig
+func loadKroganConfig(file string, cfg *kroganConfig) error {
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	err = tomlSettings.NewDecoder(bufio.NewReader(f)).Decode(cfg)
+	return err
+}
+
+func applyMetricConfigKrogan(ctx *cli.Context, cfg *kroganConfig) {
+	if ctx.IsSet(utils.MetricsEnabledFlag.Name) {
+		cfg.Metrics.Enabled = ctx.Bool(utils.MetricsEnabledFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsEnabledExpensiveFlag.Name) {
+		log.Warn("Expensive metrics are collected by default, please remove this flag", "flag", utils.MetricsEnabledExpensiveFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsHTTPFlag.Name) {
+		cfg.Metrics.HTTP = ctx.String(utils.MetricsHTTPFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsPortFlag.Name) {
+		cfg.Metrics.Port = ctx.Int(utils.MetricsPortFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsEnableInfluxDBFlag.Name) {
+		cfg.Metrics.EnableInfluxDB = ctx.Bool(utils.MetricsEnableInfluxDBFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsInfluxDBEndpointFlag.Name) {
+		cfg.Metrics.InfluxDBEndpoint = ctx.String(utils.MetricsInfluxDBEndpointFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsInfluxDBDatabaseFlag.Name) {
+		cfg.Metrics.InfluxDBDatabase = ctx.String(utils.MetricsInfluxDBDatabaseFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsInfluxDBUsernameFlag.Name) {
+		cfg.Metrics.InfluxDBUsername = ctx.String(utils.MetricsInfluxDBUsernameFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsInfluxDBPasswordFlag.Name) {
+		cfg.Metrics.InfluxDBPassword = ctx.String(utils.MetricsInfluxDBPasswordFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsInfluxDBTagsFlag.Name) {
+		cfg.Metrics.InfluxDBTags = ctx.String(utils.MetricsInfluxDBTagsFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsEnableInfluxDBV2Flag.Name) {
+		cfg.Metrics.EnableInfluxDBV2 = ctx.Bool(utils.MetricsEnableInfluxDBV2Flag.Name)
+	}
+	if ctx.IsSet(utils.MetricsInfluxDBTokenFlag.Name) {
+		cfg.Metrics.InfluxDBToken = ctx.String(utils.MetricsInfluxDBTokenFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsInfluxDBBucketFlag.Name) {
+		cfg.Metrics.InfluxDBBucket = ctx.String(utils.MetricsInfluxDBBucketFlag.Name)
+	}
+	if ctx.IsSet(utils.MetricsInfluxDBOrganizationFlag.Name) {
+		cfg.Metrics.InfluxDBOrganization = ctx.String(utils.MetricsInfluxDBOrganizationFlag.Name)
+	}
+	// Sanity-check the commandline flags. It is fine if some unused fields is part
+	// of the toml-config, but we expect the commandline to only contain relevant
+	// arguments, otherwise it indicates an error.
+	var (
+		enableExport   = ctx.Bool(utils.MetricsEnableInfluxDBFlag.Name)
+		enableExportV2 = ctx.Bool(utils.MetricsEnableInfluxDBV2Flag.Name)
+	)
+	if enableExport || enableExportV2 {
+		v1FlagIsSet := ctx.IsSet(utils.MetricsInfluxDBUsernameFlag.Name) ||
+			ctx.IsSet(utils.MetricsInfluxDBPasswordFlag.Name)
+
+		v2FlagIsSet := ctx.IsSet(utils.MetricsInfluxDBTokenFlag.Name) ||
+			ctx.IsSet(utils.MetricsInfluxDBOrganizationFlag.Name) ||
+			ctx.IsSet(utils.MetricsInfluxDBBucketFlag.Name)
+
+		if enableExport && v2FlagIsSet {
+			utils.Fatalf("Flags --influxdb.metrics.organization, --influxdb.metrics.token, --influxdb.metrics.bucket are only available for influxdb-v2")
+		} else if enableExportV2 && v1FlagIsSet {
+			utils.Fatalf("Flags --influxdb.metrics.username, --influxdb.metrics.password are only available for influxdb-v1")
+		}
+	}
+}

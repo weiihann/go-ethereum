@@ -710,6 +710,7 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 }
 
 // StateUpdates creates a subscription that fires for state changes.
+// TODO(weiihann): might wanna put this not in this API, but in the Krogan API
 func (api *FilterAPI) StateUpdates(ctx context.Context) (*rpc.Subscription, error) {
 	notifier, supported := rpc.NotifierFromContext(ctx)
 	if !supported {
