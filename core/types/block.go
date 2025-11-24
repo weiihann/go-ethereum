@@ -557,6 +557,7 @@ func HeaderParentHashFromRLP(header []byte) common.Hash {
 
 type EncodedBlockWithStateUpdates struct {
 	Block    []byte                                 `json:"block"`    // RLP encoded block
+	Receipts []byte                                 `json:"receipts"` // RLP encoded receipts
 	Accounts map[common.Hash][]byte                 `json:"accounts"` // RLP encoded slim accounts
 	Storages map[common.Hash]map[common.Hash][]byte `json:"storages"` // RLP encoded storage slots
 	Codes    map[common.Hash][]byte                 `json:"codes"`

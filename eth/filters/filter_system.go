@@ -498,10 +498,20 @@ func (es *EventSystem) handleStateUpdateEvent(filters filterIndex, ev core.State
 	}
 	log.Debug("handleStateUpdateEvent: encBlock")
 
+	storageReceipts := make([]*types.ReceiptForStorage, len(ev.Receipts))
+	for i, receipt := range ev.Receipts {
+		storageReceipts[i] = (*types.ReceiptForStorage)(receipt)
+	}
+	encReceipts, err := rlp.EncodeToBytes(storageReceipts)
+	if err != nil {
+		log.Crit("Failed to encode receipts", "err", err)
+	}
+
 	for _, f := range filters[StateUpdateSubscription] {
 		log.Debug("handleStateUpdateEvent: sending state updates to subscription")
 		f.stateUpdates <- &types.EncodedBlockWithStateUpdates{
 			Block:    encBlock,
+			Receipts: encReceipts,
 			Accounts: ev.Accounts,
 			Storages: ev.Storages,
 			Codes:    ev.Codes,

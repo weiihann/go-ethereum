@@ -39,6 +39,7 @@ type ChainHeadEvent struct {
 
 type StateUpdateEvent struct {
 	Block    *types.Block
+	Receipts types.Receipts
 	Accounts map[common.Hash][]byte
 	Storages map[common.Hash]map[common.Hash][]byte
 	Codes    map[common.Hash][]byte
