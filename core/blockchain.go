@@ -1618,6 +1618,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	log.Debug("writeBlockWithState: sending state update to state update feed", "block", block.Number(), "hash", block.Hash())
 	bc.stateUpdateFeed.Send(StateUpdateEvent{
 		Block:    block,
+		Receipts: receipts,
 		Accounts: stateUpdate.Accounts(),
 		Storages: stateUpdate.Storages(),
 		Codes:    stateUpdate.Codes(),
