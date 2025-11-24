@@ -338,3 +338,21 @@ func (tree *layerTree) lookupStorage(accountHash common.Hash, slotHash common.Ha
 	}
 	return l, nil
 }
+
+func (tree *layerTree) accountAndStorageDiff(root common.Hash) (map[common.Hash][]byte, map[common.Hash]map[common.Hash][]byte) {
+	tree.lock.RLock()
+	defer tree.lock.RUnlock()
+
+	layer := tree.layers[root]
+	if layer == nil {
+		return nil, nil
+	}
+	switch layer := layer.(type) {
+	case *diffLayer:
+		return layer.accountAndStorageDiff()
+	case *diskLayer:
+		return nil, nil
+	default:
+		panic(fmt.Sprintf("%T: undefined layer", layer))
+	}
+}

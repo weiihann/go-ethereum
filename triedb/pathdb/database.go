@@ -692,3 +692,7 @@ func (db *Database) SnapshotCompleted() bool {
 	}
 	return db.tree.bottom().genComplete()
 }
+
+func (db *Database) AccountAndStorageDiff(root common.Hash) (map[common.Hash][]byte, map[common.Hash]map[common.Hash][]byte) {
+	return db.tree.accountAndStorageDiff(root)
+}

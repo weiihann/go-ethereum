@@ -1334,6 +1334,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 	if !ret.empty() {
 		// If snapshotting is enabled, update the snapshot tree with this new version
 		if snap := s.db.Snapshot(); snap != nil && snap.Snapshot(ret.originRoot) != nil {
+			log.Debug("debug(weiihann): commitAndFlush snap exists")
 			start := time.Now()
 			if err := snap.Update(ret.root, ret.originRoot, ret.accounts, ret.storages); err != nil {
 				log.Warn("Failed to update snapshot tree", "from", ret.originRoot, "to", ret.root, "err", err)

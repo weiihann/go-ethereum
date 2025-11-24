@@ -190,3 +190,10 @@ func diffToDisk(layer *diffLayer, force bool) (*diskLayer, error) {
 	}
 	return disk.commit(layer, force)
 }
+
+func (dl *diffLayer) accountAndStorageDiff() (map[common.Hash][]byte, map[common.Hash]map[common.Hash][]byte) {
+	dl.lock.RLock()
+	defer dl.lock.RUnlock()
+
+	return dl.states.accountData, dl.states.storageData
+}

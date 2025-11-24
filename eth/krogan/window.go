@@ -12,6 +12,19 @@ import (
 
 var errBlockNotFound = errors.New("block not found")
 
+// ChainWindow combines ring buffer with parent-hash linking
+type ChainWindow struct {
+	capacity uint64 // size of the window (i.e. how many blocks to keep)
+	head     uint64 // latest block number
+	tail     uint64 // oldest block number still in buffer
+
+	numToBlock    map[uint64]*BlockEntry                      // block number -> block entry
+	hashToBlock   map[common.Hash]*BlockEntry                 // block hash -> block entry
+	txLookupCache *lru.Cache[common.Hash, *types.Transaction] // tx hash -> tx
+
+	mu sync.RWMutex
+}
+
 type BlockEntry struct {
 	data *BlockData
 
@@ -40,19 +53,6 @@ func (bs *BlockEntry) Hash() common.Hash {
 
 func (bs *BlockEntry) ParentHash() common.Hash {
 	return bs.data.Block.ParentHash()
-}
-
-// ChainWindow combines ring buffer with parent-hash linking
-type ChainWindow struct {
-	capacity uint64 // size of the window (i.e. how many blocks to keep)
-	head     uint64 // latest block number
-	tail     uint64 // oldest block number still in buffer
-
-	numToBlock    map[uint64]*BlockEntry                      // block number -> block entry
-	hashToBlock   map[common.Hash]*BlockEntry                 // block hash -> block entry
-	txLookupCache *lru.Cache[common.Hash, *types.Transaction] // tx hash -> tx
-
-	mu sync.RWMutex
 }
 
 // NewChainWindow creates a new ring buffer with the given capacity
