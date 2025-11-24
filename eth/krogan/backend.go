@@ -9,7 +9,7 @@ import (
 
 // TODO(weiihann)
 type Krogan struct {
-	syncer     *Syncer
+	Downloader *Downloader
 	apiBackend *APIBackend
 }
 
@@ -25,16 +25,16 @@ func New(stack *node.KroganNode, config *node.KroganConfig) (*Krogan, error) {
 	db := NewKroganDB(chain, nil) // TODO(weiihann): add disk db here
 	apiBackend := NewAPIBackend(chain, db)
 
-	syncer := NewSyncer(db, stack)
+	Downloader := NewDownloader(db, stack)
 
-	err := syncer.RegisterWSClient(config.WSSMasterNodes[0]) // TODO(weiihann): deal with multiple ws nodes
+	err := Downloader.RegisterWSClient(config.WSSMasterNodes[0]) // TODO(weiihann): deal with multiple ws nodes
 	if err != nil {
 		return nil, err
 	}
 
 	httpCount := 0
 	for _, httpURL := range config.HTTPMasterNodes {
-		if err := syncer.RegisterHTTPClient(httpURL); err != nil {
+		if err := Downloader.RegisterHTTPClient(httpURL); err != nil {
 			log.Error("Failed to register HTTP client", "error", err)
 		}
 		httpCount++
@@ -45,7 +45,7 @@ func New(stack *node.KroganNode, config *node.KroganConfig) (*Krogan, error) {
 	}
 
 	krogan := &Krogan{
-		syncer:     syncer,
+		Downloader: Downloader,
 		apiBackend: apiBackend,
 	}
 
@@ -72,9 +72,9 @@ func (k *Krogan) APIs() []rpc.API {
 }
 
 func (k *Krogan) Start() error {
-	return k.syncer.Start()
+	return k.Downloader.Start()
 }
 
 func (k *Krogan) Stop() error {
-	return k.syncer.Stop()
+	return k.Downloader.Stop()
 }
