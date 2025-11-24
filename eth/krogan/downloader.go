@@ -28,7 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-type Syncer struct {
+type Downloader struct {
 	wsURL       string
 	httpURLs    []string
 	wsClient    *rpc.Client
@@ -46,15 +46,15 @@ type StackCloser interface {
 	Close() error
 }
 
-func NewSyncer(db *KroganDB, stack StackCloser) *Syncer {
-	return &Syncer{
+func NewDownloader(db *KroganDB, stack StackCloser) *Downloader {
+	return &Downloader{
 		db:     db,
 		stack:  stack,
 		closed: make(chan struct{}),
 	}
 }
 
-func (s *Syncer) RegisterWSClient(wsURL string) error {
+func (s *Downloader) RegisterWSClient(wsURL string) error {
 	client, err := rpc.DialWebsocket(context.Background(), wsURL, "")
 	if err != nil {
 		return err
@@ -64,7 +64,7 @@ func (s *Syncer) RegisterWSClient(wsURL string) error {
 	return nil
 }
 
-func (s *Syncer) RegisterHTTPClient(httpURL string) error {
+func (s *Downloader) RegisterHTTPClient(httpURL string) error {
 	client, err := rpc.DialHTTP(httpURL)
 	if err != nil {
 		return err
@@ -74,23 +74,23 @@ func (s *Syncer) RegisterHTTPClient(httpURL string) error {
 	return nil
 }
 
-func (s *Syncer) Start() error {
-	log.Info("Starting Krogan syncer")
+func (s *Downloader) Start() error {
+	log.Info("Starting Krogan Downloader")
 	s.wg.Add(1)
 	go s.run()
 	return nil
 }
 
-func (s *Syncer) Stop() error {
-	log.Debug("debug(weiihann): stopping syncer")
+func (s *Downloader) Stop() error {
+	log.Debug("debug(weiihann): stopping Downloader")
 	close(s.closed)
 	s.wg.Wait()
-	log.Info("Krogan syncer stopped")
+	log.Info("Krogan Downloader stopped")
 	return nil
 }
 
-func (s *Syncer) run() {
-	log.Debug("debug(weiihann): running syncer")
+func (s *Downloader) run() {
+	log.Debug("debug(weiihann): running Downloader")
 	defer s.wg.Done()
 
 	blocks := make(chan *types.EncodedBlockWithStateUpdates)
@@ -104,11 +104,11 @@ func (s *Syncer) run() {
 	}
 	defer sub.Unsubscribe()
 
-	log.Debug("running syncer loop")
+	log.Debug("running Downloader loop")
 	for {
 		select {
 		case <-s.closed:
-			log.Debug("debug(weiihann): closing syncer")
+			log.Debug("debug(weiihann): closing Downloader")
 			return
 		case err := <-sub.Err():
 			log.Error("Subscription error, shutting down node", "err", err)
@@ -124,7 +124,7 @@ func (s *Syncer) run() {
 	}
 }
 
-func (s *Syncer) processBlock(enc *types.EncodedBlockWithStateUpdates) error {
+func (s *Downloader) processBlock(enc *types.EncodedBlockWithStateUpdates) error {
 	if len(enc.Block) == 0 {
 		return errors.New("block is empty")
 	}
@@ -208,6 +208,6 @@ func (s *Syncer) processBlock(enc *types.EncodedBlockWithStateUpdates) error {
 	return nil
 }
 
-func (s *Syncer) Progress() {
+func (s *Downloader) Progress() {
 	panic("TODO(weiihann): implement")
 }
