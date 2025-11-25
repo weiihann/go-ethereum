@@ -28,11 +28,16 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
+// Downloader is responsible for downloading blocks with state updates via websocket
+// TODO(weiihann):
+// 1. add retry mechanism
+// 2. add metrics
+// 3. failure handling seems bad
+// 4. load from db when starting
+// 5. do the initial state diffs call when starting
 type Downloader struct {
-	wsURL       string
-	httpURLs    []string
-	wsClient    *rpc.Client
-	httpClients []*rpc.Client
+	wsURL    string
+	wsClient *rpc.Client
 
 	db    *KroganDB
 	stack StackCloser // Interface to allow node shutdown
@@ -61,16 +66,6 @@ func (s *Downloader) RegisterWSClient(wsURL string) error {
 	}
 	s.wsURL = wsURL
 	s.wsClient = client
-	return nil
-}
-
-func (s *Downloader) RegisterHTTPClient(httpURL string) error {
-	client, err := rpc.DialHTTP(httpURL)
-	if err != nil {
-		return err
-	}
-	s.httpURLs = append(s.httpURLs, httpURL)
-	s.httpClients = append(s.httpClients, client)
 	return nil
 }
 

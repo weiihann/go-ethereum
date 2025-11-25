@@ -19,11 +19,12 @@ package ethapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
-	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -54,12 +55,12 @@ type AccountRangeResult struct {
 }
 
 func (api *KroganAPI) AccountRange(ctx context.Context, startHash common.Hash) (*AccountRangeResult, error) {
-	head, err := api.b.HeaderByNumber(ctx, rpc.LatestBlockNumber)
+	head, err := api.b.HeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -104,12 +105,12 @@ type StorageRangeResult struct {
 }
 
 func (api *KroganAPI) StorageRange(ctx context.Context, addrHash common.Hash, startHash common.Hash) (*StorageRangeResult, error) {
-	head, err := api.b.HeaderByNumber(ctx, rpc.LatestBlockNumber)
+	head, err := api.b.HeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -148,12 +149,12 @@ type BytecodeResult struct {
 }
 
 func (api *KroganAPI) Bytecodes(ctx context.Context, codeHashes []common.Hash) (*BytecodeResult, error) {
-	head, err := api.b.HeaderByNumber(ctx, rpc.LatestBlockNumber)
+	head, err := api.b.HeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.LatestBlockNumber)
+	state, _, err := api.b.StateAndHeaderByNumber(ctx, rpc.FinalizedBlockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -178,57 +179,85 @@ func (api *KroganAPI) Bytecodes(ctx context.Context, codeHashes []common.Hash) (
 	return &BytecodeResult{Codes: codes}, nil
 }
 
-type StateDiffsResult struct {
+type BlockAndStateDiffsResult struct {
+	Blocks   [][]byte                               `json:"blocks"`
+	Receipts [][]byte                               `json:"receipts"`
 	Accounts map[common.Hash][]byte                 `json:"accounts"`
 	Slots    map[common.Hash]map[common.Hash][]byte `json:"storage"`
 }
 
 // TODO(weiihann): deal with some limitations here:
 // - reached disk layer?
-func (api *KroganAPI) StateDiffs(ctx context.Context, blocks []rpc.BlockNumberOrHash) (*StateDiffsResult, error) {
-	accounts := make(map[common.Hash][]byte)
-	slots := make(map[common.Hash]map[common.Hash][]byte)
-
-	if len(blocks) > maxStateDiffBlocks {
-		return nil, errors.New("max number of blocks exceeded")
+func (api *KroganAPI) BlockAndStateDiffs(ctx context.Context, startBlock, endBlock rpc.BlockNumber) (*BlockAndStateDiffsResult, error) {
+	// Ensure startBlock is less than endBlock
+	if startBlock > endBlock {
+		return nil, errors.New("start block must be less than or equal to end block")
 	}
 
-	// Sort blocks in ascending order
-	sort.Slice(blocks, func(i, j int) bool {
-		blockI, ok := blocks[i].Number()
-		if !ok {
-			return false
-		}
-		blockJ, ok := blocks[j].Number()
-		if !ok {
-			return true
-		}
-		return blockI < blockJ
-	})
+	var (
+		resAccounts = make(map[common.Hash][]byte)
+		resSlots    = make(map[common.Hash]map[common.Hash][]byte)
+		resBlocks   = make([][]byte, 0, endBlock-startBlock+1)
+		resReceipts = make([][]byte, 0, endBlock-startBlock+1)
+	)
 
-	for _, block := range blocks {
-		state, head, err := api.b.StateAndHeaderByNumberOrHash(ctx, block)
+	for b := startBlock; b <= endBlock; b++ {
+		block, err := api.b.BlockByNumber(ctx, b)
 		if err != nil {
 			return nil, err
 		}
 
-		diff := state.Database().Snapshot().Diff(head.Root)
-		if diff == nil {
-			continue
+		receipts, err := api.b.GetReceipts(ctx, block.Hash())
+		if err != nil {
+			return nil, err
 		}
 
-		maps.Copy(accounts, diff.AccountData())
+		encBlock, err := rlp.EncodeToBytes(block)
+		if err != nil {
+			return nil, err
+		}
+
+		storageReceipts := make([]*types.ReceiptForStorage, len(receipts))
+		for i, receipt := range receipts {
+			storageReceipts[i] = (*types.ReceiptForStorage)(receipt)
+		}
+		encReceipts, err := rlp.EncodeToBytes(storageReceipts)
+		if err != nil {
+			return nil, err
+		}
+
+		resBlocks = append(resBlocks, encBlock)
+		resReceipts = append(resReceipts, encReceipts)
+
+		state, header, err := api.b.StateAndHeaderByNumber(ctx, b)
+		if err != nil {
+			return nil, err
+		}
+
+		diff := state.Database().Snapshot().Diff(header.Root)
+		if diff == nil {
+			return nil, fmt.Errorf("no state diff for block %d", b)
+		}
+
+		for addrHash, account := range diff.AccountData() {
+			if account == nil {
+				continue
+			}
+			resAccounts[addrHash] = account
+		}
 
 		for addrHash, storage := range diff.StorageData() {
-			if _, ok := slots[addrHash]; !ok {
-				slots[addrHash] = make(map[common.Hash][]byte)
+			if _, ok := resSlots[addrHash]; !ok {
+				resSlots[addrHash] = make(map[common.Hash][]byte)
 			}
-			maps.Copy(slots[addrHash], storage)
+			maps.Copy(resSlots[addrHash], storage)
 		}
 	}
 
-	return &StateDiffsResult{
-		Accounts: accounts,
-		Slots:    slots,
+	return &BlockAndStateDiffsResult{
+		Blocks:   resBlocks,
+		Receipts: resReceipts,
+		Accounts: resAccounts,
+		Slots:    resSlots,
 	}, nil
 }

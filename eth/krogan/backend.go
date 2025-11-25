@@ -9,7 +9,7 @@ import (
 
 // TODO(weiihann)
 type Krogan struct {
-	Downloader *Downloader
+	downloader *Downloader
 	apiBackend *APIBackend
 }
 
@@ -25,27 +25,27 @@ func New(stack *node.KroganNode, config *node.KroganConfig) (*Krogan, error) {
 	db := NewKroganDB(chain, nil) // TODO(weiihann): add disk db here
 	apiBackend := NewAPIBackend(chain, db)
 
-	Downloader := NewDownloader(db, stack)
+	downloader := NewDownloader(db, stack)
 
-	err := Downloader.RegisterWSClient(config.WSSMasterNodes[0]) // TODO(weiihann): deal with multiple ws nodes
+	err := downloader.RegisterWSClient(config.WSSMasterNodes[0]) // TODO(weiihann): deal with multiple ws nodes
 	if err != nil {
 		return nil, err
 	}
 
-	httpCount := 0
-	for _, httpURL := range config.HTTPMasterNodes {
-		if err := Downloader.RegisterHTTPClient(httpURL); err != nil {
-			log.Error("Failed to register HTTP client", "error", err)
-		}
-		httpCount++
-	}
+	// httpCount := 0
+	// for _, httpURL := range config.HTTPMasterNodes {
+	// 	if err := downloader.RegisterHTTPClient(httpURL); err != nil {
+	// 		log.Error("Failed to register HTTP client", "error", err)
+	// 	}
+	// 	httpCount++
+	// }
 
-	if httpCount == 0 {
-		log.Crit("Must have at least one HTTP master node")
-	}
+	// if httpCount == 0 {
+	// 	log.Crit("Must have at least one HTTP master node")
+	// }
 
 	krogan := &Krogan{
-		Downloader: Downloader,
+		downloader: downloader,
 		apiBackend: apiBackend,
 	}
 
@@ -72,9 +72,9 @@ func (k *Krogan) APIs() []rpc.API {
 }
 
 func (k *Krogan) Start() error {
-	return k.Downloader.Start()
+	return k.downloader.Start()
 }
 
 func (k *Krogan) Stop() error {
-	return k.Downloader.Stop()
+	return k.downloader.Stop()
 }
