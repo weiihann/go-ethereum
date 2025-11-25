@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -149,6 +150,16 @@ type KroganConfig struct {
 
 	// ChainSize is the number of blocks to keep in the chain window.
 	ChainSize uint64
+
+	// AccountRangeStart specifies the start of the account hash range to sync (inclusive).
+	// If not set (zero hash), defaults to 0x0000...0000 (sync all accounts).
+	// Example: 0x0000000000000000000000000000000000000000000000000000000000000000
+	AccountRangeStart string `toml:",omitempty"`
+
+	// AccountRangeEnd specifies the end of the account hash range to sync (inclusive).
+	// If not set (zero hash), defaults to 0xffff...ffff (sync all accounts).
+	// Example: 0x3fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+	AccountRangeEnd string `toml:",omitempty"`
 }
 
 // IPCEndpoint resolves an IPC endpoint based on a configured value, taking into
@@ -220,4 +231,36 @@ func (c *KroganConfig) instanceDir() string {
 
 func (c *KroganConfig) name() string {
 	return "krogan"
+}
+
+// GetAccountRange parses and returns the configured account range.
+// If not configured, returns (0x00...00, 0xff...ff) to sync all accounts.
+func (c *KroganConfig) GetAccountRange() (start, end common.Hash, err error) {
+	// Parse start hash
+	if c.AccountRangeStart == "" {
+		start = common.Hash{} // 0x00...00
+	} else {
+		if !common.IsHexAddress(c.AccountRangeStart) && len(c.AccountRangeStart) != 66 {
+			return common.Hash{}, common.Hash{}, fmt.Errorf("invalid AccountRangeStart format: %s (expected 0x-prefixed 64-char hex)", c.AccountRangeStart)
+		}
+		start = common.HexToHash(c.AccountRangeStart)
+	}
+
+	// Parse end hash
+	if c.AccountRangeEnd == "" {
+		// Default to max hash 0xff...ff
+		end = common.HexToHash("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	} else {
+		if !common.IsHexAddress(c.AccountRangeEnd) && len(c.AccountRangeEnd) != 66 {
+			return common.Hash{}, common.Hash{}, fmt.Errorf("invalid AccountRangeEnd format: %s (expected 0x-prefixed 64-char hex)", c.AccountRangeEnd)
+		}
+		end = common.HexToHash(c.AccountRangeEnd)
+	}
+
+	// Validate range
+	if start.Big().Cmp(end.Big()) > 0 {
+		return common.Hash{}, common.Hash{}, fmt.Errorf("AccountRangeStart (%s) must be <= AccountRangeEnd (%s)", start.Hex(), end.Hex())
+	}
+
+	return start, end, nil
 }
