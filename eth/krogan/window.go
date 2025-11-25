@@ -2,11 +2,13 @@ package krogan
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -317,17 +319,83 @@ func (c *ChainWindow) getBlockByNumber(number uint64) (*BlockEntry, error) {
 }
 
 func (c *ChainWindow) Code(addr common.Address, codeHash common.Hash) ([]byte, error) {
-	panic("TODO(weiihann): implement")
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Search for code in recent blocks (from head to tail)
+	for num := c.head; num >= c.tail && num > 0; num-- {
+		block, exists := c.numToBlock[num]
+		if !exists {
+			continue
+		}
+
+		// Check if this block has the code
+		if code, ok := block.data.Codes[codeHash]; ok {
+			return code, nil
+		}
+	}
+
+	return nil, fmt.Errorf("code %s not found in chain window", codeHash.Hex())
 }
 
 func (c *ChainWindow) CodeSize(addr common.Address, codeHash common.Hash) (int, error) {
-	panic("TODO(weiihann): implement")
+	code, err := c.Code(addr, codeHash)
+	if err != nil {
+		return 0, err
+	}
+	return len(code), nil
 }
 
 func (c *ChainWindow) Account(addr common.Address) (*types.StateAccount, error) {
-	panic("TODO(weiihann): implement")
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Hash the address
+	addrHash := crypto.Keccak256Hash(addr.Bytes())
+
+	// Search for account in recent blocks (from head to tail) - most recent first
+	for num := c.head; num >= c.tail && num > 0; num-- {
+		block, exists := c.numToBlock[num]
+		if !exists {
+			continue
+		}
+
+		// Check if this block has the account state
+		if slimAccount, ok := block.data.Accounts[addrHash]; ok {
+			account := &types.StateAccount{
+				Nonce:    slimAccount.Nonce,
+				Balance:  slimAccount.Balance,
+				Root:     types.EmptyRootHash, // Krogan doesn't use trie roots
+				CodeHash: slimAccount.CodeHash,
+			}
+			return account, nil
+		}
+	}
+
+	return nil, fmt.Errorf("account %s not found in chain window", addr.Hex())
 }
 
 func (c *ChainWindow) Storage(addr common.Address, slot common.Hash) (common.Hash, error) {
-	panic("TODO(weiihann): implement")
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Hash the address
+	addrHash := crypto.Keccak256Hash(addr.Bytes())
+
+	// Search for storage in recent blocks (from head to tail) - most recent first
+	for num := c.head; num >= c.tail && num > 0; num-- {
+		block, exists := c.numToBlock[num]
+		if !exists {
+			continue
+		}
+
+		// Check if this block has storage for this address
+		if storage, ok := block.data.Storages[addrHash]; ok {
+			if value, exists := storage[slot]; exists {
+				return value, nil
+			}
+		}
+	}
+
+	return common.Hash{}, fmt.Errorf("storage %s[%s] not found in chain window", addr.Hex(), slot.Hex())
 }
