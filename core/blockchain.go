@@ -113,9 +113,7 @@ var (
 	errInvalidNewChain      = errors.New("invalid new chain")
 )
 
-var (
-	forkReadyInterval = 3 * time.Minute
-)
+var forkReadyInterval = 3 * time.Minute
 
 const (
 	bodyCacheLimit     = 256
@@ -1618,6 +1616,14 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if bc.stateSizer != nil {
 		bc.stateSizer.Notify(stateUpdate)
 	}
+
+	// Force query the state size
+	stateSize, err := bc.stateSizer.Query(&root)
+	if err != nil {
+		return err
+	}
+	log.Info("State size", "number", block.NumberU64(), "root", root, "stat", stateSize.String())
+
 	// If node is running in path mode, skip explicit gc operation
 	// which is unnecessary in this mode.
 	if bc.triedb.Scheme() == rawdb.PathScheme {
@@ -2219,7 +2225,7 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 // switch over to the new chain if the TD exceeded the current chain.
 // insertSideChain is only used pre-merge.
 func (bc *BlockChain) insertSideChain(block *types.Block, it *insertIterator, makeWitness bool) (*stateless.Witness, int, error) {
-	var current = bc.CurrentBlock()
+	current := bc.CurrentBlock()
 
 	// The first sidechain block error is already verified to be ErrPrunedAncestor.
 	// Since we don't import them here, we expect ErrUnknownAncestor for the remaining
