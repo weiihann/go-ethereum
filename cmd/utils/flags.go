@@ -285,7 +285,7 @@ var (
 	}
 	StateSizeTrackingFlag = &cli.BoolFlag{
 		Name:     "state.size-tracking",
-		Usage:    "Enable state size tracking, retrieve state size with debug_stateSize.",
+		Usage:    "Enable state size tracking, retrieve state size with debug_stateSize (may slightly affect block execution performance when enabled)",
 		Value:    ethconfig.Defaults.EnableStateSizeTracking,
 		Category: flags.StateCategory,
 	}
