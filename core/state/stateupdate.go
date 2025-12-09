@@ -20,6 +20,8 @@ import (
 	"maps"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb"
 )
@@ -188,5 +190,14 @@ func (sc *stateUpdate) stateSet() *triedb.StateSet {
 		Storages:       sc.storages,
 		StoragesOrigin: sc.storagesOrigin,
 		RawStorageKey:  sc.rawStorageKey,
+	}
+}
+
+// dedupCodes checks if the codes in the state update are already present in the database and removes them if they are.
+func (sc *stateUpdate) dedupCodes(db ethdb.KeyValueReader) {
+	for hash := range sc.codes {
+		if ok := rawdb.HasCode(db, hash); ok {
+			delete(sc.codes, hash)
+		}
 	}
 }
