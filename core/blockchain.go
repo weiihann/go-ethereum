@@ -1619,10 +1619,9 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 
 	// Force query the state size
 	stateSize, err := bc.stateSizer.Query(&root)
-	if err != nil {
-		return err
+	if err == nil {
+		log.Info("State size", "number", block.NumberU64(), "root", root, "stat", stateSize.String())
 	}
-	log.Info("State size", "number", block.NumberU64(), "root", root, "stat", stateSize.String())
 
 	// If node is running in path mode, skip explicit gc operation
 	// which is unnecessary in this mode.
