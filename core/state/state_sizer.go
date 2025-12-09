@@ -282,11 +282,7 @@ func NewSizeTracker(db ethdb.KeyValueStore, triedb *triedb.Database) (*SizeTrack
 		updateCh: make(chan *stateUpdate),
 		queryCh:  make(chan *stateSizeQuery),
 	}
-	h, stats, err := t.Init()
-	if err != nil {
-		return nil, err
-	}
-	go t.run(h, stats)
+	go t.run()
 	return t, nil
 }
 
@@ -315,22 +311,17 @@ func (h *sizeStatsHeap) Pop() any {
 	return x
 }
 
-func (t *SizeTracker) Init() (sizeStatsHeap, map[common.Hash]SizeStats, error) {
-	stats, err := t.init()
-	if err != nil {
-		return nil, nil, err
-	}
-	h := sizeStatsHeap(slices.Collect(maps.Values(stats)))
-	heap.Init(&h)
-
-	return h, stats, nil
-}
-
 // run performs the state size initialization and handles updates
-func (t *SizeTracker) run(h sizeStatsHeap, stats map[common.Hash]SizeStats) {
+func (t *SizeTracker) run() {
 	defer close(t.aborted)
 
 	var last common.Hash
+	stats, err := t.init() // launch background thread for state size init
+	if err != nil {
+		return
+	}
+	h := sizeStatsHeap(slices.Collect(maps.Values(stats)))
+	heap.Init(&h)
 
 	for {
 		select {
