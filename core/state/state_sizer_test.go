@@ -58,7 +58,7 @@ func TestSizeTracker(t *testing.T) {
 	state.AddBalance(addr3, uint256.NewInt(3000), tracing.BalanceChangeUnspecified)
 	state.SetNonce(addr3, 3, tracing.NonceChangeUnspecified)
 
-	currentRoot, _, err := state.CommitWithUpdate(1, true, false)
+	currentRoot, _, err := state.CommitWithUpdate(1, true, false, true)
 	if err != nil {
 		t.Fatalf("Failed to commit initial state: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestSizeTracker(t *testing.T) {
 		if i%3 == 0 {
 			newState.SetCode(testAddr, []byte{byte(i), 0x60, 0x80, byte(i + 1), 0x52}, tracing.CodeChangeUnspecified)
 		}
-		root, _, err := newState.CommitWithUpdate(blockNum, true, false)
+		root, _, err := newState.CommitWithUpdate(blockNum, true, false, true)
 		if err != nil {
 			t.Fatalf("Failed to commit state at block %d: %v", blockNum, err)
 		}
@@ -154,7 +154,7 @@ func TestSizeTracker(t *testing.T) {
 		if i%3 == 0 {
 			newState.SetCode(testAddr, []byte{byte(i), 0x60, 0x80, byte(i + 1), 0x52}, tracing.CodeChangeUnspecified)
 		}
-		root, update, err := newState.CommitWithUpdate(blockNum, true, false)
+		root, update, err := newState.CommitWithUpdate(blockNum, true, false, true)
 		if err != nil {
 			t.Fatalf("Failed to commit state at block %d: %v", blockNum, err)
 		}
