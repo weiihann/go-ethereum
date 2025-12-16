@@ -207,24 +207,31 @@ func (s *StateSyncer) Register(urls []string) error {
 
 		s.nodes[url] = kroganclient.New(url, client)
 		s.idlers[url] = struct{}{}
+		log.Debug("debug(weiihann) registered node", "url", url)
 	}
 
+	log.Debug("debug(weiihann) registration complete", "totalNodes", len(s.nodes))
 	return nil
 }
 
 func (s *StateSyncer) Sync(ctx context.Context) error {
+	log.Debug("debug(weiihann) starting sync")
+
 	if s.startTime.IsZero() {
 		s.startTime = time.Now()
 	}
 
 	if err := s.initSync(); err != nil {
+		log.Debug("debug(weiihann) initSync failed", "err", err)
 		return err
 	}
 
 	if len(s.tasks) == 0 {
-		log.Debug("State sync already completed")
+		log.Debug("debug(weiihann) state sync already completed")
 		return nil
 	}
+
+	log.Debug("debug(weiihann) sync initialized", "tasks", len(s.tasks))
 
 	defer func() { // Persist any progress, independent of failure
 		for _, task := range s.tasks {
@@ -266,18 +273,25 @@ func (s *StateSyncer) Sync(ctx context.Context) error {
 			return nil
 		}
 
+		log.Debug("debug(weiihann) waiting for events", "tasks", len(s.tasks), "idlers", len(s.idlers))
+
 		select {
 		case <-s.update:
-			// Something happened, recheck tasks
+			log.Debug("debug(weiihann) received update signal")
 		case <-ctx.Done():
+			log.Debug("debug(weiihann) context cancelled")
 			return ctx.Err()
 		case req := <-accountReqFails:
+			log.Debug("debug(weiihann) account request failed", "reqID", req.reqID)
 			s.revertAccountRequest(req)
 		case req := <-bytecodeReqFails:
+			log.Debug("debug(weiihann) bytecode request failed", "reqID", req.reqID)
 			s.revertBytecodeRequest(req)
 		case res := <-accountResps:
+			log.Debug("debug(weiihann) received account response", "accounts", len(res.accounts), "blockNumber", res.blockNumber)
 			s.processAccountResponse(res)
 		case res := <-bytecodeResps:
+			log.Debug("debug(weiihann) received bytecode response", "codes", len(res.codes))
 			s.processBytecodeResponse(res)
 		}
 
@@ -289,6 +303,8 @@ func (s *StateSyncer) initSync() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	log.Debug("debug(weiihann) initSync called", "nodes", len(s.nodes))
+
 	if len(s.nodes) == 0 {
 		return errors.New("no nodes to sync from")
 	}
@@ -296,6 +312,7 @@ func (s *StateSyncer) initSync() error {
 	// Load sync status from disk. Continue if sync is not complete.
 	cont := s.loadSyncStatus()
 	if cont {
+		log.Debug("debug(weiihann) resuming from saved progress", "tasks", len(s.tasks), "accountSynced", s.accountSynced)
 		return nil
 	}
 
@@ -336,11 +353,13 @@ func (s *StateSyncer) initSync() error {
 			SubTasks:       make(map[common.Hash][]*storageTask),
 			stateCompleted: make(map[common.Hash]struct{}),
 		})
+		log.Debug("debug(weiihann) created task", "taskIndex", i, "next", next, "last", last)
 
 		// Advance to next range (last + 1)
 		next = common.BigToHash(new(big.Int).Add(last.Big(), common.Big1))
 	}
 
+	log.Debug("debug(weiihann) initSync complete", "totalTasks", len(s.tasks))
 	return nil
 }
 
@@ -393,11 +412,18 @@ func (s *StateSyncer) cleanAccountTasks() {
 	}
 
 	// Check for any task that can be finalized
+	removed := 0
 	for i := 0; i < len(s.tasks); i++ {
 		if s.tasks[i].done {
+			log.Debug("debug(weiihann) removing completed task", "taskIndex", i, "taskNext", s.tasks[i].Next, "taskLast", s.tasks[i].Last)
 			s.tasks = append(s.tasks[:i], s.tasks[i+1:]...)
 			i--
+			removed++
 		}
+	}
+
+	if removed > 0 {
+		log.Debug("debug(weiihann) cleaned account tasks", "removed", removed, "remaining", len(s.tasks))
 	}
 
 	// If everything was just finalized, marks as done
@@ -406,6 +432,7 @@ func (s *StateSyncer) cleanAccountTasks() {
 		s.done = true
 		s.lock.Unlock()
 
+		log.Debug("debug(weiihann) all tasks completed")
 		// Push the final sync report
 		s.reportSyncProgress(true)
 	}
@@ -416,6 +443,7 @@ func (s *StateSyncer) assignAccountTasks(ctx context.Context, success chan *acco
 	defer s.lock.Unlock()
 
 	if len(s.idlers) == 0 {
+		log.Debug("debug(weiihann) assignAccountTasks: no idle nodes")
 		return
 	}
 
@@ -469,8 +497,9 @@ func (s *StateSyncer) assignAccountTasks(ctx context.Context, success chan *acco
 		s.accountReqs[reqid] = req
 		delete(s.idlers, idle)
 
+		log.Debug("debug(weiihann) assigned account task", "reqID", reqid, "node", idle, "start", task.Next, "last", task.Last)
+
 		s.pend.Add(1)
-		// TODO(weiihann): handle this
 		go func() {
 			defer func() {
 				s.pend.Done()
@@ -487,13 +516,16 @@ func (s *StateSyncer) assignAccountTasks(ctx context.Context, success chan *acco
 				default:
 				}
 			}()
+
+			log.Debug("debug(weiihann) fetching account range", "reqID", reqid, "start", req.start)
 			blockNumber, accounts, err := node.AccountRange(ctx, req.start)
 			if err != nil {
-				log.Debug("Failed to get account range", "url", idle, "err", err)
+				log.Debug("debug(weiihann) failed to get account range", "url", idle, "err", err)
 				s.scheduleRevertAccountRequest(req)
 				return
 			}
 
+			log.Debug("debug(weiihann) account range fetched", "reqID", reqid, "blockNumber", blockNumber, "accounts", len(accounts))
 			s.onAccount(reqid, blockNumber, accounts)
 		}()
 
@@ -566,6 +598,8 @@ func (s *StateSyncer) assignBytecodeTasks(ctx context.Context, success chan *byt
 		s.bytecodeReqs[reqid] = req
 		delete(s.idlers, idle)
 
+		log.Debug("debug(weiihann) assigned bytecode task", "reqID", reqid, "node", idle, "hashes", len(hashes))
+
 		s.pend.Add(1)
 		go func() {
 			defer func() {
@@ -583,13 +617,16 @@ func (s *StateSyncer) assignBytecodeTasks(ctx context.Context, success chan *byt
 				default:
 				}
 			}()
+
+			log.Debug("debug(weiihann) fetching bytecodes", "reqID", reqid, "hashes", len(req.hashes))
 			bytecodes, err := node.Bytecodes(ctx, req.hashes)
 			if err != nil {
-				log.Debug("Failed to get bytecodes", "url", idle, "err", err)
+				log.Debug("debug(weiihann) failed to get bytecodes", "url", idle, "err", err)
 				s.scheduleRevertBytecodeRequest(req)
 				return
 			}
 
+			log.Debug("debug(weiihann) bytecodes fetched", "reqID", reqid, "codes", len(bytecodes))
 			s.onBytecode(reqid, bytecodes)
 		}()
 	}
@@ -607,7 +644,7 @@ func (s *StateSyncer) scheduleRevertAccountRequest(req *accountRequest) {
 }
 
 func (s *StateSyncer) revertAccountRequest(req *accountRequest) {
-	log.Debug("Reverting account request", "reqID", req.reqID, "start", req.start)
+	log.Debug("debug(weiihann) reverting account request", "reqID", req.reqID, "start", req.start)
 	req.task.req = nil
 }
 
@@ -623,7 +660,7 @@ func (s *StateSyncer) scheduleRevertBytecodeRequest(req *bytecodeRequest) {
 }
 
 func (s *StateSyncer) revertBytecodeRequest(req *bytecodeRequest) {
-	log.Debug("Reverting bytecode request", "reqID", req.reqID, "hashes", len(req.hashes))
+	log.Debug("debug(weiihann) reverting bytecode request", "reqID", req.reqID, "hashes", len(req.hashes))
 
 	// Re-add the hashes back to the task's code tasks so they can be retried
 	if req.task.codeTasks == nil {
@@ -694,6 +731,8 @@ func (s *StateSyncer) onBytecode(reqID uint64, bytecodes map[common.Hash][]byte)
 }
 
 func (s *StateSyncer) processAccountResponse(res *accountResponse) {
+	log.Debug("debug(weiihann) processing account response", "accounts", len(res.accounts), "taskNext", res.task.Next, "taskLast", res.task.Last)
+
 	res.task.req = nil
 	res.task.res = res
 
@@ -727,6 +766,7 @@ func (s *StateSyncer) processAccountResponse(res *accountResponse) {
 	// Update Next for continuation (maxHash + 1)
 	if res.cont && len(res.accounts) > 0 {
 		res.task.Next = common.BigToHash(new(big.Int).Add(maxHash.Big(), common.Big1))
+		log.Debug("debug(weiihann) task continuation", "newNext", res.task.Next, "maxHash", maxHash)
 	}
 
 	// Iterate over all the accounts and assemble which ones need further sub-tasks
@@ -751,6 +791,8 @@ func (s *StateSyncer) processAccountResponse(res *accountResponse) {
 		// TODO(weiihann): deal with storage retrieval, how to check if the storage is complete?
 	}
 
+	log.Debug("debug(weiihann) account response processed", "cont", res.cont, "pendingCode", res.task.pend, "codeTasks", len(res.task.codeTasks))
+
 	if res.task.pend == 0 {
 		s.forwardAccountTask(res.task)
 		return
@@ -761,6 +803,8 @@ func (s *StateSyncer) processAccountResponse(res *accountResponse) {
 }
 
 func (s *StateSyncer) processBytecodeResponse(res *bytecodeResponse) {
+	log.Debug("debug(weiihann) processing bytecode response", "codes", len(res.codes), "taskPend", res.task.pend)
+
 	batch := s.db.NewBatch()
 
 	var codes uint64
@@ -787,18 +831,22 @@ func (s *StateSyncer) processBytecodeResponse(res *bytecodeResponse) {
 	s.bytecodeSynced += codes
 	s.bytecodeBytes += bytes
 
-	log.Debug("Persisted set of bytecodes", "codes", codes, "bytes", bytes)
+	log.Debug("debug(weiihann) persisted bytecodes", "codes", codes, "bytes", bytes, "remainingPend", res.task.pend)
 
 	// If all pending requirements are satisfied, forward the task
 	if res.task.pend == 0 && res.task.res != nil {
+		log.Debug("debug(weiihann) all bytecodes received, forwarding task")
 		s.forwardAccountTask(res.task)
 	}
 }
 
 func (s *StateSyncer) forwardAccountTask(task *accountTask) {
+	log.Debug("debug(weiihann) forwarding account task", "taskNext", task.Next, "taskLast", task.Last)
+
 	// Remove any pending delivery
 	res := task.res
 	if res == nil {
+		log.Debug("debug(weiihann) forwardAccountTask: no response to forward")
 		return // nothing to forward
 	}
 	task.res = nil
@@ -815,9 +863,11 @@ func (s *StateSyncer) forwardAccountTask(task *accountTask) {
 	}
 
 	var persisted int
+	var skipped int
 	for hash, account := range res.accounts {
 		// Skip accounts that still need code or state retrieval
 		if task.needCode[hash] || task.needState[hash] {
+			skipped++
 			continue
 		}
 
@@ -839,9 +889,10 @@ func (s *StateSyncer) forwardAccountTask(task *accountTask) {
 	// Check if the task is complete (no continuation and no pending sub-tasks)
 	if !res.cont && task.pend == 0 {
 		task.done = true
+		log.Debug("debug(weiihann) task marked done", "taskNext", task.Next, "taskLast", task.Last)
 	}
 
-	log.Debug("Persisted range of accounts", "accounts", persisted, "bytes", s.accountBytes-oldAccountBytes)
+	log.Debug("debug(weiihann) persisted accounts", "persisted", persisted, "skipped", skipped, "bytes", s.accountBytes-oldAccountBytes, "cont", res.cont, "taskDone", task.done)
 }
 
 // hashSpace is the total size of the 256 bit hash space for accounts.
