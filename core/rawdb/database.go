@@ -665,6 +665,172 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 	return nil
 }
 
+// InspectStateDatabase traverses only the state-related portions of the database
+// and reports the size of trie nodes and snapshots. This uses exactly 4 iterators
+// for the main state prefixes: account trie nodes, storage trie nodes, account
+// snapshots, and storage snapshots.
+func InspectStateDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
+	var (
+		start = time.Now()
+		count atomic.Int64
+		total atomic.Uint64
+
+		// Trie node statistics
+		accountTries stat
+		storageTries stat
+
+		// Snapshot statistics
+		accountSnaps stat
+		storageSnaps stat
+	)
+
+	// inspectAccountTries iterates over account trie nodes (prefix "A").
+	inspectAccountTries := func(ctx context.Context) error {
+		prefix := append(keyPrefix, TrieNodeAccountPrefix...)
+		it := db.NewIterator(prefix, nil)
+		defer it.Release()
+
+		for it.Next() {
+			key := it.Key()
+			size := common.StorageSize(len(key) + len(it.Value()))
+
+			if IsAccountTrieNode(key) {
+				total.Add(uint64(size))
+				count.Add(1)
+				accountTries.add(size)
+			}
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+		return it.Error()
+	}
+
+	// inspectStorageTries iterates over storage trie nodes (prefix "O").
+	inspectStorageTries := func(ctx context.Context) error {
+		prefix := append(keyPrefix, TrieNodeStoragePrefix...)
+		it := db.NewIterator(prefix, nil)
+		defer it.Release()
+
+		for it.Next() {
+			key := it.Key()
+			size := common.StorageSize(len(key) + len(it.Value()))
+
+			if IsStorageTrieNode(key) {
+				total.Add(uint64(size))
+				count.Add(1)
+				storageTries.add(size)
+			}
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+		return it.Error()
+	}
+
+	// inspectAccountSnaps iterates over account snapshots (prefix "a").
+	inspectAccountSnaps := func(ctx context.Context) error {
+		prefix := append(keyPrefix, SnapshotAccountPrefix...)
+		it := db.NewIterator(prefix, nil)
+		defer it.Release()
+
+		for it.Next() {
+			key := it.Key()
+			size := common.StorageSize(len(key) + len(it.Value()))
+
+			if len(key) == len(SnapshotAccountPrefix)+common.HashLength {
+				total.Add(uint64(size))
+				count.Add(1)
+				accountSnaps.add(size)
+			}
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+		return it.Error()
+	}
+
+	// inspectStorageSnaps iterates over storage snapshots (prefix "o").
+	inspectStorageSnaps := func(ctx context.Context) error {
+		prefix := append(keyPrefix, SnapshotStoragePrefix...)
+		it := db.NewIterator(prefix, nil)
+		defer it.Release()
+
+		for it.Next() {
+			key := it.Key()
+			size := common.StorageSize(len(key) + len(it.Value()))
+
+			if len(key) == len(SnapshotStoragePrefix)+2*common.HashLength {
+				total.Add(uint64(size))
+				count.Add(1)
+				storageSnaps.add(size)
+			}
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+		return it.Error()
+	}
+
+	eg, ctx := errgroup.WithContext(context.Background())
+
+	// Progress reporter
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				log.Info("Inspecting state database", "count", count.Load(), "size", common.StorageSize(total.Load()), "elapsed", common.PrettyDuration(time.Since(start)))
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Launch exactly 4 iterators for the state prefixes.
+	eg.Go(func() error { return inspectAccountTries(ctx) })
+	eg.Go(func() error { return inspectStorageTries(ctx) })
+	eg.Go(func() error { return inspectAccountSnaps(ctx) })
+	eg.Go(func() error { return inspectStorageSnaps(ctx) })
+
+	if err := eg.Wait(); err != nil {
+		close(done)
+		return err
+	}
+	close(done)
+
+	// Display the state database statistics.
+	stats := [][]string{
+		{"State", "Path trie account nodes", accountTries.sizeString(), accountTries.countString()},
+		{"State", "Path trie storage nodes", storageTries.sizeString(), storageTries.countString()},
+		{"State", "Account snapshot", accountSnaps.sizeString(), accountSnaps.countString()},
+		{"State", "Storage snapshot", storageSnaps.sizeString(), storageSnaps.countString()},
+	}
+
+	table := NewTableWriter(os.Stdout)
+	table.SetHeader([]string{"Database", "Category", "Size", "Items"})
+	table.SetFooter([]string{"", "Total", common.StorageSize(total.Load()).String(), fmt.Sprintf("%d", count.Load())})
+	table.AppendBulk(stats)
+	table.Render()
+
+	return nil
+}
+
 // This is the list of known 'metadata' keys stored in the databasse.
 var knownMetadataKeys = [][]byte{
 	databaseVersionKey, headHeaderKey, headBlockKey, headFastBlockKey, headFinalizedBlockKey,

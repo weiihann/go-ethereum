@@ -70,6 +70,7 @@ Remove blockchain and state databases`,
 		ArgsUsage: "",
 		Subcommands: []*cli.Command{
 			dbInspectCmd,
+			dbInspectStateCmd,
 			dbStatCmd,
 			dbCompactCmd,
 			dbGetCmd,
@@ -87,6 +88,14 @@ Remove blockchain and state databases`,
 	dbInspectCmd = &cli.Command{
 		Action:      inspect,
 		Name:        "inspect",
+		ArgsUsage:   "<prefix> <start>",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Usage:       "Inspect the storage size for each type of data in the database",
+		Description: `This commands iterates the entire database. If the optional 'prefix' and 'start' arguments are provided, then the iteration is limited to the given subset of data.`,
+	}
+	dbInspectStateCmd = &cli.Command{
+		Action:      inspectState,
+		Name:        "inspect-state",
 		ArgsUsage:   "<prefix> <start>",
 		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 		Usage:       "Inspect the storage size for each type of data in the database",
@@ -301,6 +310,37 @@ func confirmAndRemoveDB(paths []string, kind string, ctx *cli.Context, removeFla
 }
 
 func inspect(ctx *cli.Context) error {
+	var (
+		prefix []byte
+		start  []byte
+	)
+	if ctx.NArg() > 2 {
+		return fmt.Errorf("max 2 arguments: %v", ctx.Command.ArgsUsage)
+	}
+	if ctx.NArg() >= 1 {
+		if d, err := hexutil.Decode(ctx.Args().Get(0)); err != nil {
+			return fmt.Errorf("failed to hex-decode 'prefix': %v", err)
+		} else {
+			prefix = d
+		}
+	}
+	if ctx.NArg() >= 2 {
+		if d, err := hexutil.Decode(ctx.Args().Get(1)); err != nil {
+			return fmt.Errorf("failed to hex-decode 'start': %v", err)
+		} else {
+			start = d
+		}
+	}
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	return rawdb.InspectDatabase(db, prefix, start)
+}
+
+func inspectState(ctx *cli.Context) error {
 	var (
 		prefix []byte
 		start  []byte
