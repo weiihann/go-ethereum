@@ -666,9 +666,8 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 }
 
 // InspectStateDatabase traverses only the state-related portions of the database
-// and reports the size of trie nodes and snapshots. This uses exactly 4 iterators
-// for the main state prefixes: account trie nodes, storage trie nodes, account
-// snapshots, and storage snapshots.
+// and reports the size of trie nodes and snapshots. This is a focused inspection
+// that uses exactly 4 iterators for the main state prefixes.
 func InspectStateDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 	var (
 		start = time.Now()
@@ -676,6 +675,7 @@ func InspectStateDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		total atomic.Uint64
 
 		// Trie node statistics
+		legacyTries  stat
 		accountTries stat
 		storageTries stat
 
@@ -684,94 +684,28 @@ func InspectStateDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		storageSnaps stat
 	)
 
-	// inspectAccountTries iterates over account trie nodes (prefix "A").
-	inspectAccountTries := func(ctx context.Context) error {
-		prefix := append(keyPrefix, TrieNodeAccountPrefix...)
+	// inspectPrefix iterates over all keys with the given prefix byte.
+	inspectPrefix := func(ctx context.Context, prefixByte byte) error {
+		prefix := append(keyPrefix, prefixByte)
 		it := db.NewIterator(prefix, nil)
 		defer it.Release()
 
 		for it.Next() {
-			key := it.Key()
-			size := common.StorageSize(len(key) + len(it.Value()))
+			var (
+				key  = it.Key()
+				size = common.StorageSize(len(key) + len(it.Value()))
+			)
+			total.Add(uint64(size))
+			count.Add(1)
 
-			if IsAccountTrieNode(key) {
-				total.Add(uint64(size))
-				count.Add(1)
+			switch {
+			case IsAccountTrieNode(key):
 				accountTries.add(size)
-			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-		}
-		return it.Error()
-	}
-
-	// inspectStorageTries iterates over storage trie nodes (prefix "O").
-	inspectStorageTries := func(ctx context.Context) error {
-		prefix := append(keyPrefix, TrieNodeStoragePrefix...)
-		it := db.NewIterator(prefix, nil)
-		defer it.Release()
-
-		for it.Next() {
-			key := it.Key()
-			size := common.StorageSize(len(key) + len(it.Value()))
-
-			if IsStorageTrieNode(key) {
-				total.Add(uint64(size))
-				count.Add(1)
+			case IsStorageTrieNode(key):
 				storageTries.add(size)
-			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-		}
-		return it.Error()
-	}
-
-	// inspectAccountSnaps iterates over account snapshots (prefix "a").
-	inspectAccountSnaps := func(ctx context.Context) error {
-		prefix := append(keyPrefix, SnapshotAccountPrefix...)
-		it := db.NewIterator(prefix, nil)
-		defer it.Release()
-
-		for it.Next() {
-			key := it.Key()
-			size := common.StorageSize(len(key) + len(it.Value()))
-
-			if len(key) == len(SnapshotAccountPrefix)+common.HashLength {
-				total.Add(uint64(size))
-				count.Add(1)
+			case bytes.HasPrefix(key, SnapshotAccountPrefix) && len(key) == (len(SnapshotAccountPrefix)+common.HashLength):
 				accountSnaps.add(size)
-			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-		}
-		return it.Error()
-	}
-
-	// inspectStorageSnaps iterates over storage snapshots (prefix "o").
-	inspectStorageSnaps := func(ctx context.Context) error {
-		prefix := append(keyPrefix, SnapshotStoragePrefix...)
-		it := db.NewIterator(prefix, nil)
-		defer it.Release()
-
-		for it.Next() {
-			key := it.Key()
-			size := common.StorageSize(len(key) + len(it.Value()))
-
-			if len(key) == len(SnapshotStoragePrefix)+2*common.HashLength {
-				total.Add(uint64(size))
-				count.Add(1)
+			case bytes.HasPrefix(key, SnapshotStoragePrefix) && len(key) == (len(SnapshotStoragePrefix)+2*common.HashLength):
 				storageSnaps.add(size)
 			}
 
@@ -785,6 +719,8 @@ func InspectStateDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 	}
 
 	eg, ctx := errgroup.WithContext(context.Background())
+	workers := runtime.NumCPU()
+	eg.SetLimit(workers)
 
 	// Progress reporter
 	done := make(chan struct{})
@@ -802,11 +738,15 @@ func InspectStateDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 		}
 	}()
 
-	// Launch exactly 4 iterators for the state prefixes.
-	eg.Go(func() error { return inspectAccountTries(ctx) })
-	eg.Go(func() error { return inspectStorageTries(ctx) })
-	eg.Go(func() error { return inspectAccountSnaps(ctx) })
-	eg.Go(func() error { return inspectStorageSnaps(ctx) })
+	// Launch 4 specific prefix iterators for path-based state data.
+	// Iterator 1: Account trie nodes (prefix "A")
+	eg.Go(func() error { return inspectPrefix(ctx, TrieNodeAccountPrefix[0]) })
+	// Iterator 2: Storage trie nodes (prefix "O")
+	eg.Go(func() error { return inspectPrefix(ctx, TrieNodeStoragePrefix[0]) })
+	// Iterator 3: Account snapshots (prefix "a")
+	eg.Go(func() error { return inspectPrefix(ctx, SnapshotAccountPrefix[0]) })
+	// Iterator 4: Storage snapshots (prefix "o")
+	eg.Go(func() error { return inspectPrefix(ctx, SnapshotStoragePrefix[0]) })
 
 	if err := eg.Wait(); err != nil {
 		close(done)
@@ -816,6 +756,7 @@ func InspectStateDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 
 	// Display the state database statistics.
 	stats := [][]string{
+		{"State", "Hash trie nodes", legacyTries.sizeString(), legacyTries.countString()},
 		{"State", "Path trie account nodes", accountTries.sizeString(), accountTries.countString()},
 		{"State", "Path trie storage nodes", storageTries.sizeString(), storageTries.countString()},
 		{"State", "Account snapshot", accountSnaps.sizeString(), accountSnaps.countString()},
