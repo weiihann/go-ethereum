@@ -328,7 +328,6 @@ func (t *SizeTracker) run() {
 	for {
 		select {
 		case u := <-t.updateCh:
-			log.Info("debug(weiihann): received state update", "root", u.root, "blockNumber", u.blockNumber)
 			base, found := stats[u.originRoot]
 			if !found {
 				log.Info("debug(weiihann): ignored the state size without parent", "parent", u.originRoot, "root", u.root, "number", u.blockNumber)
