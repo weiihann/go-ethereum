@@ -415,7 +415,6 @@ wait:
 	for {
 		select {
 		case u := <-t.updateCh:
-			log.Info("debug(weiihann): received state update", "root", u.root, "blockNumber", u.blockNumber)
 			updates[u.root] = u
 			children[u.originRoot] = append(children[u.originRoot], u.root)
 			log.Debug("Received state update", "root", u.root, "blockNumber", u.blockNumber)
