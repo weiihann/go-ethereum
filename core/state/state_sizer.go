@@ -328,8 +328,10 @@ func (t *SizeTracker) run() {
 	for {
 		select {
 		case u := <-t.updateCh:
+			log.Info("debug(weiihann): received state update", "root", u.root, "blockNumber", u.blockNumber)
 			base, found := stats[u.originRoot]
 			if !found {
+				log.Info("debug(weiihann): ignored the state size without parent", "parent", u.originRoot, "root", u.root, "number", u.blockNumber)
 				log.Debug("Ignored the state size without parent", "parent", u.originRoot, "root", u.root, "number", u.blockNumber)
 				continue
 			}
@@ -388,9 +390,12 @@ wait:
 	for {
 		select {
 		case <-ticker.C:
+			log.Info("debug(weiihann): checking snapshot completion")
 			if t.triedb.SnapshotCompleted() {
+				log.Info("debug(weiihann): snapshot completed")
 				break wait
 			}
+			log.Info("debug(weiihann): snapshot not completed")
 		case <-t.updateCh:
 			continue
 		case r := <-t.queryCh:
@@ -410,6 +415,7 @@ wait:
 	for {
 		select {
 		case u := <-t.updateCh:
+			log.Info("debug(weiihann): received state update", "root", u.root, "blockNumber", u.blockNumber)
 			updates[u.root] = u
 			children[u.originRoot] = append(children[u.originRoot], u.root)
 			log.Debug("Received state update", "root", u.root, "blockNumber", u.blockNumber)
