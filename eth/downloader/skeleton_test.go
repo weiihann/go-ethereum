@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"math/big"
 	"sync/atomic"
 	"testing"
@@ -70,12 +69,6 @@ func (hf *hookedBackfiller) resume() {
 	if hf.resumeHook != nil {
 		hf.resumeHook()
 	}
-}
-
-type fakeChainReader struct{}
-
-func (fc *fakeChainReader) CurrentSnapBlock() *types.Header {
-	return &types.Header{Number: big.NewInt(math.MaxInt64)}
 }
 
 // skeletonTestPeer is a mock peer that can only serve header requests from a
@@ -376,7 +369,7 @@ func TestSkeletonSyncInit(t *testing.T) {
 		// Create a skeleton sync and run a cycle
 		wait := make(chan struct{})
 
-		skeleton := newSkeleton(db, newPeerSet(), nil, newHookedBackfiller(), &fakeChainReader{})
+		skeleton := newSkeleton(db, newPeerSet(), nil, newHookedBackfiller())
 		skeleton.syncStarting = func() { close(wait) }
 		skeleton.Sync(tt.head, nil, true)
 
@@ -479,7 +472,7 @@ func TestSkeletonSyncExtend(t *testing.T) {
 		// Create a skeleton sync and run a cycle
 		wait := make(chan struct{})
 
-		skeleton := newSkeleton(db, newPeerSet(), nil, newHookedBackfiller(), &fakeChainReader{})
+		skeleton := newSkeleton(db, newPeerSet(), nil, newHookedBackfiller())
 		skeleton.syncStarting = func() { close(wait) }
 		skeleton.Sync(tt.head, nil, true)
 
@@ -892,7 +885,7 @@ func TestSkeletonSyncRetrievals(t *testing.T) {
 			}
 		}
 		// Create a skeleton sync and run a cycle
-		skeleton := newSkeleton(db, peerset, drop, filler, &fakeChainReader{})
+		skeleton := newSkeleton(db, peerset, drop, filler)
 		skeleton.Sync(tt.head, nil, true)
 
 		// Wait a bit (bleah) for the initial sync loop to go to idle. This might
