@@ -79,7 +79,10 @@ func ChunkifyCode(code []byte) ChunkedCode {
 	chunks := make([]byte, chunkCount*HashSize)
 	for i := 0; i < chunkCount; i++ {
 		// number of bytes to copy, StemSize unless the end of the code has been reached.
-		end := min(len(code), StemSize*(i+1))
+		end := StemSize * (i + 1)
+		if len(code) < end {
+			end = len(code)
+		}
 		copy(chunks[i*HashSize+1:], code[StemSize*i:end]) // copy the code itself
 
 		// chunk offset = taken from the last chunk.

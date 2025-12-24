@@ -2016,7 +2016,7 @@ func TestGetBlobsV1AfterOsakaFork(t *testing.T) {
 	}
 }
 
-func TestGetBlobsV2And3(t *testing.T) {
+func TestGetBlobsV2(t *testing.T) {
 	n, api := newGetBlobEnv(t, 1)
 	defer n.Close()
 
@@ -2045,8 +2045,7 @@ func TestGetBlobsV2And3(t *testing.T) {
 		},
 	}
 	for i, suite := range suites {
-		runGetBlobs(t, api.GetBlobsV2, suite.start, suite.limit, suite.fillRandom, false, fmt.Sprintf("GetBlobsV2 suite=%d", i))
-		runGetBlobs(t, api.GetBlobsV3, suite.start, suite.limit, suite.fillRandom, true, fmt.Sprintf("GetBlobsV3 suite=%d %v", i, suite))
+		runGetBlobsV2(t, api, suite.start, suite.limit, suite.fillRandom, fmt.Sprintf("suite=%d", i))
 	}
 }
 
@@ -2061,20 +2060,22 @@ func BenchmarkGetBlobsV2(b *testing.B) {
 		name := fmt.Sprintf("blobs=%d", blobs)
 		b.Run(name, func(b *testing.B) {
 			for b.Loop() {
-				runGetBlobs(b, api.GetBlobsV2, 0, blobs, false, false, name)
+				runGetBlobsV2(b, api, 0, blobs, false, name)
 			}
 		})
 	}
 }
 
-type getBlobsFn func(hashes []common.Hash) ([]*engine.BlobAndProofV2, error)
-
-func runGetBlobs(t testing.TB, getBlobs getBlobsFn, start, limit int, fillRandom bool, expectPartialResponse bool, name string) {
+func runGetBlobsV2(t testing.TB, api *ConsensusAPI, start, limit int, fillRandom bool, name string) {
 	// Fill the request for retrieving blobs
 	var (
 		vhashes []common.Hash
 		expect  []*engine.BlobAndProofV2
 	)
+	// fill missing blob
+	if fillRandom {
+		vhashes = append(vhashes, testrand.Hash())
+	}
 	for j := start; j < limit; j++ {
 		vhashes = append(vhashes, testBlobVHashes[j])
 		var cellProofs []hexutil.Bytes
@@ -2086,21 +2087,13 @@ func runGetBlobs(t testing.TB, getBlobs getBlobsFn, start, limit int, fillRandom
 			CellProofs: cellProofs,
 		})
 	}
-	// fill missing blob
-	if fillRandom {
-		vhashes = append(vhashes, testrand.Hash())
-	}
-	result, err := getBlobs(vhashes)
+	result, err := api.GetBlobsV2(vhashes)
 	if err != nil {
 		t.Errorf("Unexpected error for case %s, %v", name, err)
 	}
+	// null is responded if any blob is missing
 	if fillRandom {
-		if expectPartialResponse {
-			expect = append(expect, nil)
-		} else {
-			// Nil is expected if getBlobs can not return a partial response
-			expect = nil
-		}
+		expect = nil
 	}
 	if !reflect.DeepEqual(result, expect) {
 		t.Fatalf("Unexpected result for case %s", name)

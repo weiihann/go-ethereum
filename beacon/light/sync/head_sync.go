@@ -105,7 +105,6 @@ func (s *HeadSync) Process(requester request.Requester, events []request.Event) 
 			delete(s.serverHeads, event.Server)
 			delete(s.unvalidatedOptimistic, event.Server)
 			delete(s.unvalidatedFinality, event.Server)
-			delete(s.reqFinalityEpoch, event.Server)
 		}
 	}
 }

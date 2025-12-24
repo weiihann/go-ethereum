@@ -149,8 +149,6 @@ func InspectFreezerTable(ancient string, freezerName string, tableName string, s
 		path, tables = resolveChainFreezerDir(ancient), chainFreezerTableConfigs
 	case MerkleStateFreezerName, VerkleStateFreezerName:
 		path, tables = filepath.Join(ancient, freezerName), stateFreezerTableConfigs
-	case MerkleTrienodeFreezerName, VerkleTrienodeFreezerName:
-		path, tables = filepath.Join(ancient, freezerName), trienodeFreezerTableConfigs
 	default:
 		return fmt.Errorf("unknown freezer, supported ones: %v", freezers)
 	}
