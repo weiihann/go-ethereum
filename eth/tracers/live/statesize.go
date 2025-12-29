@@ -30,6 +30,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -104,6 +105,14 @@ type stateSizeRecord struct {
 	Stats       stateSizeStats
 }
 
+// statsCache is the maximum number of state roots to keep in the LRU cache.
+// This prevents OOM issues when running for extended periods.
+const statsCache = 10000
+
+// flushInterval is the number of blocks between disk flushes.
+// Flushing every block causes excessive I/O which can lead to system instability.
+const flushInterval = 128
+
 type stateSizeTracer struct {
 	mu       sync.Mutex
 	file     *os.File
@@ -119,8 +128,12 @@ type stateSizeTracer struct {
 	depthDeletedWriter   *csv.Writer
 	depthDeletedFilePath string
 
-	// Map from state root to cumulative stats (for handling forks)
-	stats map[common.Hash]stateSizeStats
+	// LRU cache from state root to cumulative stats (bounded to prevent OOM)
+	stats *lru.Cache[common.Hash, stateSizeStats]
+
+	// initialized is set to true after the first state update processes
+	// and loads the parent stats from the CSV file
+	initialized bool
 }
 
 type stateSizeTracerConfig struct {
@@ -149,12 +162,7 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 		filePath:             filePath,
 		depthCreatedFilePath: depthCreatedFilePath,
 		depthDeletedFilePath: depthDeletedFilePath,
-		stats:                make(map[common.Hash]stateSizeStats),
-	}
-
-	// Load existing data if file exists
-	if err := t.loadExisting(); err != nil {
-		return nil, fmt.Errorf("failed to load existing statesize data: %v", err)
+		stats:                lru.NewCache[common.Hash, stateSizeStats](statsCache),
 	}
 
 	// Open statesize file for appending
@@ -238,14 +246,12 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	}, nil
 }
 
-// loadExisting reads the existing CSV file and loads the latest records by block number.
-func (s *stateSizeTracer) loadExisting() error {
+// loadStatsForRoot searches the CSV file for a record with the given root hash
+// and returns its stats. Returns zero stats if not found.
+func (s *stateSizeTracer) loadStatsForRoot(blockNumber uint64, root common.Hash) (stateSizeStats, bool) {
 	file, err := os.Open(s.filePath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // File doesn't exist, nothing to load
-		}
-		return err
+		return stateSizeStats{}, false
 	}
 	defer file.Close()
 
@@ -253,16 +259,14 @@ func (s *stateSizeTracer) loadExisting() error {
 
 	// Read and skip header
 	if _, err := reader.Read(); err != nil {
-		if err == io.EOF {
-			return nil // Empty file
-		}
-		return fmt.Errorf("failed to read CSV header: %v", err)
+		return stateSizeStats{}, false
 	}
 
-	// Read all records to find the latest block number
+	// Search for the root in the CSV file (read backwards would be more efficient,
+	// but CSV doesn't support that easily, so we just remember the last match)
 	var (
-		latestBlockNum uint64
-		latestRecords  = make(map[common.Hash]stateSizeStats)
+		found     bool
+		lastStats stateSizeStats
 	)
 
 	for {
@@ -271,40 +275,27 @@ func (s *stateSizeTracer) loadExisting() error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("failed to read CSV record: %v", err)
+			return stateSizeStats{}, false
 		}
 		if len(record) < len(csvHeaders) {
-			continue // Skip malformed records
-		}
-
-		blockNum, err := strconv.ParseUint(record[0], 10, 64)
-		if err != nil {
 			continue
 		}
 
-		// If we found a new latest block, clear the map
-		if blockNum > latestBlockNum {
-			latestBlockNum = blockNum
-			latestRecords = make(map[common.Hash]stateSizeStats)
-		}
+		rbN := record[0]
+		rbRoot := record[1]
 
-		// Only store records from the latest block
-		if blockNum == latestBlockNum {
-			root := common.HexToHash(record[1])
-			stats, err := parseStats(record)
-			if err != nil {
-				log.Warn("Failed to parse statesize record", "error", err)
-				continue
-			}
-			latestRecords[root] = stats
+		if rbN == strconv.FormatUint(blockNumber, 10) && rbRoot == root.Hex() {
+			stats, _ := parseStats(record)
+			lastStats = stats
+			found = true
+			break
 		}
 	}
 
-	s.stats = latestRecords
-	if len(latestRecords) > 0 {
-		log.Info("Loaded statesize tracer state", "block", latestBlockNum, "roots", len(latestRecords))
+	if found {
+		log.Info("Loaded initial stats from CSV", "root", root.Hex())
 	}
-	return nil
+	return lastStats, found
 }
 
 // parseStats extracts cumulative statistics from a CSV record.
@@ -365,6 +356,19 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	if update == nil {
 		return
 	}
+
+	// On first update, try to load parent stats from the CSV file
+	s.mu.Lock()
+	if !s.initialized && update.OriginRoot != (types.EmptyRootHash) {
+		s.initialized = true
+		stats, found := s.loadStatsForRoot(update.BlockNumber-1, update.OriginRoot)
+		if !found {
+			log.Crit("Failed to load parent stats from CSV", "block", update.BlockNumber, "root", update.OriginRoot.Hex())
+			return
+		}
+		s.stats.Add(update.OriginRoot, stats)
+	}
+	s.mu.Unlock()
 
 	// Calculate deltas
 	var (
@@ -497,14 +501,19 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	}
 
 	// Calculate contract code size changes
+	// Only count new codes that didn't exist before
 	codeExists := make(map[common.Hash]struct{})
-	for _, code := range update.CodeChanges {
-		if _, ok := codeExists[code.Hash]; ok || code.Exists {
+	for _, change := range update.CodeChanges {
+		if change.New == nil {
+			continue
+		}
+		// Skip if we've already counted this code hash or if it existed before
+		if _, ok := codeExists[change.New.Hash]; ok || change.New.Exists {
 			continue
 		}
 		codesDelta++
-		codeBytesDelta += codeKeySize + int64(len(code.Code))
-		codeExists[code.Hash] = struct{}{}
+		codeBytesDelta += codeKeySize + int64(len(change.New.Code))
+		codeExists[change.New.Hash] = struct{}{}
 	}
 
 	// Calculate cumulative statistics
@@ -512,7 +521,7 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	defer s.mu.Unlock()
 
 	// Look up parent stats
-	parentStats := s.stats[update.OriginRoot] // zero value if not found
+	parentStats, _ := s.stats.Get(update.OriginRoot) // zero value if not found
 
 	// Apply deltas to get new cumulative stats
 	newStats := stateSizeStats{
@@ -529,7 +538,7 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	}
 
 	// Store the new stats for this root
-	s.stats[update.Root] = newStats
+	s.stats.Add(update.Root, newStats)
 
 	// Calculate total nodes for created and deleted
 	var totalCreated, totalDeleted int64
@@ -557,6 +566,11 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	// Write to depth CSV files
 	s.writeDepthRecord(s.depthCreatedWriter, update.BlockNumber, update.Root, update.OriginRoot, totalCreated, accountDepthCreated, storageDepthCreated)
 	s.writeDepthRecord(s.depthDeletedWriter, update.BlockNumber, update.Root, update.OriginRoot, totalDeleted, accountDepthDeleted, storageDepthDeleted)
+
+	// Flush to disk every flushInterval blocks to reduce I/O pressure
+	if update.BlockNumber%flushInterval == 0 {
+		s.flushWriters()
+	}
 }
 
 func (s *stateSizeTracer) writeRecord(r stateSizeRecord) {
@@ -580,10 +594,6 @@ func (s *stateSizeTracer) writeRecord(r stateSizeRecord) {
 		log.Warn("Failed to write statesize record", "error", err)
 		return
 	}
-	s.writer.Flush()
-	if err := s.writer.Error(); err != nil {
-		log.Warn("Failed to flush statesize record", "error", err)
-	}
 }
 
 func (s *stateSizeTracer) writeDepthRecord(writer *csv.Writer, blockNumber uint64, root, parentRoot common.Hash, totalNodes int64, accountDepths, storageDepths [65]int64) {
@@ -605,9 +615,21 @@ func (s *stateSizeTracer) writeDepthRecord(writer *csv.Writer, blockNumber uint6
 		log.Warn("Failed to write depth record", "error", err)
 		return
 	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		log.Warn("Failed to flush depth record", "error", err)
+}
+
+// flushWriters flushes all CSV writers to disk.
+func (s *stateSizeTracer) flushWriters() {
+	s.writer.Flush()
+	if err := s.writer.Error(); err != nil {
+		log.Warn("Failed to flush statesize writer", "error", err)
+	}
+	s.depthCreatedWriter.Flush()
+	if err := s.depthCreatedWriter.Error(); err != nil {
+		log.Warn("Failed to flush depth created writer", "error", err)
+	}
+	s.depthDeletedWriter.Flush()
+	if err := s.depthDeletedWriter.Error(); err != nil {
+		log.Warn("Failed to flush depth deleted writer", "error", err)
 	}
 }
 
