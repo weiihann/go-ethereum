@@ -30,6 +30,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -104,6 +105,10 @@ type stateSizeRecord struct {
 	Stats       stateSizeStats
 }
 
+// statsCache is the maximum number of state roots to keep in the LRU cache.
+// This prevents OOM issues when running for extended periods.
+const statsCache = 10000
+
 type stateSizeTracer struct {
 	mu       sync.Mutex
 	file     *os.File
@@ -119,8 +124,8 @@ type stateSizeTracer struct {
 	depthDeletedWriter   *csv.Writer
 	depthDeletedFilePath string
 
-	// Map from state root to cumulative stats (for handling forks)
-	stats map[common.Hash]stateSizeStats
+	// LRU cache from state root to cumulative stats (bounded to prevent OOM)
+	stats *lru.Cache[common.Hash, stateSizeStats]
 
 	// initialized is set to true after the first state update processes
 	// and loads the parent stats from the CSV file
@@ -153,7 +158,7 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 		filePath:             filePath,
 		depthCreatedFilePath: depthCreatedFilePath,
 		depthDeletedFilePath: depthDeletedFilePath,
-		stats:                make(map[common.Hash]stateSizeStats),
+		stats:                lru.NewCache[common.Hash, stateSizeStats](statsCache),
 	}
 
 	// Open statesize file for appending
@@ -358,7 +363,7 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 			log.Crit("Failed to load parent stats from CSV", "root", update.OriginRoot.Hex())
 			return
 		}
-		s.stats[update.OriginRoot] = stats
+		s.stats.Add(update.OriginRoot, stats)
 	}
 	s.mu.Unlock()
 
@@ -493,14 +498,19 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	}
 
 	// Calculate contract code size changes
+	// Only count new codes that didn't exist before
 	codeExists := make(map[common.Hash]struct{})
-	for _, code := range update.CodeChanges {
-		if _, ok := codeExists[code.Hash]; ok || code.Exists {
+	for _, change := range update.CodeChanges {
+		if change.New == nil {
+			continue
+		}
+		// Skip if we've already counted this code hash or if it existed before
+		if _, ok := codeExists[change.New.Hash]; ok || change.New.Exists {
 			continue
 		}
 		codesDelta++
-		codeBytesDelta += codeKeySize + int64(len(code.Code))
-		codeExists[code.Hash] = struct{}{}
+		codeBytesDelta += codeKeySize + int64(len(change.New.Code))
+		codeExists[change.New.Hash] = struct{}{}
 	}
 
 	// Calculate cumulative statistics
@@ -508,7 +518,7 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	defer s.mu.Unlock()
 
 	// Look up parent stats
-	parentStats := s.stats[update.OriginRoot] // zero value if not found
+	parentStats, _ := s.stats.Get(update.OriginRoot) // zero value if not found
 
 	// Apply deltas to get new cumulative stats
 	newStats := stateSizeStats{
@@ -525,7 +535,7 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	}
 
 	// Store the new stats for this root
-	s.stats[update.Root] = newStats
+	s.stats.Add(update.Root, newStats)
 
 	// Calculate total nodes for created and deleted
 	var totalCreated, totalDeleted int64
