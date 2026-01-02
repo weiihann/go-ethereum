@@ -244,7 +244,7 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 
 // loadStatsForRoot searches the CSV file for a record with the given root hash
 // and returns its stats. Returns zero stats if not found.
-func (s *stateSizeTracer) loadStatsForRoot(root common.Hash) (stateSizeStats, bool) {
+func (s *stateSizeTracer) loadStatsForRoot(blockNumber uint64, root common.Hash) (stateSizeStats, bool) {
 	file, err := os.Open(s.filePath)
 	if err != nil {
 		return stateSizeStats{}, false
@@ -277,15 +277,16 @@ func (s *stateSizeTracer) loadStatsForRoot(root common.Hash) (stateSizeStats, bo
 			continue
 		}
 
-		recordRoot := common.HexToHash(record[1])
-		if recordRoot == root {
-			stats, err := parseStats(record)
-			if err != nil {
-				continue
-			}
+		rbN := record[0]
+		rbRoot := record[1]
+
+		log.Info("debug(weiihann): loadStatsForRoot", "blockNumber", rbN, "root", rbRoot)
+
+		if rbN == strconv.FormatUint(blockNumber, 10) && rbRoot == root.Hex() {
+			stats, _ := parseStats(record)
 			lastStats = stats
 			found = true
-			// Don't break - keep searching for the latest occurrence
+			break
 		}
 	}
 
@@ -358,7 +359,7 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	s.mu.Lock()
 	if !s.initialized && update.OriginRoot != (types.EmptyRootHash) {
 		s.initialized = true
-		stats, found := s.loadStatsForRoot(update.OriginRoot)
+		stats, found := s.loadStatsForRoot(update.BlockNumber, update.OriginRoot)
 		if !found {
 			log.Crit("Failed to load parent stats from CSV", "block", update.BlockNumber, "root", update.OriginRoot.Hex())
 			return
