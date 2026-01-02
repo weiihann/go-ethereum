@@ -359,7 +359,7 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	s.mu.Lock()
 	if !s.initialized && update.OriginRoot != (types.EmptyRootHash) {
 		s.initialized = true
-		stats, found := s.loadStatsForRoot(update.BlockNumber, update.OriginRoot)
+		stats, found := s.loadStatsForRoot(update.BlockNumber-1, update.OriginRoot)
 		if !found {
 			log.Crit("Failed to load parent stats from CSV", "block", update.BlockNumber, "root", update.OriginRoot.Hex())
 			return
