@@ -360,7 +360,7 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 		s.initialized = true
 		stats, found := s.loadStatsForRoot(update.OriginRoot)
 		if !found {
-			log.Crit("Failed to load parent stats from CSV", "root", update.OriginRoot.Hex())
+			log.Crit("Failed to load parent stats from CSV", "block", update.BlockNumber, "root", update.OriginRoot.Hex())
 			return
 		}
 		s.stats.Add(update.OriginRoot, stats)
