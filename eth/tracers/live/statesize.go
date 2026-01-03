@@ -280,8 +280,6 @@ func (s *stateSizeTracer) loadStatsForRoot(blockNumber uint64, root common.Hash)
 		rbN := record[0]
 		rbRoot := record[1]
 
-		log.Info("debug(weiihann): loadStatsForRoot", "blockNumber", rbN, "root", rbRoot)
-
 		if rbN == strconv.FormatUint(blockNumber, 10) && rbRoot == root.Hex() {
 			stats, _ := parseStats(record)
 			lastStats = stats
