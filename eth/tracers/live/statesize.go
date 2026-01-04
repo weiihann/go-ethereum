@@ -109,6 +109,10 @@ type stateSizeRecord struct {
 // This prevents OOM issues when running for extended periods.
 const statsCache = 10000
 
+// flushInterval is the number of blocks between disk flushes.
+// Flushing every block causes excessive I/O which can lead to system instability.
+const flushInterval = 128
+
 type stateSizeTracer struct {
 	mu       sync.Mutex
 	file     *os.File
@@ -562,6 +566,11 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	// Write to depth CSV files
 	s.writeDepthRecord(s.depthCreatedWriter, update.BlockNumber, update.Root, update.OriginRoot, totalCreated, accountDepthCreated, storageDepthCreated)
 	s.writeDepthRecord(s.depthDeletedWriter, update.BlockNumber, update.Root, update.OriginRoot, totalDeleted, accountDepthDeleted, storageDepthDeleted)
+
+	// Flush to disk every flushInterval blocks to reduce I/O pressure
+	if update.BlockNumber%flushInterval == 0 {
+		s.flushWriters()
+	}
 }
 
 func (s *stateSizeTracer) writeRecord(r stateSizeRecord) {
@@ -585,10 +594,6 @@ func (s *stateSizeTracer) writeRecord(r stateSizeRecord) {
 		log.Warn("Failed to write statesize record", "error", err)
 		return
 	}
-	s.writer.Flush()
-	if err := s.writer.Error(); err != nil {
-		log.Warn("Failed to flush statesize record", "error", err)
-	}
 }
 
 func (s *stateSizeTracer) writeDepthRecord(writer *csv.Writer, blockNumber uint64, root, parentRoot common.Hash, totalNodes int64, accountDepths, storageDepths [65]int64) {
@@ -610,9 +615,21 @@ func (s *stateSizeTracer) writeDepthRecord(writer *csv.Writer, blockNumber uint6
 		log.Warn("Failed to write depth record", "error", err)
 		return
 	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		log.Warn("Failed to flush depth record", "error", err)
+}
+
+// flushWriters flushes all CSV writers to disk.
+func (s *stateSizeTracer) flushWriters() {
+	s.writer.Flush()
+	if err := s.writer.Error(); err != nil {
+		log.Warn("Failed to flush statesize writer", "error", err)
+	}
+	s.depthCreatedWriter.Flush()
+	if err := s.depthCreatedWriter.Error(); err != nil {
+		log.Warn("Failed to flush depth created writer", "error", err)
+	}
+	s.depthDeletedWriter.Flush()
+	if err := s.depthDeletedWriter.Error(); err != nil {
+		log.Warn("Failed to flush depth deleted writer", "error", err)
 	}
 }
 
