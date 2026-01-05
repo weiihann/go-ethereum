@@ -17,14 +17,13 @@
 package live
 
 import (
-	"context"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
-	"net/http"
+	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
-	"syscall"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -33,7 +32,6 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
-	"github.com/gorilla/websocket"
 )
 
 func init() {
@@ -41,19 +39,15 @@ func init() {
 }
 
 const (
-	// idleTimeout is the maximum time to wait for a subscriber before shutting down.
-	idleTimeout = 30 * time.Minute
-
-	// wsWriteTimeout is the timeout for writing to a WebSocket connection.
-	wsWriteTimeout = 30 * time.Second
+	// batchSize is the number of blocks per batch file.
+	batchSize = 2000
 )
 
 // stateSizeTracerConfig is the configuration for the statesize tracer.
 type stateSizeTracerConfig struct {
-	Address string `json:"address"` // WebSocket server address (e.g., ":8546")
+	// OutputDir is the directory where batch files will be stored.
+	OutputDir string `json:"outputDir"`
 }
-
-// JSON-serializable types for StateUpdate
 
 // StateUpdateJSON is the JSON-serializable version of tracing.StateUpdate.
 type StateUpdateJSON struct {
@@ -112,54 +106,46 @@ type TrieNodeJSON struct {
 	Hash common.Hash   `json:"hash"`
 }
 
-type stateSizeTracer struct {
-	mu          sync.RWMutex
-	server      *http.Server
-	subscribers map[*websocket.Conn]struct{}
-	upgrader    websocket.Upgrader
+// batchFile represents an open batch file with its gzip writer.
+type batchFile struct {
+	file       *os.File
+	gzipWriter *gzip.Writer
+	encoder    *json.Encoder
+	count      int // number of updates written
+}
 
-	// Idle timeout tracking
-	lastActivity time.Time
-	done         chan struct{}
-	closeOnce    sync.Once
+type stateSizeTracer struct {
+	mu        sync.Mutex
+	outputDir string
+
+	// currentBatch tracks the currently open batch file.
+	// Key is the batch number (blockNumber / batchSize).
+	currentBatch *batchFile
+	batchNumber  uint64
+	initialized  bool
+
+	closeOnce sync.Once
 }
 
 func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	var config stateSizeTracerConfig
 	if err := json.Unmarshal(cfg, &config); err != nil {
-		return nil, errors.New("failed to parse config: " + err.Error())
+		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
-	if config.Address == "" {
-		return nil, errors.New("statesize tracer address is required")
+	if config.OutputDir == "" {
+		return nil, errors.New("statesize tracer outputDir is required")
+	}
+
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(config.OutputDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
 	t := &stateSizeTracer{
-		subscribers:  make(map[*websocket.Conn]struct{}, 16),
-		lastActivity: time.Now(),
-		done:         make(chan struct{}),
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			CheckOrigin:     func(r *http.Request) bool { return true },
-		},
+		outputDir: config.OutputDir,
 	}
 
-	// Create HTTP server with WebSocket handler
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", t.handleWebSocket)
-
-	t.server = &http.Server{
-		Addr:    config.Address,
-		Handler: mux,
-	}
-
-	// Start the HTTP server
-	go func() {
-		log.Info("Starting statesize WebSocket server", "address", config.Address)
-		if err := t.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error("Statesize WebSocket server error", "err", err)
-		}
-	}()
+	log.Info("Starting statesize tracer", "outputDir", config.OutputDir, "batchSize", batchSize)
 
 	return &tracing.Hooks{
 		OnStateUpdate: t.onStateUpdate,
@@ -167,141 +153,167 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	}, nil
 }
 
-// handleWebSocket upgrades HTTP connections to WebSocket and manages subscribers.
-func (t *stateSizeTracer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := t.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Debug("WebSocket upgrade failed", "err", err)
-		return
-	}
-
-	// Add subscriber
-	t.mu.Lock()
-	t.subscribers[conn] = struct{}{}
-	t.lastActivity = time.Now()
-	subscriberCount := len(t.subscribers)
-	t.mu.Unlock()
-
-	log.Info("New statesize WebSocket subscriber", "total", subscriberCount)
-
-	// Read loop to detect disconnection
-	defer func() {
-		t.mu.Lock()
-		delete(t.subscribers, conn)
-		subscriberCount := len(t.subscribers)
-		if subscriberCount == 0 {
-			t.lastActivity = time.Now()
-		}
-		t.mu.Unlock()
-
-		conn.Close()
-		log.Info("Statesize WebSocket subscriber disconnected", "remaining", subscriberCount)
-	}()
-
-	// Keep connection alive by reading (and discarding) any incoming messages
-	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
-			return
-		}
-	}
+// batchFileName returns the filename for a given batch number.
+func batchFileName(batchNumber uint64) string {
+	startBlock := batchNumber * batchSize
+	endBlock := startBlock + batchSize - 1
+	return fmt.Sprintf("state_updates_%d_%d.json.gz", startBlock, endBlock)
 }
 
-// broadcast sends a message to all connected subscribers.
-func (t *stateSizeTracer) broadcast(data []byte) {
-	t.mu.RLock()
-	subscribers := make([]*websocket.Conn, 0, len(t.subscribers))
-	for conn := range t.subscribers {
-		subscribers = append(subscribers, conn)
-	}
-	t.mu.RUnlock()
+// getBatchNumber returns the batch number for a given block number.
+func getBatchNumber(blockNumber uint64) uint64 {
+	return blockNumber / batchSize
+}
 
-	for _, conn := range subscribers {
-		conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Debug("Failed to send to subscriber", "err", err)
-			// Connection will be cleaned up by the read loop
+// openBatchFile opens or creates a batch file for the given batch number.
+// If the file exists, it reads existing data and prepares for appending.
+func (t *stateSizeTracer) openBatchFile(batchNum uint64) (*batchFile, error) {
+	filename := filepath.Join(t.outputDir, batchFileName(batchNum))
+
+	var existingUpdates []*StateUpdateJSON
+
+	// Check if file exists and read existing data
+	if _, err := os.Stat(filename); err == nil {
+		existingUpdates, err = t.readExistingBatch(filename)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read existing batch file: %w", err)
+		}
+		log.Info("Found existing batch file", "file", filename, "existingUpdates", len(existingUpdates))
+	}
+
+	// Create/overwrite the file (we'll write existing + new data)
+	file, err := os.Create(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create batch file: %w", err)
+	}
+
+	gzWriter, _ := gzip.NewWriterLevel(file, gzip.BestCompression)
+	encoder := json.NewEncoder(gzWriter)
+
+	bf := &batchFile{
+		file:       file,
+		gzipWriter: gzWriter,
+		encoder:    encoder,
+		count:      0,
+	}
+
+	// Write back existing updates
+	for _, update := range existingUpdates {
+		if err := encoder.Encode(update); err != nil {
+			bf.close()
+			return nil, fmt.Errorf("failed to write existing update: %w", err)
+		}
+		bf.count++
+	}
+
+	return bf, nil
+}
+
+// readExistingBatch reads all updates from an existing batch file.
+func (t *stateSizeTracer) readExistingBatch(filename string) ([]*StateUpdateJSON, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return nil, err
+	}
+	defer gzReader.Close()
+
+	var updates []*StateUpdateJSON
+	decoder := json.NewDecoder(gzReader)
+
+	for decoder.More() {
+		var update StateUpdateJSON
+		if err := decoder.Decode(&update); err != nil {
+			return nil, err
+		}
+		updates = append(updates, &update)
+	}
+
+	return updates, nil
+}
+
+// close closes the batch file and its gzip writer.
+func (bf *batchFile) close() error {
+	if bf == nil {
+		return nil
+	}
+
+	var errs []error
+
+	if bf.gzipWriter != nil {
+		if err := bf.gzipWriter.Close(); err != nil {
+			errs = append(errs, err)
 		}
 	}
+
+	if bf.file != nil {
+		if err := bf.file.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("errors closing batch file: %v", errs)
+	}
+	return nil
 }
 
 func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
-	if update == nil || t.isClosed() {
+	if update == nil {
 		return
 	}
 
-	// Wait for a subscriber to connect (up to idleTimeout)
-	if !t.waitForSubscriber() {
-		// Check if we're closing - if so, exit silently
-		if t.isClosed() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	batchNum := getBatchNumber(update.BlockNumber)
+
+	// Check if we need to switch to a new batch
+	if t.initialized && batchNum != t.batchNumber {
+		// Close current batch
+		if t.currentBatch != nil {
+			log.Info("Closing batch file",
+				"batch", t.batchNumber,
+				"updates", t.currentBatch.count)
+			if err := t.currentBatch.close(); err != nil {
+				log.Error("Failed to close batch file", "err", err)
+			}
+			t.currentBatch = nil
+		}
+	}
+
+	// Open batch file if needed
+	if t.currentBatch == nil {
+		bf, err := t.openBatchFile(batchNum)
+		if err != nil {
+			log.Error("Failed to open batch file", "batch", batchNum, "err", err)
 			return
 		}
-		log.Warn("Statesize tracer: no subscriber connected within timeout, triggering shutdown")
-		// Send SIGTERM to self for graceful shutdown
-		if p, err := os.FindProcess(os.Getpid()); err == nil {
-			p.Signal(syscall.SIGTERM)
-		}
-		return
+		t.currentBatch = bf
+		t.batchNumber = batchNum
+		t.initialized = true
+		log.Info("Opened batch file", "batch", batchNum, "file", batchFileName(batchNum))
 	}
 
-	// Check again after waiting - we might have been closed
-	if t.isClosed() {
-		return
-	}
-
-	// Convert to JSON-serializable format
+	// Convert and write the update
 	msg := convertStateUpdate(update)
-
-	// Marshal to JSON
-	data, err := json.Marshal(msg)
-	if err != nil {
-		log.Warn("Failed to marshal state update", "err", err)
+	if err := t.currentBatch.encoder.Encode(msg); err != nil {
+		log.Error("Failed to write state update", "block", update.BlockNumber, "err", err)
 		return
 	}
+	t.currentBatch.count++
 
-	// Broadcast to all subscribers
-	t.broadcast(data)
-
-	// Update activity timestamp
-	t.mu.Lock()
-	t.lastActivity = time.Now()
-	t.mu.Unlock()
-}
-
-// waitForSubscriber waits for at least one subscriber to connect.
-// Returns true if a subscriber connected, false if timeout was reached.
-func (t *stateSizeTracer) waitForSubscriber() bool {
-	// Quick check first
-	t.mu.RLock()
-	hasSubscribers := len(t.subscribers) > 0
-	t.mu.RUnlock()
-	if hasSubscribers {
-		return true
-	}
-
-	// Wait with periodic checks
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	log.Info("Statesize tracer: waiting for subscriber")
-	timeout := time.After(idleTimeout)
-
-	for {
-		select {
-		case <-ticker.C:
-			t.mu.RLock()
-			hasSubscribers := len(t.subscribers) > 0
-			t.mu.RUnlock()
-			if hasSubscribers {
-				log.Info("Statesize tracer: subscriber connected")
-				return true
-			}
-			log.Info("Statesize tracer: waiting for subscriber")
-		case <-timeout:
-			log.Info("Statesize tracer: timeout reached")
-			return false
-		case <-t.done:
-			return false
-		}
+	// Log progress periodically
+	if t.currentBatch.count%100 == 0 {
+		log.Info("State updates progress",
+			"batch", t.batchNumber,
+			"updates", t.currentBatch.count,
+			"lastBlock", update.BlockNumber)
 	}
 }
 
@@ -401,36 +413,20 @@ func convertTrieNode(node *trienode.Node) *TrieNodeJSON {
 
 func (t *stateSizeTracer) onClose() {
 	t.closeOnce.Do(func() {
-		// Signal any waiting goroutines to stop
-		close(t.done)
-
-		// Close all WebSocket connections
 		t.mu.Lock()
-		for conn := range t.subscribers {
-			conn.Close()
-		}
-		t.subscribers = nil
-		t.mu.Unlock()
+		defer t.mu.Unlock()
 
-		// Shutdown the HTTP server gracefully
-		if t.server != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := t.server.Shutdown(ctx); err != nil {
-				log.Warn("Failed to shutdown statesize WebSocket server gracefully", "err", err)
+		// Close any open batch file
+		if t.currentBatch != nil {
+			log.Info("Closing final batch file",
+				"batch", t.batchNumber,
+				"updates", t.currentBatch.count)
+			if err := t.currentBatch.close(); err != nil {
+				log.Error("Failed to close batch file", "err", err)
 			}
+			t.currentBatch = nil
 		}
 
 		log.Info("Statesize tracer closed")
 	})
-}
-
-// isClosed returns true if the tracer has been closed.
-func (t *stateSizeTracer) isClosed() bool {
-	select {
-	case <-t.done:
-		return true
-	default:
-		return false
-	}
 }
