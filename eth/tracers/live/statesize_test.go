@@ -17,228 +17,340 @@
 package live
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/gorilla/websocket"
+	"github.com/holiman/uint256"
 )
 
-func TestCalculateDepthCountsByType(t *testing.T) {
+func TestStateSizeTracerConfig(t *testing.T) {
 	tests := []struct {
-		name            string
-		paths           []string
-		expectedCreated [65]int64
+		name    string
+		config  string
+		wantErr bool
 	}{
 		{
-			name:            "empty map",
-			paths:           []string{},
-			expectedCreated: [65]int64{},
+			name:    "valid config",
+			config:  `{"address": ":8546"}`,
+			wantErr: false,
 		},
 		{
-			name:  "root only",
-			paths: []string{""},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1
-				return c
-			}(),
+			name:    "missing address",
+			config:  `{}`,
+			wantErr: true,
 		},
 		{
-			name:  "linear chain - all branch nodes",
-			paths: []string{"", "0", "0a", "0a3"},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 1 // "0"
-				c[2] = 1 // "0a"
-				c[3] = 1 // "0a3"
-				return c
-			}(),
-		},
-		{
-			name:  "extension node - path jump",
-			paths: []string{"", "0a3"}, // extension from root to "0a3"
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 1 // "0a3" (child of root)
-				return c
-			}(),
-		},
-		{
-			name:  "branching at root",
-			paths: []string{"", "0", "1", "2"},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 3 // "0", "1", "2"
-				return c
-			}(),
-		},
-		{
-			name:  "two branches from root",
-			paths: []string{"", "0", "0a", "1", "1b"},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 2 // "0", "1"
-				c[2] = 2 // "0a", "1b"
-				return c
-			}(),
-		},
-		{
-			name:  "mixed extension and branch",
-			paths: []string{"", "0", "0a", "0a3", "0b"},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 1 // "0"
-				c[2] = 2 // "0a", "0b"
-				c[3] = 1 // "0a3"
-				return c
-			}(),
-		},
-		{
-			name:  "deep path with extensions",
-			paths: []string{"", "abc", "abcdef"},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 1 // "abc"
-				c[2] = 1 // "abcdef"
-				return c
-			}(),
-		},
-		{
-			name:  "siblings at various depths",
-			paths: []string{"", "0", "00", "01", "1", "10", "11"},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 2 // "0", "1"
-				c[2] = 4 // "00", "01", "10", "11"
-				return c
-			}(),
-		},
-		{
-			name:  "complex tree",
-			paths: []string{"", "a", "ab", "abc", "abd", "b", "bc"},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 2 // "a", "b"
-				c[2] = 2 // "ab", "bc"
-				c[3] = 2 // "abc", "abd"
-				return c
-			}(),
-		},
-		{
-			name:  "max depth path",
-			paths: []string{"", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
-			expectedCreated: func() [65]int64 {
-				var c [65]int64
-				c[0] = 1 // ""
-				c[1] = 1 // 64-nibble path (child of root via extension)
-				return c
-			}(),
+			name:    "invalid json",
+			config:  `{invalid}`,
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Build pathMap with New blob data (simulates created nodes)
-			pathMap := make(map[string]*tracing.TrieNodeChange, len(tt.paths))
-			for _, p := range tt.paths {
-				pathMap[p] = &tracing.TrieNodeChange{
-					New: &trienode.Node{Blob: []byte{0x01}}, // Non-empty blob marks as created
-				}
+			hooks, err := newStateSizeTracer(json.RawMessage(tt.config))
+			if (err != nil) != tt.wantErr {
+				t.Errorf("newStateSizeTracer() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
-
-			created, deleted := calculateDepthCountsByType(pathMap)
-
-			if created != tt.expectedCreated {
-				t.Errorf("calculateDepthCountsByType() created mismatch")
-				for i := 0; i < 65; i++ {
-					if created[i] != tt.expectedCreated[i] {
-						t.Errorf("  depth %d: got %d, want %d", i, created[i], tt.expectedCreated[i])
-					}
-				}
-			}
-
-			// All nodes have New data, so deleted should be all zeros
-			var expectedDeleted [65]int64
-			if deleted != expectedDeleted {
-				t.Errorf("calculateDepthCountsByType() deleted should be all zeros for created nodes")
+			if hooks != nil && hooks.OnClose != nil {
+				hooks.OnClose()
 			}
 		})
 	}
 }
 
-func TestCalculateDepthCountsByType_Deletion(t *testing.T) {
-	// Test that deleted nodes are counted correctly
-	pathMap := map[string]*tracing.TrieNodeChange{
-		"":   {Prev: &trienode.Node{Blob: []byte{0x01}}},                                          // deleted at depth 0
-		"0":  {Prev: &trienode.Node{Blob: []byte{0x01}}, New: &trienode.Node{Blob: []byte{}}},     // deleted at depth 1
-		"0a": {Prev: &trienode.Node{Blob: []byte{0x01}}},                                          // deleted at depth 2
-		"1":  {Prev: &trienode.Node{Blob: []byte{0x01}}, New: &trienode.Node{Blob: []byte{0x02}}}, // modified at depth 1 (not deleted)
+func TestConvertStateUpdate(t *testing.T) {
+	update := &tracing.StateUpdate{
+		BlockNumber: 100,
+		Root:        common.HexToHash("0x1234"),
+		OriginRoot:  common.HexToHash("0x5678"),
+		AccountChanges: map[common.Address]*tracing.AccountChange{
+			common.HexToAddress("0x1"): {
+				Prev: nil,
+				New: &types.StateAccount{
+					Nonce:    1,
+					Balance:  uint256.NewInt(1000),
+					Root:     common.HexToHash("0xroot"),
+					CodeHash: []byte{0x01, 0x02},
+				},
+			},
+			common.HexToAddress("0x2"): {
+				Prev: &types.StateAccount{Nonce: 1, Balance: uint256.NewInt(500)},
+				New:  nil,
+			},
+		},
+		StorageChanges: map[common.Address]map[common.Hash]*tracing.StorageChange{
+			common.HexToAddress("0x1"): {
+				common.HexToHash("0x1"): {
+					Prev: common.Hash{},
+					New:  common.HexToHash("0x1234"),
+				},
+			},
+		},
+		TrieChanges: map[common.Hash]map[string]*tracing.TrieNodeChange{
+			{}: { // Account trie
+				"": {
+					Prev: nil,
+					New:  &trienode.Node{Blob: []byte{0x01, 0x02}, Hash: common.HexToHash("0xnode")},
+				},
+			},
+		},
+		CodeChanges: map[common.Address]*tracing.CodeChange{
+			common.HexToAddress("0x3"): {
+				New: &tracing.ContractCode{
+					Hash:   common.HexToHash("0xcode"),
+					Code:   []byte{0x60, 0x00},
+					Exists: false,
+				},
+			},
+		},
 	}
 
-	created, deleted := calculateDepthCountsByType(pathMap)
+	msg := convertStateUpdate(update)
 
-	// Expected deleted: depth 0 = 1, depth 1 = 1, depth 2 = 1
-	expectedDeleted := [65]int64{1, 1, 1}
-	for i := 0; i < 65; i++ {
-		if deleted[i] != expectedDeleted[i] {
-			t.Errorf("deleted depth %d: got %d, want %d", i, deleted[i], expectedDeleted[i])
-		}
+	if msg.BlockNumber != 100 {
+		t.Errorf("BlockNumber = %d, want 100", msg.BlockNumber)
+	}
+	if msg.Root != common.HexToHash("0x1234") {
+		t.Errorf("Root = %v, want 0x1234", msg.Root)
+	}
+	if len(msg.AccountChanges) != 2 {
+		t.Errorf("AccountChanges len = %d, want 2", len(msg.AccountChanges))
+	}
+	if len(msg.StorageChanges) != 1 {
+		t.Errorf("StorageChanges len = %d, want 1", len(msg.StorageChanges))
+	}
+	if len(msg.TrieChanges) != 1 {
+		t.Errorf("TrieChanges len = %d, want 1", len(msg.TrieChanges))
+	}
+	if len(msg.CodeChanges) != 1 {
+		t.Errorf("CodeChanges len = %d, want 1", len(msg.CodeChanges))
 	}
 
-	// Expected created: only "1" is modified (has New data), depth 1 = 1
-	expectedCreated := [65]int64{0, 1}
-	for i := 0; i < 65; i++ {
-		if created[i] != expectedCreated[i] {
-			t.Errorf("created depth %d: got %d, want %d", i, created[i], expectedCreated[i])
-		}
+	// Test JSON serialization
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Marshaled data is empty")
 	}
 }
 
-func TestCalculateDepthCountsByType_Mixed(t *testing.T) {
-	// Test mixed scenario: some nodes created, some modified, some deleted
-	pathMap := map[string]*tracing.TrieNodeChange{
-		"": {
-			Prev: &trienode.Node{Blob: []byte{0x01}},
-			New:  &trienode.Node{Blob: []byte{0x02}},
-		}, // modified at depth 0
-		"0": {
-			New: &trienode.Node{Blob: []byte{0x01}},
-		}, // created at depth 1
-		"1": {
-			Prev: &trienode.Node{Blob: []byte{0x01}},
-		}, // deleted at depth 1
-		"0a": {
-			Prev: &trienode.Node{Blob: []byte{0x01}},
-			New:  &trienode.Node{Blob: []byte{0x02}},
-		}, // modified at depth 2
-		"1b": {
-			Prev: &trienode.Node{Blob: []byte{0x01}},
-		}, // deleted at depth 2
+func TestWebSocketBroadcast(t *testing.T) {
+	tracer := &stateSizeTracer{
+		subscribers: make(map[*websocket.Conn]struct{}, 16),
+		done:        make(chan struct{}),
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin:     func(r *http.Request) bool { return true },
+		},
+		lastActivity: time.Now(),
 	}
 
-	created, deleted := calculateDepthCountsByType(pathMap)
+	// Create test server
+	server := httptest.NewServer(http.HandlerFunc(tracer.handleWebSocket))
+	defer server.Close()
 
-	// Created/Modified: "" (depth 0), "0" (depth 1), "0a" (depth 2)
-	expectedCreated := [65]int64{1, 1, 1}
-	for i := 0; i < 65; i++ {
-		if created[i] != expectedCreated[i] {
-			t.Errorf("created depth %d: got %d, want %d", i, created[i], expectedCreated[i])
-		}
+	// Connect WebSocket client
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect WebSocket: %v", err)
+	}
+	defer ws.Close()
+
+	// Wait for subscriber to be registered
+	time.Sleep(50 * time.Millisecond)
+
+	// Check subscriber count
+	tracer.mu.RLock()
+	if len(tracer.subscribers) != 1 {
+		t.Errorf("Expected 1 subscriber, got %d", len(tracer.subscribers))
+	}
+	tracer.mu.RUnlock()
+
+	// Broadcast a message
+	msg := &StateUpdateJSON{
+		BlockNumber: 100,
+		Root:        common.HexToHash("0x1234"),
+	}
+	data, _ := json.Marshal(msg)
+	tracer.broadcast(data)
+
+	// Read the message from client
+	ws.SetReadDeadline(time.Now().Add(time.Second))
+	_, receivedData, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read message: %v", err)
 	}
 
-	// Deleted: "1" (depth 1), "1b" (depth 2)
-	expectedDeleted := [65]int64{0, 1, 1}
-	for i := 0; i < 65; i++ {
-		if deleted[i] != expectedDeleted[i] {
-			t.Errorf("deleted depth %d: got %d, want %d", i, deleted[i], expectedDeleted[i])
+	var received StateUpdateJSON
+	if err := json.Unmarshal(receivedData, &received); err != nil {
+		t.Fatalf("Failed to unmarshal message: %v", err)
+	}
+
+	if received.BlockNumber != 100 {
+		t.Errorf("BlockNumber = %d, want 100", received.BlockNumber)
+	}
+
+	// Close tracer
+	close(tracer.done)
+}
+
+func TestWaitForSubscriberTimeout(t *testing.T) {
+	tracer := &stateSizeTracer{
+		subscribers:  make(map[*websocket.Conn]struct{}),
+		done:         make(chan struct{}),
+		lastActivity: time.Now(),
+	}
+
+	// Close done channel after a short delay to simulate cancellation
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(tracer.done)
+	}()
+
+	// This should return false because done was closed
+	result := tracer.waitForSubscriber()
+	if result {
+		t.Error("waitForSubscriber should return false when done is closed")
+	}
+}
+
+func TestWaitForSubscriber(t *testing.T) {
+	tracer := &stateSizeTracer{
+		subscribers:  make(map[*websocket.Conn]struct{}),
+		done:         make(chan struct{}),
+		lastActivity: time.Now(),
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin:     func(r *http.Request) bool { return true },
+		},
+	}
+
+	// Create test server
+	server := httptest.NewServer(http.HandlerFunc(tracer.handleWebSocket))
+	defer server.Close()
+
+	// Start waiting for subscriber in background
+	result := make(chan bool, 1)
+	go func() {
+		result <- tracer.waitForSubscriber()
+	}()
+
+	// Give it a moment, then connect
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect WebSocket client
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect WebSocket: %v", err)
+	}
+	defer ws.Close()
+
+	// Wait for result
+	select {
+	case got := <-result:
+		if !got {
+			t.Error("waitForSubscriber returned false, expected true")
 		}
+	case <-time.After(time.Second):
+		t.Error("waitForSubscriber timed out")
+	}
+
+	close(tracer.done)
+}
+
+func TestConvertStateAccount(t *testing.T) {
+	tests := []struct {
+		name    string
+		account *types.StateAccount
+		wantNil bool
+	}{
+		{
+			name:    "nil account",
+			account: nil,
+			wantNil: true,
+		},
+		{
+			name: "valid account",
+			account: &types.StateAccount{
+				Nonce:    100,
+				Balance:  uint256.NewInt(1000),
+				Root:     common.HexToHash("0x1234"),
+				CodeHash: []byte{0x01, 0x02},
+			},
+			wantNil: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertStateAccount(tt.account)
+			if tt.wantNil && result != nil {
+				t.Errorf("convertStateAccount() = %v, want nil", result)
+			}
+			if !tt.wantNil && result == nil {
+				t.Error("convertStateAccount() = nil, want non-nil")
+			}
+			if !tt.wantNil && result != nil {
+				if result.Nonce != tt.account.Nonce {
+					t.Errorf("Nonce = %d, want %d", result.Nonce, tt.account.Nonce)
+				}
+			}
+		})
+	}
+}
+
+func TestConvertTrieNode(t *testing.T) {
+	tests := []struct {
+		name    string
+		node    *trienode.Node
+		wantNil bool
+	}{
+		{
+			name:    "nil node",
+			node:    nil,
+			wantNil: true,
+		},
+		{
+			name: "valid node",
+			node: &trienode.Node{
+				Blob: []byte{0x01, 0x02},
+				Hash: common.HexToHash("0x1234"),
+			},
+			wantNil: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertTrieNode(tt.node)
+			if tt.wantNil && result != nil {
+				t.Errorf("convertTrieNode() = %v, want nil", result)
+			}
+			if !tt.wantNil && result == nil {
+				t.Error("convertTrieNode() = nil, want non-nil")
+			}
+			if !tt.wantNil && result != nil {
+				if result.Hash != tt.node.Hash {
+					t.Errorf("Hash = %v, want %v", result.Hash, tt.node.Hash)
+				}
+			}
+		})
 	}
 }

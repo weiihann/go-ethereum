@@ -17,228 +17,149 @@
 package live
 
 import (
-	"bufio"
-	"encoding/csv"
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
+	"net/http"
 	"os"
-	"path/filepath"
-	"slices"
-	"strconv"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/lru"
-	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/gorilla/websocket"
 )
 
 func init() {
 	tracers.LiveDirectory.Register("statesize", newStateSizeTracer)
 }
 
-// Database key size constants matching core/state/state_sizer.go
-var (
-	accountKeySize            = int64(len(rawdb.SnapshotAccountPrefix) + common.HashLength)
-	storageKeySize            = int64(len(rawdb.SnapshotStoragePrefix) + common.HashLength*2)
-	accountTrienodePrefixSize = int64(len(rawdb.TrieNodeAccountPrefix))
-	storageTrienodePrefixSize = int64(len(rawdb.TrieNodeStoragePrefix) + common.HashLength)
-	codeKeySize               = int64(len(rawdb.CodePrefix) + common.HashLength)
+const (
+	// idleTimeout is the maximum time to wait for a subscriber before shutting down.
+	idleTimeout = 30 * time.Minute
+
+	// wsWriteTimeout is the timeout for writing to a WebSocket connection.
+	wsWriteTimeout = 30 * time.Second
 )
 
-// CSV column headers (cumulative only)
-var csvHeaders = []string{
-	"block_number",
-	"root",
-	"parent_root",
-	"accounts",
-	"account_bytes",
-	"storages",
-	"storage_bytes",
-	"account_trienodes",
-	"account_trienode_bytes",
-	"storage_trienodes",
-	"storage_trienode_bytes",
-	"codes",
-	"code_bytes",
+// stateSizeTracerConfig is the configuration for the statesize tracer.
+type stateSizeTracerConfig struct {
+	Address string `json:"address"` // WebSocket server address (e.g., ":8546")
 }
 
-// depthCSVHeaders generates headers for the depth CSV files.
-// Format: block_number, root, parent_root, total_nodes, account_depth_0..64, storage_depth_0..64
-func depthCSVHeaders() []string {
-	headers := make([]string, 0, 4+65+65)
-	headers = append(headers, "block_number", "root", "parent_root", "total_nodes")
-	for i := 0; i <= 64; i++ {
-		headers = append(headers, fmt.Sprintf("account_depth_%d", i))
-	}
-	for i := 0; i <= 64; i++ {
-		headers = append(headers, fmt.Sprintf("storage_depth_%d", i))
-	}
-	return headers
+// JSON-serializable types for StateUpdate
+
+// StateUpdateJSON is the JSON-serializable version of tracing.StateUpdate.
+type StateUpdateJSON struct {
+	OriginRoot  common.Hash `json:"originRoot"`
+	Root        common.Hash `json:"root"`
+	BlockNumber uint64      `json:"blockNumber"`
+
+	AccountChanges map[common.Address]*AccountChangeJSON                 `json:"accountChanges,omitempty"`
+	StorageChanges map[common.Address]map[common.Hash]*StorageChangeJSON `json:"storageChanges,omitempty"`
+	CodeChanges    map[common.Address]*CodeChangeJSON                    `json:"codeChanges,omitempty"`
+	TrieChanges    map[common.Hash]map[string]*TrieNodeChangeJSON        `json:"trieChanges,omitempty"`
 }
 
-// stateSizeStats represents cumulative state size statistics.
-type stateSizeStats struct {
-	Accounts             int64
-	AccountBytes         int64
-	Storages             int64
-	StorageBytes         int64
-	AccountTrienodes     int64
-	AccountTrienodeBytes int64
-	StorageTrienodes     int64
-	StorageTrienodeBytes int64
-	Codes                int64
-	CodeBytes            int64
+// AccountChangeJSON is the JSON-serializable version of tracing.AccountChange.
+type AccountChangeJSON struct {
+	Prev *StateAccountJSON `json:"prev,omitempty"`
+	New  *StateAccountJSON `json:"new,omitempty"`
 }
 
-// stateSizeRecord represents a single CSV record with cumulative stats.
-type stateSizeRecord struct {
-	BlockNumber uint64
-	Root        common.Hash
-	ParentRoot  common.Hash
-	Stats       stateSizeStats
+// StateAccountJSON is a JSON-serializable version of types.StateAccount.
+type StateAccountJSON struct {
+	Nonce    uint64        `json:"nonce"`
+	Balance  *hexutil.Big  `json:"balance"`
+	Root     common.Hash   `json:"root"`
+	CodeHash hexutil.Bytes `json:"codeHash"`
 }
 
-// statsCache is the maximum number of state roots to keep in the LRU cache.
-// This prevents OOM issues when running for extended periods.
-const statsCache = 10000
+// StorageChangeJSON is the JSON-serializable version of tracing.StorageChange.
+type StorageChangeJSON struct {
+	Prev common.Hash `json:"prev"`
+	New  common.Hash `json:"new"`
+}
 
-// flushInterval is the number of blocks between disk flushes.
-// Flushing every block causes excessive I/O which can lead to system instability.
-const flushInterval = 128
+// CodeChangeJSON is the JSON-serializable version of tracing.CodeChange.
+type CodeChangeJSON struct {
+	Prev *ContractCodeJSON `json:"prev,omitempty"`
+	New  *ContractCodeJSON `json:"new,omitempty"`
+}
+
+// ContractCodeJSON is the JSON-serializable version of tracing.ContractCode.
+type ContractCodeJSON struct {
+	Hash   common.Hash   `json:"hash"`
+	Code   hexutil.Bytes `json:"code"`
+	Exists bool          `json:"exists"`
+}
+
+// TrieNodeChangeJSON is the JSON-serializable version of tracing.TrieNodeChange.
+type TrieNodeChangeJSON struct {
+	Prev *TrieNodeJSON `json:"prev,omitempty"`
+	New  *TrieNodeJSON `json:"new,omitempty"`
+}
+
+// TrieNodeJSON is the JSON-serializable version of trienode.Node.
+type TrieNodeJSON struct {
+	Blob hexutil.Bytes `json:"blob"`
+	Hash common.Hash   `json:"hash"`
+}
 
 type stateSizeTracer struct {
-	mu       sync.Mutex
-	file     *os.File
-	writer   *csv.Writer
-	filePath string
+	mu          sync.RWMutex
+	server      *http.Server
+	subscribers map[*websocket.Conn]struct{}
+	upgrader    websocket.Upgrader
 
-	// Depth tracking - separate files for created and deleted nodes
-	depthCreatedFile     *os.File
-	depthCreatedWriter   *csv.Writer
-	depthCreatedFilePath string
-
-	depthDeletedFile     *os.File
-	depthDeletedWriter   *csv.Writer
-	depthDeletedFilePath string
-
-	// LRU cache from state root to cumulative stats (bounded to prevent OOM)
-	stats *lru.Cache[common.Hash, stateSizeStats]
-
-	// initialized is set to true after the first state update processes
-	// and loads the parent stats from the CSV file
-	initialized bool
-}
-
-type stateSizeTracerConfig struct {
-	Path string `json:"path"` // Path to the directory where the tracer logs will be stored
+	// Idle timeout tracking
+	lastActivity time.Time
+	done         chan struct{}
+	closeOnce    sync.Once
 }
 
 func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	var config stateSizeTracerConfig
 	if err := json.Unmarshal(cfg, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config: %v", err)
+		return nil, errors.New("failed to parse config: " + err.Error())
 	}
-	if config.Path == "" {
-		return nil, errors.New("statesize tracer output path is required")
-	}
-
-	filePath := filepath.Join(config.Path, "statesize.csv")
-	depthCreatedFilePath := filepath.Join(config.Path, "statesize_depth_created.csv")
-	depthDeletedFilePath := filepath.Join(config.Path, "statesize_depth_deleted.csv")
-
-	// Ensure the directory exists
-	if err := os.MkdirAll(config.Path, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create statesize directory: %v", err)
+	if config.Address == "" {
+		return nil, errors.New("statesize tracer address is required")
 	}
 
 	t := &stateSizeTracer{
-		filePath:             filePath,
-		depthCreatedFilePath: depthCreatedFilePath,
-		depthDeletedFilePath: depthDeletedFilePath,
-		stats:                lru.NewCache[common.Hash, stateSizeStats](statsCache),
+		subscribers:  make(map[*websocket.Conn]struct{}, 16),
+		lastActivity: time.Now(),
+		done:         make(chan struct{}),
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin:     func(r *http.Request) bool { return true },
+		},
 	}
 
-	// Open statesize file for appending
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open statesize file: %v", err)
-	}
-	t.file = file
-	t.writer = csv.NewWriter(file)
+	// Create HTTP server with WebSocket handler
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", t.handleWebSocket)
 
-	// Write header if file is new (empty)
-	info, err := file.Stat()
-	if err != nil {
-		file.Close()
-		return nil, fmt.Errorf("failed to stat statesize file: %v", err)
+	t.server = &http.Server{
+		Addr:    config.Address,
+		Handler: mux,
 	}
-	if info.Size() == 0 {
-		if err := t.writer.Write(csvHeaders); err != nil {
-			file.Close()
-			return nil, fmt.Errorf("failed to write CSV headers: %v", err)
+
+	// Start the HTTP server
+	go func() {
+		log.Info("Starting statesize WebSocket server", "address", config.Address)
+		if err := t.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("Statesize WebSocket server error", "err", err)
 		}
-		t.writer.Flush()
-	}
-
-	// Open depth created file for appending
-	depthCreatedFile, err := os.OpenFile(depthCreatedFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		file.Close()
-		return nil, fmt.Errorf("failed to open depth created file: %v", err)
-	}
-	t.depthCreatedFile = depthCreatedFile
-	t.depthCreatedWriter = csv.NewWriter(depthCreatedFile)
-
-	// Write header if depth created file is new (empty)
-	depthCreatedInfo, err := depthCreatedFile.Stat()
-	if err != nil {
-		file.Close()
-		depthCreatedFile.Close()
-		return nil, fmt.Errorf("failed to stat depth created file: %v", err)
-	}
-	if depthCreatedInfo.Size() == 0 {
-		if err := t.depthCreatedWriter.Write(depthCSVHeaders()); err != nil {
-			file.Close()
-			depthCreatedFile.Close()
-			return nil, fmt.Errorf("failed to write depth created CSV headers: %v", err)
-		}
-		t.depthCreatedWriter.Flush()
-	}
-
-	// Open depth deleted file for appending
-	depthDeletedFile, err := os.OpenFile(depthDeletedFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		file.Close()
-		depthCreatedFile.Close()
-		return nil, fmt.Errorf("failed to open depth deleted file: %v", err)
-	}
-	t.depthDeletedFile = depthDeletedFile
-	t.depthDeletedWriter = csv.NewWriter(depthDeletedFile)
-
-	// Write header if depth deleted file is new (empty)
-	depthDeletedInfo, err := depthDeletedFile.Stat()
-	if err != nil {
-		file.Close()
-		depthCreatedFile.Close()
-		depthDeletedFile.Close()
-		return nil, fmt.Errorf("failed to stat depth deleted file: %v", err)
-	}
-	if depthDeletedInfo.Size() == 0 {
-		if err := t.depthDeletedWriter.Write(depthCSVHeaders()); err != nil {
-			file.Close()
-			depthCreatedFile.Close()
-			depthDeletedFile.Close()
-			return nil, fmt.Errorf("failed to write depth deleted CSV headers: %v", err)
-		}
-		t.depthDeletedWriter.Flush()
-	}
+	}()
 
 	return &tracing.Hooks{
 		OnStateUpdate: t.onStateUpdate,
@@ -246,492 +167,270 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	}, nil
 }
 
-// loadStatsForRoot searches the CSV file for a record with the given root hash
-// and returns its stats. Returns zero stats if not found.
-func (s *stateSizeTracer) loadStatsForRoot(blockNumber uint64, root common.Hash) (stateSizeStats, bool) {
-	file, err := os.Open(s.filePath)
+// handleWebSocket upgrades HTTP connections to WebSocket and manages subscribers.
+func (t *stateSizeTracer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := t.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		return stateSizeStats{}, false
-	}
-	defer file.Close()
-
-	reader := csv.NewReader(bufio.NewReader(file))
-
-	// Read and skip header
-	if _, err := reader.Read(); err != nil {
-		return stateSizeStats{}, false
-	}
-
-	// Search for the root in the CSV file (read backwards would be more efficient,
-	// but CSV doesn't support that easily, so we just remember the last match)
-	var (
-		found     bool
-		lastStats stateSizeStats
-	)
-
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return stateSizeStats{}, false
-		}
-		if len(record) < len(csvHeaders) {
-			continue
-		}
-
-		rbN := record[0]
-		rbRoot := record[1]
-
-		if rbN == strconv.FormatUint(blockNumber, 10) && rbRoot == root.Hex() {
-			stats, _ := parseStats(record)
-			lastStats = stats
-			found = true
-			break
-		}
-	}
-
-	if found {
-		log.Info("Loaded initial stats from CSV", "root", root.Hex())
-	}
-	return lastStats, found
-}
-
-// parseStats extracts cumulative statistics from a CSV record.
-func parseStats(record []string) (stateSizeStats, error) {
-	if len(record) < len(csvHeaders) {
-		return stateSizeStats{}, errors.New("record too short")
-	}
-
-	// Cumulative columns start at index 3
-	stats := stateSizeStats{}
-	var err error
-
-	stats.Accounts, err = strconv.ParseInt(record[3], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.AccountBytes, err = strconv.ParseInt(record[4], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.Storages, err = strconv.ParseInt(record[5], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.StorageBytes, err = strconv.ParseInt(record[6], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.AccountTrienodes, err = strconv.ParseInt(record[7], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.AccountTrienodeBytes, err = strconv.ParseInt(record[8], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.StorageTrienodes, err = strconv.ParseInt(record[9], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.StorageTrienodeBytes, err = strconv.ParseInt(record[10], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.Codes, err = strconv.ParseInt(record[11], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-	stats.CodeBytes, err = strconv.ParseInt(record[12], 10, 64)
-	if err != nil {
-		return stats, err
-	}
-
-	return stats, nil
-}
-
-func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
-	if update == nil {
+		log.Debug("WebSocket upgrade failed", "err", err)
 		return
 	}
 
-	// On first update, try to load parent stats from the CSV file
-	s.mu.Lock()
-	if !s.initialized && update.OriginRoot != (types.EmptyRootHash) {
-		s.initialized = true
-		stats, found := s.loadStatsForRoot(update.BlockNumber-1, update.OriginRoot)
-		if !found {
-			log.Crit("Failed to load parent stats from CSV", "block", update.BlockNumber, "root", update.OriginRoot.Hex())
+	// Add subscriber
+	t.mu.Lock()
+	t.subscribers[conn] = struct{}{}
+	t.lastActivity = time.Now()
+	subscriberCount := len(t.subscribers)
+	t.mu.Unlock()
+
+	log.Info("New statesize WebSocket subscriber", "total", subscriberCount)
+
+	// Read loop to detect disconnection
+	defer func() {
+		t.mu.Lock()
+		delete(t.subscribers, conn)
+		subscriberCount := len(t.subscribers)
+		if subscriberCount == 0 {
+			t.lastActivity = time.Now()
+		}
+		t.mu.Unlock()
+
+		conn.Close()
+		log.Info("Statesize WebSocket subscriber disconnected", "remaining", subscriberCount)
+	}()
+
+	// Keep connection alive by reading (and discarding) any incoming messages
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
 			return
 		}
-		s.stats.Add(update.OriginRoot, stats)
 	}
-	s.mu.Unlock()
+}
 
-	// Calculate deltas
-	var (
-		accountsDelta         int64
-		accountBytesDelta     int64
-		storagesDelta         int64
-		storageBytesDelta     int64
-		accountTrienodesDelta int64
-		accountTrienodeBytes  int64
-		storageTrienodesDelta int64
-		storageTrienodeBytes  int64
-		codesDelta            int64
-		codeBytesDelta        int64
-	)
+// broadcast sends a message to all connected subscribers.
+func (t *stateSizeTracer) broadcast(data []byte) {
+	t.mu.RLock()
+	subscribers := make([]*websocket.Conn, 0, len(t.subscribers))
+	for conn := range t.subscribers {
+		subscribers = append(subscribers, conn)
+	}
+	t.mu.RUnlock()
 
-	// Calculate account size changes
-	for _, change := range update.AccountChanges {
-		prevLen := slimAccountSize(change.Prev)
-		newLen := slimAccountSize(change.New)
-
-		switch {
-		case prevLen > 0 && newLen == 0:
-			accountsDelta--
-			accountBytesDelta -= accountKeySize + int64(prevLen)
-		case prevLen == 0 && newLen > 0:
-			accountsDelta++
-			accountBytesDelta += accountKeySize + int64(newLen)
-		default:
-			accountBytesDelta += int64(newLen - prevLen)
+	for _, conn := range subscribers {
+		conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Debug("Failed to send to subscriber", "err", err)
+			// Connection will be cleaned up by the read loop
 		}
 	}
+}
 
-	encode := func(val common.Hash) []byte {
-		if val == (common.Hash{}) {
-			return nil
-		}
-		blob, _ := rlp.EncodeToBytes(common.TrimLeftZeroes(val[:]))
-		return blob
+func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
+	if update == nil || t.isClosed() {
+		return
 	}
 
-	// Calculate storage size changes
-	for _, slots := range update.StorageChanges {
-		for _, change := range slots {
-			prevLen := len(encode(change.Prev))
-			newLen := len(encode(change.New))
+	// Wait for a subscriber to connect (up to idleTimeout)
+	if !t.waitForSubscriber() {
+		// Check if we're closing - if so, exit silently
+		if t.isClosed() {
+			return
+		}
+		log.Warn("Statesize tracer: no subscriber connected within timeout, triggering shutdown")
+		// Send SIGTERM to self for graceful shutdown
+		if p, err := os.FindProcess(os.Getpid()); err == nil {
+			p.Signal(syscall.SIGTERM)
+		}
+		return
+	}
 
-			switch {
-			case prevLen > 0 && newLen == 0:
-				storagesDelta--
-				storageBytesDelta -= storageKeySize + int64(prevLen)
-			case prevLen == 0 && newLen > 0:
-				storagesDelta++
-				storageBytesDelta += storageKeySize + int64(newLen)
-			default:
-				storageBytesDelta += int64(newLen - prevLen)
+	// Check again after waiting - we might have been closed
+	if t.isClosed() {
+		return
+	}
+
+	// Convert to JSON-serializable format
+	msg := convertStateUpdate(update)
+
+	// Marshal to JSON
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Warn("Failed to marshal state update", "err", err)
+		return
+	}
+
+	// Broadcast to all subscribers
+	t.broadcast(data)
+
+	// Update activity timestamp
+	t.mu.Lock()
+	t.lastActivity = time.Now()
+	t.mu.Unlock()
+}
+
+// waitForSubscriber waits for at least one subscriber to connect.
+// Returns true if a subscriber connected, false if timeout was reached.
+func (t *stateSizeTracer) waitForSubscriber() bool {
+	// Quick check first
+	t.mu.RLock()
+	hasSubscribers := len(t.subscribers) > 0
+	t.mu.RUnlock()
+	if hasSubscribers {
+		return true
+	}
+
+	// Wait with periodic checks
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	log.Info("Statesize tracer: waiting for subscriber")
+	timeout := time.After(idleTimeout)
+
+	for {
+		select {
+		case <-ticker.C:
+			t.mu.RLock()
+			hasSubscribers := len(t.subscribers) > 0
+			t.mu.RUnlock()
+			if hasSubscribers {
+				log.Info("Statesize tracer: subscriber connected")
+				return true
 			}
+			log.Info("Statesize tracer: waiting for subscriber")
+		case <-timeout:
+			log.Info("Statesize tracer: timeout reached")
+			return false
+		case <-t.done:
+			return false
 		}
 	}
+}
 
-	// Calculate trie node size changes and depth counts
-	var (
-		accountDepthCreated [65]int64
-		storageDepthCreated [65]int64
-		accountDepthDeleted [65]int64
-		storageDepthDeleted [65]int64
-	)
-
-	for owner, nodes := range update.TrieChanges {
-		var (
-			keyPrefix int64
-			isAccount = owner == (common.Hash{})
-		)
-		if isAccount {
-			keyPrefix = accountTrienodePrefixSize
-		} else {
-			keyPrefix = storageTrienodePrefixSize
-		}
-
-		// Calculate depth counts for created/modified and deleted nodes
-		createdCounts, deletedCounts := calculateDepthCountsByType(nodes)
-
-		for path, change := range nodes {
-			var prevLen, newLen int
-			if change.Prev != nil {
-				prevLen = len(change.Prev.Blob)
-			}
-			if change.New != nil {
-				newLen = len(change.New.Blob)
-			}
-			keySize := keyPrefix + int64(len(path))
-
-			switch {
-			case prevLen > 0 && newLen == 0:
-				if isAccount {
-					accountTrienodesDelta--
-					accountTrienodeBytes -= keySize + int64(prevLen)
-				} else {
-					storageTrienodesDelta--
-					storageTrienodeBytes -= keySize + int64(prevLen)
-				}
-			case prevLen == 0 && newLen > 0:
-				if isAccount {
-					accountTrienodesDelta++
-					accountTrienodeBytes += keySize + int64(newLen)
-				} else {
-					storageTrienodesDelta++
-					storageTrienodeBytes += keySize + int64(newLen)
-				}
-			default:
-				if isAccount {
-					accountTrienodeBytes += int64(newLen - prevLen)
-				} else {
-					storageTrienodeBytes += int64(newLen - prevLen)
-				}
-			}
-		}
-
-		// Accumulate depth counts
-		if isAccount {
-			for i := range 65 {
-				accountDepthCreated[i] += createdCounts[i]
-				accountDepthDeleted[i] += deletedCounts[i]
-			}
-		} else {
-			for i := range 65 {
-				storageDepthCreated[i] += createdCounts[i]
-				storageDepthDeleted[i] += deletedCounts[i]
-			}
-		}
-	}
-
-	// Calculate contract code size changes
-	// Only count new codes that didn't exist before
-	codeExists := make(map[common.Hash]struct{})
-	for _, change := range update.CodeChanges {
-		if change.New == nil {
-			continue
-		}
-		// Skip if we've already counted this code hash or if it existed before
-		if _, ok := codeExists[change.New.Hash]; ok || change.New.Exists {
-			continue
-		}
-		codesDelta++
-		codeBytesDelta += codeKeySize + int64(len(change.New.Code))
-		codeExists[change.New.Hash] = struct{}{}
-	}
-
-	// Calculate cumulative statistics
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Look up parent stats
-	parentStats, _ := s.stats.Get(update.OriginRoot) // zero value if not found
-
-	// Apply deltas to get new cumulative stats
-	newStats := stateSizeStats{
-		Accounts:             parentStats.Accounts + accountsDelta,
-		AccountBytes:         parentStats.AccountBytes + accountBytesDelta,
-		Storages:             parentStats.Storages + storagesDelta,
-		StorageBytes:         parentStats.StorageBytes + storageBytesDelta,
-		AccountTrienodes:     parentStats.AccountTrienodes + accountTrienodesDelta,
-		AccountTrienodeBytes: parentStats.AccountTrienodeBytes + accountTrienodeBytes,
-		StorageTrienodes:     parentStats.StorageTrienodes + storageTrienodesDelta,
-		StorageTrienodeBytes: parentStats.StorageTrienodeBytes + storageTrienodeBytes,
-		Codes:                parentStats.Codes + codesDelta,
-		CodeBytes:            parentStats.CodeBytes + codeBytesDelta,
-	}
-
-	// Store the new stats for this root
-	s.stats.Add(update.Root, newStats)
-
-	// Calculate total nodes for created and deleted
-	var totalCreated, totalDeleted int64
-	for _, c := range accountDepthCreated {
-		totalCreated += c
-	}
-	for _, c := range storageDepthCreated {
-		totalCreated += c
-	}
-	for _, c := range accountDepthDeleted {
-		totalDeleted += c
-	}
-	for _, c := range storageDepthDeleted {
-		totalDeleted += c
-	}
-
-	// Write to statesize CSV
-	s.writeRecord(stateSizeRecord{
-		BlockNumber: update.BlockNumber,
+// convertStateUpdate converts a tracing.StateUpdate to a JSON-serializable format.
+func convertStateUpdate(update *tracing.StateUpdate) *StateUpdateJSON {
+	msg := &StateUpdateJSON{
+		OriginRoot:  update.OriginRoot,
 		Root:        update.Root,
-		ParentRoot:  update.OriginRoot,
-		Stats:       newStats,
-	})
-
-	// Write to depth CSV files
-	s.writeDepthRecord(s.depthCreatedWriter, update.BlockNumber, update.Root, update.OriginRoot, totalCreated, accountDepthCreated, storageDepthCreated)
-	s.writeDepthRecord(s.depthDeletedWriter, update.BlockNumber, update.Root, update.OriginRoot, totalDeleted, accountDepthDeleted, storageDepthDeleted)
-
-	// Flush to disk every flushInterval blocks to reduce I/O pressure
-	if update.BlockNumber%flushInterval == 0 {
-		s.flushWriters()
-	}
-}
-
-func (s *stateSizeTracer) writeRecord(r stateSizeRecord) {
-	row := []string{
-		strconv.FormatUint(r.BlockNumber, 10),
-		r.Root.Hex(),
-		r.ParentRoot.Hex(),
-		strconv.FormatInt(r.Stats.Accounts, 10),
-		strconv.FormatInt(r.Stats.AccountBytes, 10),
-		strconv.FormatInt(r.Stats.Storages, 10),
-		strconv.FormatInt(r.Stats.StorageBytes, 10),
-		strconv.FormatInt(r.Stats.AccountTrienodes, 10),
-		strconv.FormatInt(r.Stats.AccountTrienodeBytes, 10),
-		strconv.FormatInt(r.Stats.StorageTrienodes, 10),
-		strconv.FormatInt(r.Stats.StorageTrienodeBytes, 10),
-		strconv.FormatInt(r.Stats.Codes, 10),
-		strconv.FormatInt(r.Stats.CodeBytes, 10),
+		BlockNumber: update.BlockNumber,
 	}
 
-	if err := s.writer.Write(row); err != nil {
-		log.Warn("Failed to write statesize record", "error", err)
-		return
-	}
-}
-
-func (s *stateSizeTracer) writeDepthRecord(writer *csv.Writer, blockNumber uint64, root, parentRoot common.Hash, totalNodes int64, accountDepths, storageDepths [65]int64) {
-	// Build row: block_number, root, parent_root, total_nodes, account_depth_0..64, storage_depth_0..64
-	row := make([]string, 0, 4+65+65)
-	row = append(row, strconv.FormatUint(blockNumber, 10))
-	row = append(row, root.Hex())
-	row = append(row, parentRoot.Hex())
-	row = append(row, strconv.FormatInt(totalNodes, 10))
-
-	for i := 0; i < 65; i++ {
-		row = append(row, strconv.FormatInt(accountDepths[i], 10))
-	}
-	for i := 0; i < 65; i++ {
-		row = append(row, strconv.FormatInt(storageDepths[i], 10))
-	}
-
-	if err := writer.Write(row); err != nil {
-		log.Warn("Failed to write depth record", "error", err)
-		return
-	}
-}
-
-// flushWriters flushes all CSV writers to disk.
-func (s *stateSizeTracer) flushWriters() {
-	s.writer.Flush()
-	if err := s.writer.Error(); err != nil {
-		log.Warn("Failed to flush statesize writer", "error", err)
-	}
-	s.depthCreatedWriter.Flush()
-	if err := s.depthCreatedWriter.Error(); err != nil {
-		log.Warn("Failed to flush depth created writer", "error", err)
-	}
-	s.depthDeletedWriter.Flush()
-	if err := s.depthDeletedWriter.Error(); err != nil {
-		log.Warn("Failed to flush depth deleted writer", "error", err)
-	}
-}
-
-func (s *stateSizeTracer) onClose() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.writer != nil {
-		s.writer.Flush()
-	}
-	if s.file != nil {
-		if err := s.file.Close(); err != nil {
-			log.Warn("Failed to close statesize tracer file", "error", err)
-		}
-	}
-	if s.depthCreatedWriter != nil {
-		s.depthCreatedWriter.Flush()
-	}
-	if s.depthCreatedFile != nil {
-		if err := s.depthCreatedFile.Close(); err != nil {
-			log.Warn("Failed to close depth created file", "error", err)
-		}
-	}
-	if s.depthDeletedWriter != nil {
-		s.depthDeletedWriter.Flush()
-	}
-	if s.depthDeletedFile != nil {
-		if err := s.depthDeletedFile.Close(); err != nil {
-			log.Warn("Failed to close depth deleted file", "error", err)
-		}
-	}
-}
-
-// slimAccountSize calculates the RLP-encoded size of an account in slim format.
-func slimAccountSize(acct *types.StateAccount) int {
-	if acct == nil {
-		return 0
-	}
-	data := types.SlimAccountRLP(*acct)
-	return len(data)
-}
-
-// calculateDepthCountsByType calculates the depth of each node and separates counts
-// into created/modified nodes and deleted nodes.
-// - Created/Modified: nodes that exist after the update (New has data)
-// - Deleted: nodes that existed before but don't exist after (Prev has data, New is empty)
-func calculateDepthCountsByType(pathMap map[string]*tracing.TrieNodeChange) (created, deleted [65]int64) {
-	n := len(pathMap)
-	if n == 0 {
-		return
-	}
-
-	// First, calculate depth for all nodes using the tree structure
-	paths := make([]string, 0, n)
-	for path := range pathMap {
-		paths = append(paths, path)
-	}
-	slices.Sort(paths)
-
-	// Map from path to its depth
-	depthMap := make(map[string]int, n)
-
-	// Stack stores paths of ancestors
-	stack := make([]string, 0, 65)
-
-	for _, path := range paths {
-		// Pop until stack top is a strict prefix of path
-		for len(stack) > 0 {
-			top := stack[len(stack)-1]
-			if len(top) < len(path) && path[:len(top)] == top {
-				break
+	// Convert account changes
+	if len(update.AccountChanges) > 0 {
+		msg.AccountChanges = make(map[common.Address]*AccountChangeJSON, len(update.AccountChanges))
+		for addr, change := range update.AccountChanges {
+			msg.AccountChanges[addr] = &AccountChangeJSON{
+				Prev: convertStateAccount(change.Prev),
+				New:  convertStateAccount(change.New),
 			}
-			stack = stack[:len(stack)-1]
-		}
-
-		depth := len(stack)
-		depthMap[path] = depth
-
-		stack = append(stack, path)
-	}
-
-	// Now classify each node based on Prev/New status
-	for path, change := range pathMap {
-		depth := depthMap[path]
-
-		var prevLen, newLen int
-		if change.Prev != nil {
-			prevLen = len(change.Prev.Blob)
-		}
-		if change.New != nil {
-			newLen = len(change.New.Blob)
-		}
-
-		// Created/Modified: New has data (node exists after update)
-		if newLen > 0 {
-			created[depth]++
-		}
-		// Deleted: Prev has data but New is empty (node removed)
-		if prevLen > 0 && newLen == 0 {
-			deleted[depth]++
 		}
 	}
 
-	return
+	// Convert storage changes
+	if len(update.StorageChanges) > 0 {
+		msg.StorageChanges = make(map[common.Address]map[common.Hash]*StorageChangeJSON, len(update.StorageChanges))
+		for addr, slots := range update.StorageChanges {
+			msg.StorageChanges[addr] = make(map[common.Hash]*StorageChangeJSON, len(slots))
+			for slot, change := range slots {
+				msg.StorageChanges[addr][slot] = &StorageChangeJSON{
+					Prev: change.Prev,
+					New:  change.New,
+				}
+			}
+		}
+	}
+
+	// Convert code changes
+	if len(update.CodeChanges) > 0 {
+		msg.CodeChanges = make(map[common.Address]*CodeChangeJSON, len(update.CodeChanges))
+		for addr, change := range update.CodeChanges {
+			msg.CodeChanges[addr] = &CodeChangeJSON{
+				Prev: convertContractCode(change.Prev),
+				New:  convertContractCode(change.New),
+			}
+		}
+	}
+
+	// Convert trie changes
+	if len(update.TrieChanges) > 0 {
+		msg.TrieChanges = make(map[common.Hash]map[string]*TrieNodeChangeJSON, len(update.TrieChanges))
+		for owner, nodes := range update.TrieChanges {
+			msg.TrieChanges[owner] = make(map[string]*TrieNodeChangeJSON, len(nodes))
+			for path, change := range nodes {
+				msg.TrieChanges[owner][path] = &TrieNodeChangeJSON{
+					Prev: convertTrieNode(change.Prev),
+					New:  convertTrieNode(change.New),
+				}
+			}
+		}
+	}
+
+	return msg
+}
+
+func convertStateAccount(acct *types.StateAccount) *StateAccountJSON {
+	if acct == nil {
+		return nil
+	}
+	return &StateAccountJSON{
+		Nonce:    acct.Nonce,
+		Balance:  (*hexutil.Big)(acct.Balance.ToBig()),
+		Root:     acct.Root,
+		CodeHash: acct.CodeHash,
+	}
+}
+
+func convertContractCode(code *tracing.ContractCode) *ContractCodeJSON {
+	if code == nil {
+		return nil
+	}
+	return &ContractCodeJSON{
+		Hash:   code.Hash,
+		Code:   code.Code,
+		Exists: code.Exists,
+	}
+}
+
+func convertTrieNode(node *trienode.Node) *TrieNodeJSON {
+	if node == nil {
+		return nil
+	}
+	return &TrieNodeJSON{
+		Blob: node.Blob,
+		Hash: node.Hash,
+	}
+}
+
+func (t *stateSizeTracer) onClose() {
+	t.closeOnce.Do(func() {
+		// Signal any waiting goroutines to stop
+		close(t.done)
+
+		// Close all WebSocket connections
+		t.mu.Lock()
+		for conn := range t.subscribers {
+			conn.Close()
+		}
+		t.subscribers = nil
+		t.mu.Unlock()
+
+		// Shutdown the HTTP server gracefully
+		if t.server != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := t.server.Shutdown(ctx); err != nil {
+				log.Warn("Failed to shutdown statesize WebSocket server gracefully", "err", err)
+			}
+		}
+
+		log.Info("Statesize tracer closed")
+	})
+}
+
+// isClosed returns true if the tracer has been closed.
+func (t *stateSizeTracer) isClosed() bool {
+	select {
+	case <-t.done:
+		return true
+	default:
+		return false
+	}
 }
