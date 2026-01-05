@@ -17,21 +17,25 @@
 package live
 
 import (
+	"bufio"
 	"compress/gzip"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/holiman/uint256"
 )
 
 func init() {
@@ -49,68 +53,85 @@ type stateSizeTracerConfig struct {
 	OutputDir string `json:"outputDir"`
 }
 
-// StateUpdateJSON is the JSON-serializable version of tracing.StateUpdate.
-type StateUpdateJSON struct {
-	OriginRoot  common.Hash `json:"originRoot"`
-	Root        common.Hash `json:"root"`
-	BlockNumber uint64      `json:"blockNumber"`
+// StateUpdateRLP is the RLP-serializable version of tracing.StateUpdate.
+// RLP doesn't support maps directly, so we convert to slices.
+type StateUpdateRLP struct {
+	OriginRoot  common.Hash
+	Root        common.Hash
+	BlockNumber uint64
 
-	AccountChanges map[common.Address]*AccountChangeJSON                 `json:"accountChanges,omitempty"`
-	StorageChanges map[common.Address]map[common.Hash]*StorageChangeJSON `json:"storageChanges,omitempty"`
-	CodeChanges    map[common.Address]*CodeChangeJSON                    `json:"codeChanges,omitempty"`
-	TrieChanges    map[common.Hash]map[string]*TrieNodeChangeJSON        `json:"trieChanges,omitempty"`
+	AccountChanges []AccountChangeEntry
+	StorageChanges []StorageChangeEntry
+	CodeChanges    []CodeChangeEntry
+	TrieChanges    []TrieChangeEntry
 }
 
-// AccountChangeJSON is the JSON-serializable version of tracing.AccountChange.
-type AccountChangeJSON struct {
-	Prev *StateAccountJSON `json:"prev,omitempty"`
-	New  *StateAccountJSON `json:"new,omitempty"`
+// AccountChangeEntry represents a single account change for RLP encoding.
+type AccountChangeEntry struct {
+	Address common.Address
+	Prev    *StateAccountRLP `rlp:"nil"`
+	New     *StateAccountRLP `rlp:"nil"`
 }
 
-// StateAccountJSON is a JSON-serializable version of types.StateAccount.
-type StateAccountJSON struct {
-	Nonce    uint64        `json:"nonce"`
-	Balance  *hexutil.Big  `json:"balance"`
-	Root     common.Hash   `json:"root"`
-	CodeHash hexutil.Bytes `json:"codeHash"`
+// StateAccountRLP is an RLP-compatible version of types.StateAccount.
+type StateAccountRLP struct {
+	Nonce    uint64
+	Balance  *uint256.Int
+	Root     common.Hash
+	CodeHash []byte
 }
 
-// StorageChangeJSON is the JSON-serializable version of tracing.StorageChange.
-type StorageChangeJSON struct {
-	Prev common.Hash `json:"prev"`
-	New  common.Hash `json:"new"`
+// StorageChangeEntry represents storage changes for a single address.
+type StorageChangeEntry struct {
+	Address common.Address
+	Slots   []SlotChange
 }
 
-// CodeChangeJSON is the JSON-serializable version of tracing.CodeChange.
-type CodeChangeJSON struct {
-	Prev *ContractCodeJSON `json:"prev,omitempty"`
-	New  *ContractCodeJSON `json:"new,omitempty"`
+// SlotChange represents a single storage slot change.
+type SlotChange struct {
+	Key  common.Hash
+	Prev common.Hash
+	New  common.Hash
 }
 
-// ContractCodeJSON is the JSON-serializable version of tracing.ContractCode.
-type ContractCodeJSON struct {
-	Hash   common.Hash   `json:"hash"`
-	Code   hexutil.Bytes `json:"code"`
-	Exists bool          `json:"exists"`
+// CodeChangeEntry represents a code change for RLP encoding.
+type CodeChangeEntry struct {
+	Address common.Address
+	Prev    *ContractCodeRLP `rlp:"nil"`
+	New     *ContractCodeRLP `rlp:"nil"`
 }
 
-// TrieNodeChangeJSON is the JSON-serializable version of tracing.TrieNodeChange.
-type TrieNodeChangeJSON struct {
-	Prev *TrieNodeJSON `json:"prev,omitempty"`
-	New  *TrieNodeJSON `json:"new,omitempty"`
+// ContractCodeRLP is an RLP-compatible version of tracing.ContractCode.
+type ContractCodeRLP struct {
+	Hash   common.Hash
+	Code   []byte
+	Exists bool
 }
 
-// TrieNodeJSON is the JSON-serializable version of trienode.Node.
-type TrieNodeJSON struct {
-	Blob hexutil.Bytes `json:"blob"`
-	Hash common.Hash   `json:"hash"`
+// TrieChangeEntry represents trie changes for a single owner.
+type TrieChangeEntry struct {
+	Owner common.Hash
+	Nodes []TrieNodeEntry
+}
+
+// TrieNodeEntry represents a single trie node change.
+type TrieNodeEntry struct {
+	Path string
+	Prev *TrieNodeRLP `rlp:"nil"`
+	New  *TrieNodeRLP `rlp:"nil"`
+}
+
+// TrieNodeRLP is an RLP-compatible version of trienode.Node.
+type TrieNodeRLP struct {
+	Blob []byte
+	Hash common.Hash
 }
 
 // batchFile represents an open batch file with its gzip writer.
 type batchFile struct {
 	file       *os.File
 	gzipWriter *gzip.Writer
-	encoder    *json.Encoder
+	bufWriter  *bufio.Writer
 	count      int // number of updates written
 }
 
@@ -119,7 +140,6 @@ type stateSizeTracer struct {
 	outputDir string
 
 	// currentBatch tracks the currently open batch file.
-	// Key is the batch number (blockNumber / batchSize).
 	currentBatch *batchFile
 	batchNumber  uint64
 	initialized  bool
@@ -157,7 +177,7 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 func batchFileName(batchNumber uint64) string {
 	startBlock := batchNumber * batchSize
 	endBlock := startBlock + batchSize - 1
-	return fmt.Sprintf("state_updates_%d_%d.json.gz", startBlock, endBlock)
+	return fmt.Sprintf("%d_%d.rlp.gz", startBlock, endBlock)
 }
 
 // getBatchNumber returns the batch number for a given block number.
@@ -170,11 +190,11 @@ func getBatchNumber(blockNumber uint64) uint64 {
 func (t *stateSizeTracer) openBatchFile(batchNum uint64) (*batchFile, error) {
 	filename := filepath.Join(t.outputDir, batchFileName(batchNum))
 
-	var existingUpdates []*StateUpdateJSON
+	var existingUpdates []*StateUpdateRLP
 
 	// Check if file exists and read existing data
 	if _, err := os.Stat(filename); err == nil {
-		existingUpdates, err = t.readExistingBatch(filename)
+		existingUpdates, err = readExistingBatch(filename)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read existing batch file: %w", err)
 		}
@@ -188,29 +208,52 @@ func (t *stateSizeTracer) openBatchFile(batchNum uint64) (*batchFile, error) {
 	}
 
 	gzWriter, _ := gzip.NewWriterLevel(file, gzip.BestCompression)
-	encoder := json.NewEncoder(gzWriter)
+	bufWriter := bufio.NewWriterSize(gzWriter, 256*1024) // 256KB buffer
 
 	bf := &batchFile{
 		file:       file,
 		gzipWriter: gzWriter,
-		encoder:    encoder,
+		bufWriter:  bufWriter,
 		count:      0,
 	}
 
 	// Write back existing updates
 	for _, update := range existingUpdates {
-		if err := encoder.Encode(update); err != nil {
+		if err := bf.writeUpdate(update); err != nil {
 			bf.close()
 			return nil, fmt.Errorf("failed to write existing update: %w", err)
 		}
-		bf.count++
 	}
 
 	return bf, nil
 }
 
+// writeUpdate writes a single RLP-encoded update with length prefix.
+func (bf *batchFile) writeUpdate(update *StateUpdateRLP) error {
+	// RLP encode the update
+	data, err := rlp.EncodeToBytes(update)
+	if err != nil {
+		return fmt.Errorf("failed to RLP encode: %w", err)
+	}
+
+	// Write 4-byte length prefix (big-endian)
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
+	if _, err := bf.bufWriter.Write(lenBuf[:]); err != nil {
+		return err
+	}
+
+	// Write the RLP data
+	if _, err := bf.bufWriter.Write(data); err != nil {
+		return err
+	}
+
+	bf.count++
+	return nil
+}
+
 // readExistingBatch reads all updates from an existing batch file.
-func (t *stateSizeTracer) readExistingBatch(filename string) ([]*StateUpdateJSON, error) {
+func readExistingBatch(filename string) ([]*StateUpdateRLP, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -223,12 +266,29 @@ func (t *stateSizeTracer) readExistingBatch(filename string) ([]*StateUpdateJSON
 	}
 	defer gzReader.Close()
 
-	var updates []*StateUpdateJSON
-	decoder := json.NewDecoder(gzReader)
+	bufReader := bufio.NewReaderSize(gzReader, 256*1024)
+	var updates []*StateUpdateRLP
 
-	for decoder.More() {
-		var update StateUpdateJSON
-		if err := decoder.Decode(&update); err != nil {
+	for {
+		// Read 4-byte length prefix
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(bufReader, lenBuf[:]); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		dataLen := binary.BigEndian.Uint32(lenBuf[:])
+
+		// Read the RLP data
+		data := make([]byte, dataLen)
+		if _, err := io.ReadFull(bufReader, data); err != nil {
+			return nil, err
+		}
+
+		// Decode RLP
+		var update StateUpdateRLP
+		if err := rlp.DecodeBytes(data, &update); err != nil {
 			return nil, err
 		}
 		updates = append(updates, &update)
@@ -237,13 +297,19 @@ func (t *stateSizeTracer) readExistingBatch(filename string) ([]*StateUpdateJSON
 	return updates, nil
 }
 
-// close closes the batch file and its gzip writer.
+// close closes the batch file and its writers.
 func (bf *batchFile) close() error {
 	if bf == nil {
 		return nil
 	}
 
 	var errs []error
+
+	if bf.bufWriter != nil {
+		if err := bf.bufWriter.Flush(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 
 	if bf.gzipWriter != nil {
 		if err := bf.gzipWriter.Close(); err != nil {
@@ -301,12 +367,11 @@ func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	}
 
 	// Convert and write the update
-	msg := convertStateUpdate(update)
-	if err := t.currentBatch.encoder.Encode(msg); err != nil {
+	msg := convertStateUpdateToRLP(update)
+	if err := t.currentBatch.writeUpdate(msg); err != nil {
 		log.Error("Failed to write state update", "block", update.BlockNumber, "err", err)
 		return
 	}
-	t.currentBatch.count++
 
 	// Log progress periodically
 	if t.currentBatch.count%100 == 0 {
@@ -317,95 +382,107 @@ func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	}
 }
 
-// convertStateUpdate converts a tracing.StateUpdate to a JSON-serializable format.
-func convertStateUpdate(update *tracing.StateUpdate) *StateUpdateJSON {
-	msg := &StateUpdateJSON{
+// convertStateUpdateToRLP converts a tracing.StateUpdate to RLP-serializable format.
+func convertStateUpdateToRLP(update *tracing.StateUpdate) *StateUpdateRLP {
+	msg := &StateUpdateRLP{
 		OriginRoot:  update.OriginRoot,
 		Root:        update.Root,
 		BlockNumber: update.BlockNumber,
 	}
 
-	// Convert account changes
+	// Convert account changes (map -> slice)
 	if len(update.AccountChanges) > 0 {
-		msg.AccountChanges = make(map[common.Address]*AccountChangeJSON, len(update.AccountChanges))
+		msg.AccountChanges = make([]AccountChangeEntry, 0, len(update.AccountChanges))
 		for addr, change := range update.AccountChanges {
-			msg.AccountChanges[addr] = &AccountChangeJSON{
-				Prev: convertStateAccount(change.Prev),
-				New:  convertStateAccount(change.New),
-			}
+			msg.AccountChanges = append(msg.AccountChanges, AccountChangeEntry{
+				Address: addr,
+				Prev:    convertStateAccountToRLP(change.Prev),
+				New:     convertStateAccountToRLP(change.New),
+			})
 		}
 	}
 
-	// Convert storage changes
+	// Convert storage changes (nested map -> slice of slices)
 	if len(update.StorageChanges) > 0 {
-		msg.StorageChanges = make(map[common.Address]map[common.Hash]*StorageChangeJSON, len(update.StorageChanges))
+		msg.StorageChanges = make([]StorageChangeEntry, 0, len(update.StorageChanges))
 		for addr, slots := range update.StorageChanges {
-			msg.StorageChanges[addr] = make(map[common.Hash]*StorageChangeJSON, len(slots))
+			entry := StorageChangeEntry{
+				Address: addr,
+				Slots:   make([]SlotChange, 0, len(slots)),
+			}
 			for slot, change := range slots {
-				msg.StorageChanges[addr][slot] = &StorageChangeJSON{
+				entry.Slots = append(entry.Slots, SlotChange{
+					Key:  slot,
 					Prev: change.Prev,
 					New:  change.New,
-				}
+				})
 			}
+			msg.StorageChanges = append(msg.StorageChanges, entry)
 		}
 	}
 
 	// Convert code changes
 	if len(update.CodeChanges) > 0 {
-		msg.CodeChanges = make(map[common.Address]*CodeChangeJSON, len(update.CodeChanges))
+		msg.CodeChanges = make([]CodeChangeEntry, 0, len(update.CodeChanges))
 		for addr, change := range update.CodeChanges {
-			msg.CodeChanges[addr] = &CodeChangeJSON{
-				Prev: convertContractCode(change.Prev),
-				New:  convertContractCode(change.New),
-			}
+			msg.CodeChanges = append(msg.CodeChanges, CodeChangeEntry{
+				Address: addr,
+				Prev:    convertContractCodeToRLP(change.Prev),
+				New:     convertContractCodeToRLP(change.New),
+			})
 		}
 	}
 
 	// Convert trie changes
 	if len(update.TrieChanges) > 0 {
-		msg.TrieChanges = make(map[common.Hash]map[string]*TrieNodeChangeJSON, len(update.TrieChanges))
+		msg.TrieChanges = make([]TrieChangeEntry, 0, len(update.TrieChanges))
 		for owner, nodes := range update.TrieChanges {
-			msg.TrieChanges[owner] = make(map[string]*TrieNodeChangeJSON, len(nodes))
-			for path, change := range nodes {
-				msg.TrieChanges[owner][path] = &TrieNodeChangeJSON{
-					Prev: convertTrieNode(change.Prev),
-					New:  convertTrieNode(change.New),
-				}
+			entry := TrieChangeEntry{
+				Owner: owner,
+				Nodes: make([]TrieNodeEntry, 0, len(nodes)),
 			}
+			for path, change := range nodes {
+				entry.Nodes = append(entry.Nodes, TrieNodeEntry{
+					Path: path,
+					Prev: convertTrieNodeToRLP(change.Prev),
+					New:  convertTrieNodeToRLP(change.New),
+				})
+			}
+			msg.TrieChanges = append(msg.TrieChanges, entry)
 		}
 	}
 
 	return msg
 }
 
-func convertStateAccount(acct *types.StateAccount) *StateAccountJSON {
+func convertStateAccountToRLP(acct *types.StateAccount) *StateAccountRLP {
 	if acct == nil {
 		return nil
 	}
-	return &StateAccountJSON{
+	return &StateAccountRLP{
 		Nonce:    acct.Nonce,
-		Balance:  (*hexutil.Big)(acct.Balance.ToBig()),
+		Balance:  acct.Balance,
 		Root:     acct.Root,
 		CodeHash: acct.CodeHash,
 	}
 }
 
-func convertContractCode(code *tracing.ContractCode) *ContractCodeJSON {
+func convertContractCodeToRLP(code *tracing.ContractCode) *ContractCodeRLP {
 	if code == nil {
 		return nil
 	}
-	return &ContractCodeJSON{
+	return &ContractCodeRLP{
 		Hash:   code.Hash,
 		Code:   code.Code,
 		Exists: code.Exists,
 	}
 }
 
-func convertTrieNode(node *trienode.Node) *TrieNodeJSON {
+func convertTrieNodeToRLP(node *trienode.Node) *TrieNodeRLP {
 	if node == nil {
 		return nil
 	}
-	return &TrieNodeJSON{
+	return &TrieNodeRLP{
 		Blob: node.Blob,
 		Hash: node.Hash,
 	}

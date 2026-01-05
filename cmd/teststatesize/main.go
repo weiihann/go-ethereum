@@ -1,23 +1,24 @@
 package main
 
 import (
+	"bufio"
+	"compress/gzip"
+	"encoding/binary"
 	"encoding/csv"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
-	"os/signal"
+	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
-	"syscall"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/gorilla/websocket"
 	"github.com/holiman/uint256"
 )
 
@@ -30,54 +31,79 @@ var (
 	codeKeySize               = int64(len(rawdb.CodePrefix) + common.HashLength)
 )
 
-// JSON types matching the tracer output
+// RLP types matching the tracer output
 
-type StateUpdateJSON struct {
-	OriginRoot     common.Hash                                           `json:"originRoot"`
-	Root           common.Hash                                           `json:"root"`
-	BlockNumber    uint64                                                `json:"blockNumber"`
-	AccountChanges map[common.Address]*AccountChangeJSON                 `json:"accountChanges,omitempty"`
-	StorageChanges map[common.Address]map[common.Hash]*StorageChangeJSON `json:"storageChanges,omitempty"`
-	CodeChanges    map[common.Address]*CodeChangeJSON                    `json:"codeChanges,omitempty"`
-	TrieChanges    map[common.Hash]map[string]*TrieNodeChangeJSON        `json:"trieChanges,omitempty"`
+// StateUpdateRLP is the RLP-serializable version of tracing.StateUpdate.
+type StateUpdateRLP struct {
+	OriginRoot  common.Hash
+	Root        common.Hash
+	BlockNumber uint64
+
+	AccountChanges []AccountChangeEntry
+	StorageChanges []StorageChangeEntry
+	CodeChanges    []CodeChangeEntry
+	TrieChanges    []TrieChangeEntry
 }
 
-type AccountChangeJSON struct {
-	Prev *StateAccountJSON `json:"prev,omitempty"`
-	New  *StateAccountJSON `json:"new,omitempty"`
+// AccountChangeEntry represents a single account change for RLP encoding.
+type AccountChangeEntry struct {
+	Address common.Address
+	Prev    *StateAccountRLP `rlp:"nil"`
+	New     *StateAccountRLP `rlp:"nil"`
 }
 
-type StateAccountJSON struct {
-	Nonce    uint64        `json:"nonce"`
-	Balance  *hexutil.Big  `json:"balance"`
-	Root     common.Hash   `json:"root"`
-	CodeHash hexutil.Bytes `json:"codeHash"`
+// StateAccountRLP is an RLP-compatible version of types.StateAccount.
+type StateAccountRLP struct {
+	Nonce    uint64
+	Balance  *uint256.Int
+	Root     common.Hash
+	CodeHash []byte
 }
 
-type StorageChangeJSON struct {
-	Prev common.Hash `json:"prev"`
-	New  common.Hash `json:"new"`
+// StorageChangeEntry represents storage changes for a single address.
+type StorageChangeEntry struct {
+	Address common.Address
+	Slots   []SlotChange
 }
 
-type CodeChangeJSON struct {
-	Prev *ContractCodeJSON `json:"prev,omitempty"`
-	New  *ContractCodeJSON `json:"new,omitempty"`
+// SlotChange represents a single storage slot change.
+type SlotChange struct {
+	Key  common.Hash
+	Prev common.Hash
+	New  common.Hash
 }
 
-type ContractCodeJSON struct {
-	Hash   common.Hash   `json:"hash"`
-	Code   hexutil.Bytes `json:"code"`
-	Exists bool          `json:"exists"`
+// CodeChangeEntry represents a code change for RLP encoding.
+type CodeChangeEntry struct {
+	Address common.Address
+	Prev    *ContractCodeRLP `rlp:"nil"`
+	New     *ContractCodeRLP `rlp:"nil"`
 }
 
-type TrieNodeChangeJSON struct {
-	Prev *TrieNodeJSON `json:"prev,omitempty"`
-	New  *TrieNodeJSON `json:"new,omitempty"`
+// ContractCodeRLP is an RLP-compatible version of tracing.ContractCode.
+type ContractCodeRLP struct {
+	Hash   common.Hash
+	Code   []byte
+	Exists bool
 }
 
-type TrieNodeJSON struct {
-	Blob hexutil.Bytes `json:"blob"`
-	Hash common.Hash   `json:"hash"`
+// TrieChangeEntry represents trie changes for a single owner.
+type TrieChangeEntry struct {
+	Owner common.Hash
+	Nodes []TrieNodeEntry
+}
+
+// TrieNodeEntry represents a single trie node change.
+type TrieNodeEntry struct {
+	Path string
+	Prev *TrieNodeRLP `rlp:"nil"`
+	New  *TrieNodeRLP `rlp:"nil"`
+}
+
+// TrieNodeRLP is an RLP-compatible version of trienode.Node.
+type TrieNodeRLP struct {
+	Blob []byte
+	Hash common.Hash
 }
 
 // StateDelta contains the calculated deltas for a block
@@ -111,24 +137,38 @@ type StateDelta struct {
 
 func main() {
 	// Parse command line flags
-	wsURL := flag.String("url", "ws://localhost:8546/", "WebSocket URL to connect to")
+	inputDir := flag.String("input", "", "Input directory containing .rlp.gz batch files")
 	outputPath := flag.String("output", "statesize.csv", "Output CSV file path")
 	depthOutputPath := flag.String("depth-output", "statesize_depth.csv", "Output CSV file path for depth statistics")
 	flag.Parse()
 
+	if *inputDir == "" {
+		log.Crit("Input directory is required (-input)")
+	}
+
 	// Setup logging
 	log.SetDefault(log.NewLogger(log.NewTerminalHandlerWithLevel(os.Stderr, log.LevelInfo, true)))
 
-	// Open CSV files
-	statFile, err := os.OpenFile(*outputPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// Find all batch files
+	batchFiles, err := findBatchFiles(*inputDir)
 	if err != nil {
-		log.Crit("Failed to open output file", "err", err)
+		log.Crit("Failed to find batch files", "err", err)
+	}
+	if len(batchFiles) == 0 {
+		log.Crit("No batch files found in directory", "dir", *inputDir)
+	}
+	log.Info("Found batch files", "count", len(batchFiles))
+
+	// Open CSV files
+	statFile, err := os.Create(*outputPath)
+	if err != nil {
+		log.Crit("Failed to create output file", "err", err)
 	}
 	defer statFile.Close()
 
-	depthFile, err := os.OpenFile(*depthOutputPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	depthFile, err := os.Create(*depthOutputPath)
 	if err != nil {
-		log.Crit("Failed to open depth output file", "err", err)
+		log.Crit("Failed to create depth output file", "err", err)
 	}
 	defer depthFile.Close()
 
@@ -138,85 +178,133 @@ func main() {
 	depthWriter := csv.NewWriter(depthFile)
 	defer depthWriter.Flush()
 
-	// Write headers if files are empty
-	statInfo, _ := statFile.Stat()
-	if statInfo.Size() == 0 {
-		if err := statWriter.Write(statHeaders()); err != nil {
-			log.Crit("Failed to write stat headers", "err", err)
-		}
-		statWriter.Flush()
+	// Write headers
+	if err := statWriter.Write(statHeaders()); err != nil {
+		log.Crit("Failed to write stat headers", "err", err)
+	}
+	if err := depthWriter.Write(depthHeaders()); err != nil {
+		log.Crit("Failed to write depth headers", "err", err)
 	}
 
-	depthInfo, _ := depthFile.Stat()
-	if depthInfo.Size() == 0 {
-		if err := depthWriter.Write(depthHeaders()); err != nil {
-			log.Crit("Failed to write depth headers", "err", err)
+	// Process each batch file
+	totalBlocks := uint64(0)
+	for _, batchFile := range batchFiles {
+		log.Info("Processing batch file", "file", filepath.Base(batchFile))
+
+		processed, err := processBatchFile(batchFile, statWriter, depthWriter)
+		if err != nil {
+			log.Error("Failed to process batch file", "file", batchFile, "err", err)
+			continue
 		}
+		totalBlocks += processed
+
+		// Flush after each batch
+		statWriter.Flush()
 		depthWriter.Flush()
 	}
 
-	// Connect to WebSocket
-	log.Info("Connecting to WebSocket", "url", *wsURL)
-	conn, _, err := websocket.DefaultDialer.Dial(*wsURL, nil)
+	log.Info("Done", "totalBlocks", totalBlocks)
+}
+
+// findBatchFiles finds all .rlp.gz files in the directory and returns them sorted by start block.
+func findBatchFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		log.Crit("Failed to connect to WebSocket", "err", err)
+		return nil, err
 	}
-	defer conn.Close()
-	log.Info("Connected to WebSocket")
 
-	// Handle interrupt signal
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
-
-	// Message processing loop
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				log.Error("WebSocket read error", "err", err)
-				return
-			}
-
-			var update StateUpdateJSON
-			if err := json.Unmarshal(message, &update); err != nil {
-				log.Warn("Failed to unmarshal message", "err", err)
-				continue
-			}
-
-			// Calculate deltas
-			delta := calculateDelta(&update)
-
-			// Write to CSV files
-			if err := statWriter.Write(deltaToStatRow(delta)); err != nil {
-				log.Warn("Failed to write stat row", "err", err)
-			}
-			if err := depthWriter.Write(deltaToDepthRow(delta)); err != nil {
-				log.Warn("Failed to write depth row", "err", err)
-			}
-
-			// Flush periodically
-			if delta.BlockNumber%128 == 0 {
-				statWriter.Flush()
-				depthWriter.Flush()
-				log.Info("Processed block", "number", delta.BlockNumber)
-			}
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
-	}()
-
-	// Wait for interrupt or connection close
-	select {
-	case <-done:
-		log.Info("Connection closed")
-	case <-interrupt:
-		log.Info("Interrupted, closing connection")
-		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		if filepath.Ext(entry.Name()) == ".gz" {
+			files = append(files, filepath.Join(dir, entry.Name()))
+		}
 	}
 
-	statWriter.Flush()
-	depthWriter.Flush()
-	log.Info("Done")
+	// Sort files by start block number (numeric sort)
+	sort.Slice(files, func(i, j int) bool {
+		return parseStartBlock(files[i]) < parseStartBlock(files[j])
+	})
+	return files, nil
+}
+
+// parseStartBlock extracts the start block number from a filename like "0_1999.rlp.gz".
+func parseStartBlock(path string) uint64 {
+	name := filepath.Base(path)
+	// Parse the first number before the underscore
+	for i, c := range name {
+		if c == '_' {
+			if num, err := strconv.ParseUint(name[:i], 10, 64); err == nil {
+				return num
+			}
+			break
+		}
+	}
+	return 0
+}
+
+// processBatchFile reads a single batch file and writes deltas to CSV.
+func processBatchFile(filename string, statWriter, depthWriter *csv.Writer) (uint64, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return 0, err
+	}
+	defer gzReader.Close()
+
+	bufReader := bufio.NewReaderSize(gzReader, 256*1024)
+	var processed uint64
+
+	for {
+		// Read 4-byte length prefix
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(bufReader, lenBuf[:]); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return processed, err
+		}
+		dataLen := binary.BigEndian.Uint32(lenBuf[:])
+
+		// Read the RLP data
+		data := make([]byte, dataLen)
+		if _, err := io.ReadFull(bufReader, data); err != nil {
+			return processed, err
+		}
+
+		// Decode RLP
+		var update StateUpdateRLP
+		if err := rlp.DecodeBytes(data, &update); err != nil {
+			return processed, fmt.Errorf("failed to decode RLP: %w", err)
+		}
+
+		// Calculate deltas
+		delta := calculateDelta(&update)
+
+		// Write to CSV files
+		if err := statWriter.Write(deltaToStatRow(delta)); err != nil {
+			return processed, err
+		}
+		if err := depthWriter.Write(deltaToDepthRow(delta)); err != nil {
+			return processed, err
+		}
+
+		processed++
+
+		// Log progress periodically
+		if processed%500 == 0 {
+			log.Info("Processing progress", "blocks", processed, "lastBlock", update.BlockNumber)
+		}
+	}
+
+	return processed, nil
 }
 
 func statHeaders() []string {
@@ -281,7 +369,7 @@ func deltaToDepthRow(d *StateDelta) []string {
 	return row
 }
 
-func calculateDelta(update *StateUpdateJSON) *StateDelta {
+func calculateDelta(update *StateUpdateRLP) *StateDelta {
 	delta := &StateDelta{
 		BlockNumber: update.BlockNumber,
 		Root:        update.Root,
@@ -306,8 +394,8 @@ func calculateDelta(update *StateUpdateJSON) *StateDelta {
 	}
 
 	// Calculate storage deltas
-	for _, slots := range update.StorageChanges {
-		for _, change := range slots {
+	for _, entry := range update.StorageChanges {
+		for _, change := range entry.Slots {
 			prevLen := storageValueSize(change.Prev)
 			newLen := storageValueSize(change.New)
 
@@ -325,8 +413,8 @@ func calculateDelta(update *StateUpdateJSON) *StateDelta {
 	}
 
 	// Calculate trie node deltas and depth statistics
-	for owner, nodes := range update.TrieChanges {
-		isAccount := owner == (common.Hash{})
+	for _, entry := range update.TrieChanges {
+		isAccount := entry.Owner == (common.Hash{})
 		var keyPrefix int64
 		if isAccount {
 			keyPrefix = accountTrienodePrefixSize
@@ -334,18 +422,24 @@ func calculateDelta(update *StateUpdateJSON) *StateDelta {
 			keyPrefix = storageTrienodePrefixSize
 		}
 
-		// Calculate depth deltas for all nodes
-		depthDeltas := calculateDepthDeltas(nodes)
+		// Convert to map for depth calculation
+		nodesMap := make(map[string]*TrieNodeEntry, len(entry.Nodes))
+		for i := range entry.Nodes {
+			nodesMap[entry.Nodes[i].Path] = &entry.Nodes[i]
+		}
 
-		for path, change := range nodes {
+		// Calculate depth deltas for all nodes
+		depthDeltas := calculateDepthDeltas(nodesMap)
+
+		for _, node := range entry.Nodes {
 			var prevLen, newLen int
-			if change.Prev != nil {
-				prevLen = len(change.Prev.Blob)
+			if node.Prev != nil {
+				prevLen = len(node.Prev.Blob)
 			}
-			if change.New != nil {
-				newLen = len(change.New.Blob)
+			if node.New != nil {
+				newLen = len(node.New.Blob)
 			}
-			keySize := keyPrefix + int64(len(path))
+			keySize := keyPrefix + int64(len(node.Path))
 
 			switch {
 			case prevLen > 0 && newLen == 0:
@@ -402,15 +496,12 @@ func calculateDelta(update *StateUpdateJSON) *StateDelta {
 	return delta
 }
 
-func accountSize(acct *StateAccountJSON) int {
+func accountSize(acct *StateAccountRLP) int {
 	if acct == nil {
 		return 0
 	}
-	// Convert to types.StateAccount and use SlimAccountRLP for actual size
-	var balance *uint256.Int
-	if acct.Balance != nil {
-		balance = uint256.MustFromBig(acct.Balance.ToInt())
-	} else {
+	balance := acct.Balance
+	if balance == nil {
 		balance = new(uint256.Int)
 	}
 	stateAcct := types.StateAccount{
@@ -433,7 +524,7 @@ func storageValueSize(val common.Hash) int {
 
 // calculateDepthDeltas calculates the depth of each node in the trie
 // and returns the delta (created - deleted) at each depth.
-func calculateDepthDeltas(nodes map[string]*TrieNodeChangeJSON) (deltas [65]int64) {
+func calculateDepthDeltas(nodes map[string]*TrieNodeEntry) (deltas [65]int64) {
 	if len(nodes) == 0 {
 		return
 	}
@@ -465,15 +556,15 @@ func calculateDepthDeltas(nodes map[string]*TrieNodeChangeJSON) (deltas [65]int6
 	}
 
 	// Calculate delta at each depth
-	for path, change := range nodes {
+	for path, node := range nodes {
 		depth := depthMap[path]
 
 		var prevLen, newLen int
-		if change.Prev != nil {
-			prevLen = len(change.Prev.Blob)
+		if node.Prev != nil {
+			prevLen = len(node.Prev.Blob)
 		}
-		if change.New != nil {
-			newLen = len(change.New.Blob)
+		if node.New != nil {
+			newLen = len(node.New.Blob)
 		}
 
 		switch {
