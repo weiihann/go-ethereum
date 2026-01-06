@@ -17,17 +17,16 @@
 package live
 
 import (
-	"bufio"
-	"compress/gzip"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"sync"
 
+	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/bloom"
+	"github.com/cockroachdb/pebble/sstable"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -43,14 +42,28 @@ func init() {
 }
 
 const (
-	// batchSize is the number of blocks per batch file.
-	batchSize = 5000
+	// Key format: 8-byte block number (big-endian) + 32-byte state root
+	keySize = 8 + 32
+
+	// Batch size for persisting updates
+	batchSize = 10000
 )
+
+// Metadata key prefix (uses 0xFF to sort after all block keys)
+var (
+	metaKeyProgress = []byte{0xFF, 'p', 'r', 'o', 'g', 'r', 'e', 's', 's'}
+)
+
+// progressData stores the last persisted state for integrity checking.
+type progressData struct {
+	BlockNumber uint64
+	StateRoot   common.Hash
+}
 
 // stateSizeTracerConfig is the configuration for the statesize tracer.
 type stateSizeTracerConfig struct {
-	// OutputDir is the directory where batch files will be stored.
-	OutputDir string `json:"outputDir"`
+	// Path is the directory where the Pebble database will be stored.
+	Path string `json:"path"`
 }
 
 // StateUpdateRLP is the RLP-serializable version of tracing.StateUpdate.
@@ -127,24 +140,25 @@ type TrieNodeRLP struct {
 	Hash common.Hash
 }
 
-// batchFile represents an open batch file with its gzip writer.
-type batchFile struct {
-	file       *os.File
-	gzipWriter *gzip.Writer
-	bufWriter  *bufio.Writer
-	count      int    // number of updates written
-	lastBlock  uint64 // last block number written to this batch
+// pendingUpdate holds an update waiting to be persisted.
+type pendingUpdate struct {
+	key  []byte
+	data []byte
 }
 
 type stateSizeTracer struct {
-	mu        sync.Mutex
-	outputDir string
+	mu sync.Mutex
+	db *pebble.DB
 
-	// currentBatch tracks the currently open batch file.
-	currentBatch *batchFile
-	batchNumber  uint64
-	initialized  bool
-	lastBlock    uint64 // last block number processed across all batches
+	// Progress tracking
+	progress      *progressData // last persisted progress (nil if empty DB)
+	firstUpdate   bool          // true until first update is validated
+	pendingCount  uint64        // number of updates in pending batch
+	pendingBuffer []pendingUpdate
+
+	// Last update in current batch (for progress tracking)
+	lastBatchBlock uint64
+	lastBatchRoot  common.Hash
 
 	closeOnce sync.Once
 }
@@ -154,20 +168,53 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	if err := json.Unmarshal(cfg, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
-	if config.OutputDir == "" {
-		return nil, errors.New("statesize tracer outputDir is required")
+	if config.Path == "" {
+		return nil, errors.New("statesize tracer path is required")
 	}
 
-	// Create output directory if it doesn't exist
-	if err := os.MkdirAll(config.OutputDir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create output directory: %w", err)
+	// Open Pebble database with Zstd compression for best compression ratio
+	opts := &pebble.Options{
+		// Use Zstd compression at all levels for maximum compression
+		Levels: []pebble.LevelOptions{
+			{TargetFileSize: 2 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: sstable.ZstdCompression},
+			{TargetFileSize: 4 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: sstable.ZstdCompression},
+			{TargetFileSize: 8 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: sstable.ZstdCompression},
+			{TargetFileSize: 16 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: sstable.ZstdCompression},
+			{TargetFileSize: 32 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: sstable.ZstdCompression},
+			{TargetFileSize: 64 * 1024 * 1024, FilterPolicy: bloom.FilterPolicy(10), Compression: sstable.ZstdCompression},
+			{TargetFileSize: 128 * 1024 * 1024, Compression: sstable.ZstdCompression},
+		},
+		// Moderate cache size - state updates are write-heavy
+		Cache: pebble.NewCache(128 * 1024 * 1024), // 128MB cache
+	}
+
+	db, err := pebble.Open(config.Path, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	t := &stateSizeTracer{
-		outputDir: config.OutputDir,
+		db:            db,
+		firstUpdate:   true,
+		pendingBuffer: make([]pendingUpdate, 0, batchSize),
 	}
 
-	log.Info("Starting statesize tracer", "outputDir", config.OutputDir, "batchSize", batchSize)
+	// Load progress from database
+	progress, err := t.loadProgress()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to load progress: %w", err)
+	}
+	t.progress = progress
+
+	if progress != nil {
+		log.Info("Statesize tracer opened existing database",
+			"path", config.Path,
+			"lastBlock", progress.BlockNumber,
+			"lastRoot", progress.StateRoot.Hex())
+	} else {
+		log.Info("Statesize tracer created new database", "path", config.Path)
+	}
 
 	return &tracing.Hooks{
 		OnStateUpdate: t.onStateUpdate,
@@ -175,235 +222,110 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	}, nil
 }
 
-// batchFileName returns the filename for a given batch number.
-func batchFileName(batchNumber uint64) string {
-	startBlock := batchNumber * batchSize
-	endBlock := startBlock + batchSize - 1
-	return fmt.Sprintf("%d_%d.rlp.gz", startBlock, endBlock)
+// makeKey creates a database key from block number and state root.
+// Key format: 8-byte block number (big-endian) + 32-byte state root
+// Big-endian ensures lexicographic ordering matches numeric ordering.
+func makeKey(blockNumber uint64, stateRoot common.Hash) []byte {
+	key := make([]byte, keySize)
+	binary.BigEndian.PutUint64(key[:8], blockNumber)
+	copy(key[8:], stateRoot[:])
+	return key
 }
 
-// getBatchNumber returns the batch number for a given block number.
-func getBatchNumber(blockNumber uint64) uint64 {
-	return blockNumber / batchSize
+// parseKey extracts block number and state root from a database key.
+func parseKey(key []byte) (uint64, common.Hash) {
+	blockNumber := binary.BigEndian.Uint64(key[:8])
+	var stateRoot common.Hash
+	copy(stateRoot[:], key[8:])
+	return blockNumber, stateRoot
 }
 
-// openBatchFile opens or creates a batch file for the given batch number.
-// If the file exists, it reads existing data and prepares for appending.
-// Corrupted files are automatically recovered (valid records are preserved).
-// If starting from an earlier block (reorg/restart), truncates to that point.
-func (t *stateSizeTracer) openBatchFile(batchNum uint64, expectedBlock uint64) (*batchFile, error) {
-	filename := filepath.Join(t.outputDir, batchFileName(batchNum))
-
-	var existingUpdates []*StateUpdateRLP
-	var lastBlockInFile uint64
-
-	// Check if file exists and read existing data
-	if _, err := os.Stat(filename); err == nil {
-		existingUpdates, err = readExistingBatch(filename)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read existing batch file: %w", err)
-		}
-		if len(existingUpdates) > 0 {
-			lastBlockInFile = existingUpdates[len(existingUpdates)-1].BlockNumber
-			log.Info("Found existing batch file",
-				"file", filename,
-				"existingUpdates", len(existingUpdates),
-				"lastBlock", lastBlockInFile)
-
-			// Handle different scenarios:
-			// 1. expectedBlock == lastBlock+1: normal continuation
-			// 2. expectedBlock == lastBlock: crash recovery, re-process same block
-			// 3. expectedBlock < lastBlock: reorg/restart from earlier block, truncate
-			// 4. expectedBlock > lastBlock+1: gap in blocks, error
-
-			if expectedBlock > lastBlockInFile+1 {
-				return nil, fmt.Errorf("block gap detected: expected block %d but last recorded block is %d (missing blocks)",
-					expectedBlock, lastBlockInFile)
-			}
-
-			if expectedBlock <= lastBlockInFile {
-				// Truncate: keep only updates before expectedBlock
-				truncateIdx := 0
-				for i, update := range existingUpdates {
-					if update.BlockNumber >= expectedBlock {
-						truncateIdx = i
-						break
-					}
-					truncateIdx = i + 1
-				}
-
-				removedCount := len(existingUpdates) - truncateIdx
-				existingUpdates = existingUpdates[:truncateIdx]
-
-				if len(existingUpdates) > 0 {
-					lastBlockInFile = existingUpdates[len(existingUpdates)-1].BlockNumber
-				} else {
-					lastBlockInFile = 0
-				}
-
-				log.Warn("Truncating batch file (reorg/restart from earlier block)",
-					"file", filename,
-					"expectedBlock", expectedBlock,
-					"removedRecords", removedCount,
-					"remainingRecords", len(existingUpdates),
-					"newLastBlock", lastBlockInFile)
-			}
-		}
-	}
-
-	// Create/overwrite the file (we'll write existing + new data)
-	file, err := os.Create(filename)
+// loadProgress loads the persisted progress from the database.
+func (t *stateSizeTracer) loadProgress() (*progressData, error) {
+	data, closer, err := t.db.Get(metaKeyProgress)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create batch file: %w", err)
-	}
-
-	gzWriter, _ := gzip.NewWriterLevel(file, gzip.BestCompression)
-	bufWriter := bufio.NewWriterSize(gzWriter, 256*1024) // 256KB buffer
-
-	bf := &batchFile{
-		file:       file,
-		gzipWriter: gzWriter,
-		bufWriter:  bufWriter,
-		count:      0,
-		lastBlock:  lastBlockInFile,
-	}
-
-	// Write back existing updates
-	for _, update := range existingUpdates {
-		if err := bf.writeUpdate(update); err != nil {
-			bf.close()
-			return nil, fmt.Errorf("failed to write existing update: %w", err)
+		if errors.Is(err, pebble.ErrNotFound) {
+			return nil, nil // No progress yet
 		}
-		bf.lastBlock = update.BlockNumber
-	}
-
-	return bf, nil
-}
-
-// writeUpdate writes a single RLP-encoded update with length prefix.
-func (bf *batchFile) writeUpdate(update *StateUpdateRLP) error {
-	// RLP encode the update
-	data, err := rlp.EncodeToBytes(update)
-	if err != nil {
-		return fmt.Errorf("failed to RLP encode: %w", err)
-	}
-
-	// Write 4-byte length prefix (big-endian)
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
-	if _, err := bf.bufWriter.Write(lenBuf[:]); err != nil {
-		return err
-	}
-
-	// Write the RLP data
-	if _, err := bf.bufWriter.Write(data); err != nil {
-		return err
-	}
-
-	bf.count++
-	return nil
-}
-
-// readExistingBatch reads all valid updates from an existing batch file.
-// If the file is corrupted (e.g., from a crash), it recovers as many complete records as possible.
-func readExistingBatch(filename string) ([]*StateUpdateRLP, error) {
-	file, err := os.Open(filename)
-	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer closer.Close()
 
-	gzReader, err := gzip.NewReader(file)
-	if err != nil {
-		// Corrupted gzip header - file is unusable
-		log.Warn("Batch file has corrupted gzip header, starting fresh", "file", filename)
-		return nil, nil
+	var progress progressData
+	if err := rlp.DecodeBytes(data, &progress); err != nil {
+		return nil, fmt.Errorf("failed to decode progress: %w", err)
 	}
-	defer gzReader.Close()
-
-	bufReader := bufio.NewReaderSize(gzReader, 256*1024)
-	var updates []*StateUpdateRLP
-
-	for {
-		// Read 4-byte length prefix
-		var lenBuf [4]byte
-		n, err := io.ReadFull(bufReader, lenBuf[:])
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			if err == io.ErrUnexpectedEOF {
-				// Partial length prefix - truncated during crash
-				log.Warn("Batch file truncated at length prefix, recovering",
-					"file", filename, "recoveredRecords", len(updates), "bytesRead", n)
-				break
-			}
-			// Other read error (e.g., gzip checksum error)
-			log.Warn("Batch file read error, recovering",
-				"file", filename, "recoveredRecords", len(updates), "err", err)
-			break
-		}
-		dataLen := binary.BigEndian.Uint32(lenBuf[:])
-
-		// Sanity check: reject obviously invalid lengths (> 100MB)
-		if dataLen > 100*1024*1024 {
-			log.Warn("Batch file has invalid record length, recovering",
-				"file", filename, "recoveredRecords", len(updates), "invalidLen", dataLen)
-			break
-		}
-
-		// Read the RLP data
-		data := make([]byte, dataLen)
-		if _, err := io.ReadFull(bufReader, data); err != nil {
-			// Truncated record - crash happened mid-write
-			log.Warn("Batch file truncated at record data, recovering",
-				"file", filename, "recoveredRecords", len(updates), "err", err)
-			break
-		}
-
-		// Decode RLP
-		var update StateUpdateRLP
-		if err := rlp.DecodeBytes(data, &update); err != nil {
-			// Corrupted RLP data
-			log.Warn("Batch file has corrupted RLP record, recovering",
-				"file", filename, "recoveredRecords", len(updates), "err", err)
-			break
-		}
-		updates = append(updates, &update)
-	}
-
-	return updates, nil
+	return &progress, nil
 }
 
-// close closes the batch file and its writers.
-func (bf *batchFile) close() error {
-	if bf == nil {
+// saveProgress saves the current progress to the database within a batch.
+func (t *stateSizeTracer) saveProgress(batch *pebble.Batch, blockNumber uint64, stateRoot common.Hash) error {
+	progress := progressData{
+		BlockNumber: blockNumber,
+		StateRoot:   stateRoot,
+	}
+	data, err := rlp.EncodeToBytes(&progress)
+	if err != nil {
+		return err
+	}
+	return batch.Set(metaKeyProgress, data, nil)
+}
+
+// lookupStateRoot checks if a state root exists for a given block number.
+func (t *stateSizeTracer) lookupStateRoot(blockNumber uint64, stateRoot common.Hash) (bool, error) {
+	key := makeKey(blockNumber, stateRoot)
+	_, closer, err := t.db.Get(key)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	closer.Close()
+	return true, nil
+}
+
+// flushBatch persists all pending updates and updates progress.
+func (t *stateSizeTracer) flushBatch() error {
+	if len(t.pendingBuffer) == 0 {
 		return nil
 	}
 
-	var errs []error
+	batch := t.db.NewBatch()
+	defer batch.Close()
 
-	if bf.bufWriter != nil {
-		if err := bf.bufWriter.Flush(); err != nil {
-			errs = append(errs, err)
+	// Write all pending updates
+	for _, update := range t.pendingBuffer {
+		if err := batch.Set(update.key, update.data, nil); err != nil {
+			return fmt.Errorf("failed to add update to batch: %w", err)
 		}
 	}
 
-	if bf.gzipWriter != nil {
-		if err := bf.gzipWriter.Close(); err != nil {
-			errs = append(errs, err)
-		}
+	// Update progress
+	if err := t.saveProgress(batch, t.lastBatchBlock, t.lastBatchRoot); err != nil {
+		return fmt.Errorf("failed to save progress: %w", err)
 	}
 
-	if bf.file != nil {
-		if err := bf.file.Close(); err != nil {
-			errs = append(errs, err)
-		}
+	// Commit with sync for durability
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("failed to commit batch: %w", err)
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("errors closing batch file: %v", errs)
+	// Update in-memory progress
+	t.progress = &progressData{
+		BlockNumber: t.lastBatchBlock,
+		StateRoot:   t.lastBatchRoot,
 	}
+
+	log.Info("Persisted state updates batch",
+		"count", len(t.pendingBuffer),
+		"lastBlock", t.lastBatchBlock,
+		"lastRoot", t.lastBatchRoot.Hex())
+
+	// Clear pending buffer
+	t.pendingBuffer = t.pendingBuffer[:0]
+	t.pendingCount = 0
+
 	return nil
 }
 
@@ -415,70 +337,100 @@ func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	batchNum := getBatchNumber(update.BlockNumber)
+	// First update validation: check data integrity
+	if t.firstUpdate {
+		t.firstUpdate = false
 
-	// Check for reorg: if we receive an earlier block, close current batch and reopen
-	if t.initialized && update.BlockNumber <= t.lastBlock {
-		log.Warn("Reorg detected, rewinding",
-			"lastBlock", t.lastBlock,
-			"newBlock", update.BlockNumber)
-		// Close current batch - it will be truncated when reopened
-		if t.currentBatch != nil {
-			if err := t.currentBatch.close(); err != nil {
-				log.Error("Failed to close batch file", "err", err)
+		if t.progress != nil {
+			// We have existing data - validate continuity
+			// The incoming update's OriginRoot should match our last persisted StateRoot
+			// OR the incoming block should be building on an existing record
+
+			// Check if parent state exists in DB
+			parentExists, err := t.lookupStateRoot(update.BlockNumber-1, update.OriginRoot)
+			if err != nil {
+				log.Crit("Failed to lookup parent state",
+					"block", update.BlockNumber,
+					"originRoot", update.OriginRoot.Hex(),
+					"err", err)
+				os.Exit(1)
 			}
-			t.currentBatch = nil
+
+			if !parentExists {
+				// Check if this is a reorg starting from an earlier block
+				if update.BlockNumber <= t.progress.BlockNumber {
+					// This is acceptable - it's a reorg, we'll handle it below
+					log.Warn("Detected reorg on restart",
+						"progressBlock", t.progress.BlockNumber,
+						"incomingBlock", update.BlockNumber)
+				} else {
+					// Data corruption: we have progress but parent doesn't exist
+					log.Crit("Data corruption detected: parent state not found in database",
+						"incomingBlock", update.BlockNumber,
+						"originRoot", update.OriginRoot.Hex(),
+						"lastPersistedBlock", t.progress.BlockNumber,
+						"lastPersistedRoot", t.progress.StateRoot.Hex())
+					os.Exit(1)
+				}
+			}
 		}
 	}
 
-	// Validate block continuity (skip for first block, reorg already handled above)
-	if t.initialized && t.currentBatch != nil && update.BlockNumber != t.lastBlock+1 {
-		log.Crit("Block gap detected (missing blocks)",
-			"expected", t.lastBlock+1,
-			"got", update.BlockNumber)
-		return
-	}
-
-	// Check if we need to switch to a new batch
-	if t.initialized && t.currentBatch != nil && batchNum != t.batchNumber {
-		// Close current batch
-		log.Info("Closing batch file",
-			"batch", t.batchNumber,
-			"updates", t.currentBatch.count)
-		if err := t.currentBatch.close(); err != nil {
-			log.Error("Failed to close batch file", "err", err)
+	// Validate block continuity
+	if t.progress != nil {
+		expectedBlock := t.progress.BlockNumber + 1 + t.pendingCount
+		if update.BlockNumber != expectedBlock {
+			if update.BlockNumber > expectedBlock {
+				log.Crit("Block gap detected (missing blocks)",
+					"expected", expectedBlock,
+					"got", update.BlockNumber)
+				os.Exit(1)
+			}
+			// Block is earlier than expected - should have been handled by reorg above
+			log.Crit("Unexpected block number",
+				"expected", expectedBlock,
+				"got", update.BlockNumber)
+			os.Exit(1)
 		}
-		t.currentBatch = nil
 	}
 
-	// Open batch file if needed
-	if t.currentBatch == nil {
-		bf, err := t.openBatchFile(batchNum, update.BlockNumber)
-		if err != nil {
-			log.Crit("Failed to open batch file", "batch", batchNum, "err", err)
-			return
-		}
-		t.currentBatch = bf
-		t.batchNumber = batchNum
-		t.initialized = true
-		log.Info("Opened batch file", "batch", batchNum, "file", batchFileName(batchNum))
-	}
-
-	// Convert and write the update
+	// Convert and encode the update
 	msg := convertStateUpdateToRLP(update)
-	if err := t.currentBatch.writeUpdate(msg); err != nil {
-		log.Error("Failed to write state update", "block", update.BlockNumber, "err", err)
-		return
+	data, err := rlp.EncodeToBytes(msg)
+	if err != nil {
+		log.Crit("Failed to RLP encode state update", "block", update.BlockNumber, "err", err)
+		os.Exit(1)
 	}
-	t.currentBatch.lastBlock = update.BlockNumber
-	t.lastBlock = update.BlockNumber
+
+	// Add to pending buffer
+	key := makeKey(update.BlockNumber, update.Root)
+	t.pendingBuffer = append(t.pendingBuffer, pendingUpdate{
+		key:  key,
+		data: data,
+	})
+	t.pendingCount++
+	t.lastBatchBlock = update.BlockNumber
+	t.lastBatchRoot = update.Root
+
+	// Check if we should flush
+	if t.pendingCount >= batchSize {
+		if err := t.flushBatch(); err != nil {
+			log.Crit("Failed to flush batch", "err", err)
+			os.Exit(1)
+		}
+	}
 
 	// Log progress periodically
-	if t.currentBatch.count%batchSize == 0 {
+	totalProcessed := uint64(0)
+	if t.progress != nil {
+		totalProcessed = t.progress.BlockNumber + 1
+	}
+	totalProcessed += t.pendingCount
+	if totalProcessed%batchSize == 0 {
 		log.Info("State updates progress",
-			"batch", t.batchNumber,
-			"updates", t.currentBatch.count,
-			"lastBlock", t.currentBatch.lastBlock)
+			"processed", totalProcessed,
+			"pending", t.pendingCount,
+			"lastBlock", update.BlockNumber)
 	}
 }
 
@@ -593,17 +545,24 @@ func (t *stateSizeTracer) onClose() {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 
-		// Close any open batch file
-		if t.currentBatch != nil {
-			log.Info("Closing final batch file",
-				"batch", t.batchNumber,
-				"updates", t.currentBatch.count)
-			if err := t.currentBatch.close(); err != nil {
-				log.Error("Failed to close batch file", "err", err)
+		// Flush any remaining pending updates
+		if len(t.pendingBuffer) > 0 {
+			if err := t.flushBatch(); err != nil {
+				log.Error("Failed to flush remaining batch on close", "err", err)
 			}
-			t.currentBatch = nil
 		}
 
-		log.Info("Statesize tracer closed")
+		if t.db != nil {
+			var lastBlock uint64
+			if t.progress != nil {
+				lastBlock = t.progress.BlockNumber
+			}
+			log.Info("Closing statesize tracer database",
+				"lastPersistedBlock", lastBlock)
+			if err := t.db.Close(); err != nil {
+				log.Error("Failed to close database", "err", err)
+			}
+			t.db = nil
+		}
 	})
 }
