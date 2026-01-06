@@ -1,19 +1,15 @@
 package main
 
 import (
-	"bufio"
-	"compress/gzip"
 	"encoding/binary"
 	"encoding/csv"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -30,6 +26,9 @@ var (
 	storageTrienodePrefixSize = int64(len(rawdb.TrieNodeStoragePrefix) + common.HashLength)
 	codeKeySize               = int64(len(rawdb.CodePrefix) + common.HashLength)
 )
+
+// Key format: 8-byte block number (big-endian) + 32-byte state root
+const keySize = 8 + 32
 
 // RLP types matching the tracer output
 
@@ -137,27 +136,28 @@ type StateDelta struct {
 
 func main() {
 	// Parse command line flags
-	inputDir := flag.String("input", "", "Input directory containing .rlp.gz batch files")
+	inputPath := flag.String("input", "", "Input directory containing Pebble database")
 	outputPath := flag.String("output", "statesize.csv", "Output CSV file path")
 	depthOutputPath := flag.String("depth-output", "statesize_depth.csv", "Output CSV file path for depth statistics")
+	startBlock := flag.Uint64("start", 0, "Start block number (inclusive)")
+	endBlock := flag.Uint64("end", 0, "End block number (inclusive, 0 = no limit)")
 	flag.Parse()
 
-	if *inputDir == "" {
+	if *inputPath == "" {
 		log.Crit("Input directory is required (-input)")
 	}
 
 	// Setup logging
 	log.SetDefault(log.NewLogger(log.NewTerminalHandlerWithLevel(os.Stderr, log.LevelInfo, true)))
 
-	// Find all batch files
-	batchFiles, err := findBatchFiles(*inputDir)
+	// Open Pebble database (read-only)
+	db, err := pebble.Open(*inputPath, &pebble.Options{
+		ReadOnly: true,
+	})
 	if err != nil {
-		log.Crit("Failed to find batch files", "err", err)
+		log.Crit("Failed to open database", "path", *inputPath, "err", err)
 	}
-	if len(batchFiles) == 0 {
-		log.Crit("No batch files found in directory", "dir", *inputDir)
-	}
-	log.Info("Found batch files", "count", len(batchFiles))
+	defer db.Close()
 
 	// Open CSV files
 	statFile, err := os.Create(*outputPath)
@@ -186,103 +186,33 @@ func main() {
 		log.Crit("Failed to write depth headers", "err", err)
 	}
 
-	// Process each batch file
-	totalBlocks := uint64(0)
-	for _, batchFile := range batchFiles {
-		log.Info("Processing batch file", "file", filepath.Base(batchFile))
-
-		processed, err := processBatchFile(batchFile, statWriter, depthWriter)
-		if err != nil {
-			log.Error("Failed to process batch file", "file", batchFile, "err", err)
-			continue
-		}
-		totalBlocks += processed
-
-		// Flush after each batch
-		statWriter.Flush()
-		depthWriter.Flush()
+	// Setup iterator options - exclude metadata keys (start with 0xFF)
+	iterOpts := &pebble.IterOptions{
+		UpperBound: []byte{0xFF}, // Exclude metadata keys
+	}
+	if *startBlock > 0 {
+		iterOpts.LowerBound = makeKey(*startBlock, common.Hash{})
+	}
+	if *endBlock > 0 {
+		// Upper bound is exclusive, so we use endBlock+1
+		iterOpts.UpperBound = makeKey(*endBlock+1, common.Hash{})
 	}
 
-	log.Info("Done", "totalBlocks", totalBlocks)
-}
-
-// findBatchFiles finds all .rlp.gz files in the directory and returns them sorted by start block.
-func findBatchFiles(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	iter, err := db.NewIter(iterOpts)
 	if err != nil {
-		return nil, err
+		log.Crit("Failed to create iterator", "err", err)
 	}
+	defer iter.Close()
 
-	var files []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if filepath.Ext(entry.Name()) == ".gz" {
-			files = append(files, filepath.Join(dir, entry.Name()))
-		}
-	}
-
-	// Sort files by start block number (numeric sort)
-	sort.Slice(files, func(i, j int) bool {
-		return parseStartBlock(files[i]) < parseStartBlock(files[j])
-	})
-	return files, nil
-}
-
-// parseStartBlock extracts the start block number from a filename like "0_1999.rlp.gz".
-func parseStartBlock(path string) uint64 {
-	name := filepath.Base(path)
-	// Parse the first number before the underscore
-	for i, c := range name {
-		if c == '_' {
-			if num, err := strconv.ParseUint(name[:i], 10, 64); err == nil {
-				return num
-			}
-			break
-		}
-	}
-	return 0
-}
-
-// processBatchFile reads a single batch file and writes deltas to CSV.
-func processBatchFile(filename string, statWriter, depthWriter *csv.Writer) (uint64, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-
-	gzReader, err := gzip.NewReader(file)
-	if err != nil {
-		return 0, err
-	}
-	defer gzReader.Close()
-
-	bufReader := bufio.NewReaderSize(gzReader, 256*1024)
+	// Process all records
 	var processed uint64
-
-	for {
-		// Read 4-byte length prefix
-		var lenBuf [4]byte
-		if _, err := io.ReadFull(bufReader, lenBuf[:]); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return processed, err
-		}
-		dataLen := binary.BigEndian.Uint32(lenBuf[:])
-
-		// Read the RLP data
-		data := make([]byte, dataLen)
-		if _, err := io.ReadFull(bufReader, data); err != nil {
-			return processed, err
-		}
-
+	for iter.First(); iter.Valid(); iter.Next() {
 		// Decode RLP
 		var update StateUpdateRLP
-		if err := rlp.DecodeBytes(data, &update); err != nil {
-			return processed, fmt.Errorf("failed to decode RLP: %w", err)
+		if err := rlp.DecodeBytes(iter.Value(), &update); err != nil {
+			blockNum, stateRoot := parseKey(iter.Key())
+			log.Error("Failed to decode RLP", "block", blockNum, "root", stateRoot.Hex(), "err", err)
+			continue
 		}
 
 		// Calculate deltas
@@ -290,21 +220,45 @@ func processBatchFile(filename string, statWriter, depthWriter *csv.Writer) (uin
 
 		// Write to CSV files
 		if err := statWriter.Write(deltaToStatRow(delta)); err != nil {
-			return processed, err
+			log.Crit("Failed to write stat row", "err", err)
 		}
 		if err := depthWriter.Write(deltaToDepthRow(delta)); err != nil {
-			return processed, err
+			log.Crit("Failed to write depth row", "err", err)
 		}
 
 		processed++
 
 		// Log progress periodically
-		if processed%500 == 0 {
+		if processed%1000 == 0 {
 			log.Info("Processing progress", "blocks", processed, "lastBlock", update.BlockNumber)
 		}
 	}
 
-	return processed, nil
+	if err := iter.Error(); err != nil {
+		log.Error("Iterator error", "err", err)
+	}
+
+	// Flush CSV writers
+	statWriter.Flush()
+	depthWriter.Flush()
+
+	log.Info("Done", "totalBlocks", processed)
+}
+
+// makeKey creates a database key from block number and state root.
+func makeKey(blockNumber uint64, stateRoot common.Hash) []byte {
+	key := make([]byte, keySize)
+	binary.BigEndian.PutUint64(key[:8], blockNumber)
+	copy(key[8:], stateRoot[:])
+	return key
+}
+
+// parseKey extracts block number and state root from a database key.
+func parseKey(key []byte) (uint64, common.Hash) {
+	blockNumber := binary.BigEndian.Uint64(key[:8])
+	var stateRoot common.Hash
+	copy(stateRoot[:], key[8:])
+	return blockNumber, stateRoot
 }
 
 func statHeaders() []string {
