@@ -44,7 +44,7 @@ func init() {
 
 const (
 	// batchSize is the number of blocks per batch file.
-	batchSize = 2000
+	batchSize = 5000
 )
 
 // stateSizeTracerConfig is the configuration for the statesize tracer.
@@ -132,7 +132,8 @@ type batchFile struct {
 	file       *os.File
 	gzipWriter *gzip.Writer
 	bufWriter  *bufio.Writer
-	count      int // number of updates written
+	count      int    // number of updates written
+	lastBlock  uint64 // last block number written to this batch
 }
 
 type stateSizeTracer struct {
@@ -143,6 +144,7 @@ type stateSizeTracer struct {
 	currentBatch *batchFile
 	batchNumber  uint64
 	initialized  bool
+	lastBlock    uint64 // last block number processed across all batches
 
 	closeOnce sync.Once
 }
@@ -187,10 +189,13 @@ func getBatchNumber(blockNumber uint64) uint64 {
 
 // openBatchFile opens or creates a batch file for the given batch number.
 // If the file exists, it reads existing data and prepares for appending.
-func (t *stateSizeTracer) openBatchFile(batchNum uint64) (*batchFile, error) {
+// Corrupted files are automatically recovered (valid records are preserved).
+// If starting from an earlier block (reorg/restart), truncates to that point.
+func (t *stateSizeTracer) openBatchFile(batchNum uint64, expectedBlock uint64) (*batchFile, error) {
 	filename := filepath.Join(t.outputDir, batchFileName(batchNum))
 
 	var existingUpdates []*StateUpdateRLP
+	var lastBlockInFile uint64
 
 	// Check if file exists and read existing data
 	if _, err := os.Stat(filename); err == nil {
@@ -198,7 +203,52 @@ func (t *stateSizeTracer) openBatchFile(batchNum uint64) (*batchFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read existing batch file: %w", err)
 		}
-		log.Info("Found existing batch file", "file", filename, "existingUpdates", len(existingUpdates))
+		if len(existingUpdates) > 0 {
+			lastBlockInFile = existingUpdates[len(existingUpdates)-1].BlockNumber
+			log.Info("Found existing batch file",
+				"file", filename,
+				"existingUpdates", len(existingUpdates),
+				"lastBlock", lastBlockInFile)
+
+			// Handle different scenarios:
+			// 1. expectedBlock == lastBlock+1: normal continuation
+			// 2. expectedBlock == lastBlock: crash recovery, re-process same block
+			// 3. expectedBlock < lastBlock: reorg/restart from earlier block, truncate
+			// 4. expectedBlock > lastBlock+1: gap in blocks, error
+
+			if expectedBlock > lastBlockInFile+1 {
+				return nil, fmt.Errorf("block gap detected: expected block %d but last recorded block is %d (missing blocks)",
+					expectedBlock, lastBlockInFile)
+			}
+
+			if expectedBlock <= lastBlockInFile {
+				// Truncate: keep only updates before expectedBlock
+				truncateIdx := 0
+				for i, update := range existingUpdates {
+					if update.BlockNumber >= expectedBlock {
+						truncateIdx = i
+						break
+					}
+					truncateIdx = i + 1
+				}
+
+				removedCount := len(existingUpdates) - truncateIdx
+				existingUpdates = existingUpdates[:truncateIdx]
+
+				if len(existingUpdates) > 0 {
+					lastBlockInFile = existingUpdates[len(existingUpdates)-1].BlockNumber
+				} else {
+					lastBlockInFile = 0
+				}
+
+				log.Warn("Truncating batch file (reorg/restart from earlier block)",
+					"file", filename,
+					"expectedBlock", expectedBlock,
+					"removedRecords", removedCount,
+					"remainingRecords", len(existingUpdates),
+					"newLastBlock", lastBlockInFile)
+			}
+		}
 	}
 
 	// Create/overwrite the file (we'll write existing + new data)
@@ -215,6 +265,7 @@ func (t *stateSizeTracer) openBatchFile(batchNum uint64) (*batchFile, error) {
 		gzipWriter: gzWriter,
 		bufWriter:  bufWriter,
 		count:      0,
+		lastBlock:  lastBlockInFile,
 	}
 
 	// Write back existing updates
@@ -223,6 +274,7 @@ func (t *stateSizeTracer) openBatchFile(batchNum uint64) (*batchFile, error) {
 			bf.close()
 			return nil, fmt.Errorf("failed to write existing update: %w", err)
 		}
+		bf.lastBlock = update.BlockNumber
 	}
 
 	return bf, nil
@@ -252,7 +304,8 @@ func (bf *batchFile) writeUpdate(update *StateUpdateRLP) error {
 	return nil
 }
 
-// readExistingBatch reads all updates from an existing batch file.
+// readExistingBatch reads all valid updates from an existing batch file.
+// If the file is corrupted (e.g., from a crash), it recovers as many complete records as possible.
 func readExistingBatch(filename string) ([]*StateUpdateRLP, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -262,7 +315,9 @@ func readExistingBatch(filename string) ([]*StateUpdateRLP, error) {
 
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
-		return nil, err
+		// Corrupted gzip header - file is unusable
+		log.Warn("Batch file has corrupted gzip header, starting fresh", "file", filename)
+		return nil, nil
 	}
 	defer gzReader.Close()
 
@@ -272,24 +327,47 @@ func readExistingBatch(filename string) ([]*StateUpdateRLP, error) {
 	for {
 		// Read 4-byte length prefix
 		var lenBuf [4]byte
-		if _, err := io.ReadFull(bufReader, lenBuf[:]); err != nil {
+		n, err := io.ReadFull(bufReader, lenBuf[:])
+		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			return nil, err
+			if err == io.ErrUnexpectedEOF {
+				// Partial length prefix - truncated during crash
+				log.Warn("Batch file truncated at length prefix, recovering",
+					"file", filename, "recoveredRecords", len(updates), "bytesRead", n)
+				break
+			}
+			// Other read error (e.g., gzip checksum error)
+			log.Warn("Batch file read error, recovering",
+				"file", filename, "recoveredRecords", len(updates), "err", err)
+			break
 		}
 		dataLen := binary.BigEndian.Uint32(lenBuf[:])
+
+		// Sanity check: reject obviously invalid lengths (> 100MB)
+		if dataLen > 100*1024*1024 {
+			log.Warn("Batch file has invalid record length, recovering",
+				"file", filename, "recoveredRecords", len(updates), "invalidLen", dataLen)
+			break
+		}
 
 		// Read the RLP data
 		data := make([]byte, dataLen)
 		if _, err := io.ReadFull(bufReader, data); err != nil {
-			return nil, err
+			// Truncated record - crash happened mid-write
+			log.Warn("Batch file truncated at record data, recovering",
+				"file", filename, "recoveredRecords", len(updates), "err", err)
+			break
 		}
 
 		// Decode RLP
 		var update StateUpdateRLP
 		if err := rlp.DecodeBytes(data, &update); err != nil {
-			return nil, err
+			// Corrupted RLP data
+			log.Warn("Batch file has corrupted RLP record, recovering",
+				"file", filename, "recoveredRecords", len(updates), "err", err)
+			break
 		}
 		updates = append(updates, &update)
 	}
@@ -339,13 +417,13 @@ func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 
 	batchNum := getBatchNumber(update.BlockNumber)
 
-	// Check if we need to switch to a new batch
-	if t.initialized && batchNum != t.batchNumber {
-		// Close current batch
+	// Check for reorg: if we receive an earlier block, close current batch and reopen
+	if t.initialized && update.BlockNumber <= t.lastBlock {
+		log.Warn("Reorg detected, rewinding",
+			"lastBlock", t.lastBlock,
+			"newBlock", update.BlockNumber)
+		// Close current batch - it will be truncated when reopened
 		if t.currentBatch != nil {
-			log.Info("Closing batch file",
-				"batch", t.batchNumber,
-				"updates", t.currentBatch.count)
 			if err := t.currentBatch.close(); err != nil {
 				log.Error("Failed to close batch file", "err", err)
 			}
@@ -353,11 +431,31 @@ func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 		}
 	}
 
+	// Validate block continuity (skip for first block, reorg already handled above)
+	if t.initialized && t.currentBatch != nil && update.BlockNumber != t.lastBlock+1 {
+		log.Crit("Block gap detected (missing blocks)",
+			"expected", t.lastBlock+1,
+			"got", update.BlockNumber)
+		return
+	}
+
+	// Check if we need to switch to a new batch
+	if t.initialized && t.currentBatch != nil && batchNum != t.batchNumber {
+		// Close current batch
+		log.Info("Closing batch file",
+			"batch", t.batchNumber,
+			"updates", t.currentBatch.count)
+		if err := t.currentBatch.close(); err != nil {
+			log.Error("Failed to close batch file", "err", err)
+		}
+		t.currentBatch = nil
+	}
+
 	// Open batch file if needed
 	if t.currentBatch == nil {
-		bf, err := t.openBatchFile(batchNum)
+		bf, err := t.openBatchFile(batchNum, update.BlockNumber)
 		if err != nil {
-			log.Error("Failed to open batch file", "batch", batchNum, "err", err)
+			log.Crit("Failed to open batch file", "batch", batchNum, "err", err)
 			return
 		}
 		t.currentBatch = bf
@@ -372,13 +470,15 @@ func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 		log.Error("Failed to write state update", "block", update.BlockNumber, "err", err)
 		return
 	}
+	t.currentBatch.lastBlock = update.BlockNumber
+	t.lastBlock = update.BlockNumber
 
 	// Log progress periodically
-	if t.currentBatch.count%100 == 0 {
+	if t.currentBatch.count%batchSize == 0 {
 		log.Info("State updates progress",
 			"batch", t.batchNumber,
 			"updates", t.currentBatch.count,
-			"lastBlock", update.BlockNumber)
+			"lastBlock", t.currentBatch.lastBlock)
 	}
 }
 
