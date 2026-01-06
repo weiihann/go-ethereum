@@ -45,8 +45,8 @@ const (
 	// Key format: 8-byte block number (big-endian) + 32-byte state root
 	keySize = 8 + 32
 
-	// Batch size for persisting updates
-	batchSize = 10000
+	// Batch size threshold in bytes (3GB) for persisting updates
+	batchSizeBytes = 3 * 1024 * 1024 * 1024
 )
 
 // Metadata key prefix (uses 0xFF to sort after all block keys)
@@ -154,6 +154,7 @@ type stateSizeTracer struct {
 	progress      *progressData // last persisted progress (nil if empty DB)
 	firstUpdate   bool          // true until first update is validated
 	pendingCount  uint64        // number of updates in pending batch
+	pendingBytes  uint64        // accumulated byte size of pending batch
 	pendingBuffer []pendingUpdate
 
 	// Last update in current batch (for progress tracking)
@@ -196,7 +197,7 @@ func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
 	t := &stateSizeTracer{
 		db:            db,
 		firstUpdate:   true,
-		pendingBuffer: make([]pendingUpdate, 0, batchSize),
+		pendingBuffer: make([]pendingUpdate, 0, 10000), // Initial capacity
 	}
 
 	// Load progress from database
@@ -319,12 +320,14 @@ func (t *stateSizeTracer) flushBatch() error {
 
 	log.Info("Persisted state updates batch",
 		"count", len(t.pendingBuffer),
+		"bytes", t.pendingBytes,
 		"lastBlock", t.lastBatchBlock,
 		"lastRoot", t.lastBatchRoot.Hex())
 
 	// Clear pending buffer
 	t.pendingBuffer = t.pendingBuffer[:0]
 	t.pendingCount = 0
+	t.pendingBytes = 0
 
 	return nil
 }
@@ -409,27 +412,29 @@ func (t *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 		data: data,
 	})
 	t.pendingCount++
+	t.pendingBytes += uint64(len(key) + len(data))
 	t.lastBatchBlock = update.BlockNumber
 	t.lastBatchRoot = update.Root
 
-	// Check if we should flush
-	if t.pendingCount >= batchSize {
+	// Check if we should flush (based on byte size)
+	if t.pendingBytes >= batchSizeBytes {
 		if err := t.flushBatch(); err != nil {
 			log.Crit("Failed to flush batch", "err", err)
 			os.Exit(1)
 		}
 	}
 
-	// Log progress periodically
+	// Log progress periodically (every 10000 blocks)
 	totalProcessed := uint64(0)
 	if t.progress != nil {
 		totalProcessed = t.progress.BlockNumber + 1
 	}
 	totalProcessed += t.pendingCount
-	if totalProcessed%batchSize == 0 {
+	if totalProcessed%10000 == 0 {
 		log.Info("State updates progress",
 			"processed", totalProcessed,
-			"pending", t.pendingCount,
+			"pendingBlocks", t.pendingCount,
+			"pendingBytes", t.pendingBytes,
 			"lastBlock", update.BlockNumber)
 	}
 }
