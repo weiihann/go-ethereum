@@ -115,9 +115,7 @@ var (
 	errInvalidNewChain      = errors.New("invalid new chain")
 )
 
-var (
-	forkReadyInterval = 3 * time.Minute
-)
+var forkReadyInterval = 3 * time.Minute
 
 const (
 	bodyCacheLimit     = 256
@@ -370,7 +368,7 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 	// yet. The corresponding chain config will be returned, either from the
 	// provided genesis or from the locally stored configuration if the genesis
 	// has already been initialized.
-	chainConfig, genesisHash, compatErr, err := SetupGenesisBlockWithOverride(db, triedb, genesis, cfg.Overrides)
+	chainConfig, genesisHash, compatErr, err := SetupGenesisBlockWithOverride(db, triedb, genesis, cfg.Overrides, cfg.VmConfig.Tracer)
 	if err != nil {
 		return nil, err
 	}
@@ -1657,20 +1655,35 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	log.Debug("Committed block data", "size", common.StorageSize(batch.ValueSize()), "elapsed", common.PrettyDuration(time.Since(start)))
 
 	var (
-		err      error
-		root     common.Hash
-		isEIP158 = bc.chainConfig.IsEIP158(block.Number())
-		isCancun = bc.chainConfig.IsCancun(block.Number(), block.Time())
+		err           error
+		root          common.Hash
+		isEIP158      = bc.chainConfig.IsEIP158(block.Number())
+		isCancun      = bc.chainConfig.IsCancun(block.Number(), block.Time())
+		hasStateHook  = bc.logger != nil && bc.logger.OnStateUpdate != nil
+		hasStateSizer = bc.stateSizer != nil
 	)
-	if bc.stateSizer == nil {
-		root, err = statedb.Commit(block.NumberU64(), isEIP158, isCancun)
+	if hasStateHook || hasStateSizer {
+		r, update, err := statedb.CommitWithUpdate(block.NumberU64(), isEIP158, isCancun)
+		if err != nil {
+			return err
+		}
+		if hasStateHook {
+			trUpdate, err := update.ToTracingUpdate()
+			if err != nil {
+				return err
+			}
+			bc.logger.OnStateUpdate(trUpdate)
+		}
+		if hasStateSizer {
+			bc.stateSizer.Notify(update)
+		}
+		root = r
 	} else {
-		root, err = statedb.CommitAndTrack(block.NumberU64(), block.Hash(), isEIP158, isCancun, bc.stateSizer)
+		root, err = statedb.Commit(block.NumberU64(), isEIP158, isCancun)
+		if err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
-	}
-
 	// If node is running in path mode, skip explicit gc operation
 	// which is unnecessary in this mode.
 	if bc.triedb.Scheme() == rawdb.PathScheme {
@@ -2274,7 +2287,7 @@ func (bc *BlockChain) ProcessBlock(parentRoot common.Hash, block *types.Block, s
 // switch over to the new chain if the TD exceeded the current chain.
 // insertSideChain is only used pre-merge.
 func (bc *BlockChain) insertSideChain(block *types.Block, it *insertIterator, makeWitness bool) (*stateless.Witness, int, error) {
-	var current = bc.CurrentBlock()
+	current := bc.CurrentBlock()
 
 	// The first sidechain block error is already verified to be ErrPrunedAncestor.
 	// Since we don't import them here, we expect ErrUnknownAncestor for the remaining
