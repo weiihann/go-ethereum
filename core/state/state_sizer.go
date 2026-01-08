@@ -69,6 +69,7 @@ var (
 type SizeStats struct {
 	StateRoot   common.Hash // State root hash at the time of measurement
 	BlockNumber uint64      // Associated block number at the time of measurement
+	BlockHash   common.Hash // Associated block hash at the time of measurement
 
 	Accounts             int64 // Total number of accounts in the state
 	AccountBytes         int64 // Total storage size used by all account data (in bytes)
@@ -110,6 +111,7 @@ func (s SizeStats) publish() {
 func (s SizeStats) add(diff SizeStats) SizeStats {
 	s.StateRoot = diff.StateRoot
 	s.BlockNumber = diff.BlockNumber
+	s.BlockHash = diff.BlockHash
 
 	s.Accounts += diff.Accounts
 	s.AccountBytes += diff.AccountBytes
@@ -128,6 +130,7 @@ func (s SizeStats) add(diff SizeStats) SizeStats {
 func calSizeStats(update *stateUpdate) (SizeStats, error) {
 	stats := SizeStats{
 		BlockNumber: update.blockNumber,
+		BlockHash:   update.blockHash,
 		StateRoot:   update.root,
 	}
 
@@ -348,6 +351,23 @@ func (t *SizeTracker) run() {
 
 			// Publish statistics to metric system
 			stat.publish()
+
+			// Log state size metrics for external monitoring (e.g., xatu-sentry fallback)
+			log.Info("State size updated",
+				"blockNumber", stat.BlockNumber,
+				"blockHash", stat.BlockHash,
+				"stateRoot", stat.StateRoot,
+				"accounts", stat.Accounts,
+				"accountBytes", stat.AccountBytes,
+				"storages", stat.Storages,
+				"storageBytes", stat.StorageBytes,
+				"accountTrienodes", stat.AccountTrienodes,
+				"accountTrienodeBytes", stat.AccountTrienodeBytes,
+				"storageTrienodes", stat.StorageTrienodes,
+				"storageTrienodeBytes", stat.StorageTrienodeBytes,
+				"contractCodes", stat.ContractCodes,
+				"contractCodeBytes", stat.ContractCodeBytes,
+			)
 
 			// Evict the stale statistics
 			heap.Push(&h, stats[u.root])

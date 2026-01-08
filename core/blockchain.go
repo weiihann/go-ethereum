@@ -1622,7 +1622,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if bc.stateSizer == nil {
 		root, err = statedb.Commit(block.NumberU64(), isEIP158, isCancun)
 	} else {
-		root, err = statedb.CommitAndTrack(block.NumberU64(), isEIP158, isCancun, bc.stateSizer)
+		root, err = statedb.CommitAndTrack(block.NumberU64(), block.Hash(), isEIP158, isCancun, bc.stateSizer)
 	}
 	if err != nil {
 		return err
