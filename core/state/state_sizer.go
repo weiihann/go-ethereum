@@ -270,6 +270,7 @@ type SizeTracker struct {
 	triedb   *triedb.Database
 	abort    chan struct{}
 	aborted  chan struct{}
+	ready    chan struct{} // closed when initialization is complete
 	updateCh chan *stateUpdate
 	queryCh  chan *stateSizeQuery
 	depth    uint64 // the depth of statistics to be preserved
@@ -288,6 +289,7 @@ func NewSizeTracker(db ethdb.KeyValueStore, triedb *triedb.Database, depth uint6
 		triedb:   triedb,
 		abort:    make(chan struct{}),
 		aborted:  make(chan struct{}),
+		ready:    make(chan struct{}),
 		updateCh: make(chan *stateUpdate),
 		queryCh:  make(chan *stateSizeQuery),
 		depth:    depth,
@@ -299,6 +301,17 @@ func NewSizeTracker(db ethdb.KeyValueStore, triedb *triedb.Database, depth uint6
 func (t *SizeTracker) Stop() {
 	close(t.abort)
 	<-t.aborted
+}
+
+// WaitReady blocks until the SizeTracker has completed initialization.
+// Returns an error if the tracker is aborted before initialization completes.
+func (t *SizeTracker) WaitReady() error {
+	select {
+	case <-t.ready:
+		return nil
+	case <-t.aborted:
+		return errors.New("state size tracker was aborted before initialization completed")
+	}
 }
 
 // sizeStatsHeap is a heap.Interface implementation over statesize statistics for
@@ -330,6 +343,9 @@ func (t *SizeTracker) run() {
 	if err != nil {
 		return
 	}
+	// Signal that initialization is complete
+	close(t.ready)
+
 	h := sizeStatsHeap(slices.Collect(maps.Values(stats)))
 	heap.Init(&h)
 
@@ -409,13 +425,11 @@ func (t *SizeTracker) init() (map[common.Hash]SizeStats, error) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-wait:
-	for {
+	// Check immediately, then poll every 10 seconds
+	for !t.triedb.SnapshotCompleted() {
 		select {
 		case <-ticker.C:
-			if t.triedb.SnapshotCompleted() {
-				break wait
-			}
+			// Continue to check SnapshotCompleted on next iteration
 		case <-t.updateCh:
 			continue
 		case r := <-t.queryCh:
@@ -425,12 +439,46 @@ wait:
 			return nil, errors.New("size tracker closed")
 		}
 	}
-
 	var (
 		updates  = make(map[common.Hash]*stateUpdate)
 		children = make(map[common.Hash][]common.Hash)
 		done     chan buildResult
 	)
+
+	// tryStartBuild attempts to start the state size measurement.
+	// Returns a channel if build started, nil otherwise.
+	tryStartBuild := func() chan buildResult {
+		root := rawdb.ReadSnapshotRoot(t.db)
+		if root == (common.Hash{}) {
+			return nil
+		}
+
+		var blockNumber uint64
+		if entry, exists := updates[root]; exists {
+			blockNumber = entry.blockNumber
+		} else {
+			// No update entry for this root (e.g., genesis state created before tracker started).
+			// Get the block number from the head block. Since SnapshotCompleted() returned true,
+			// the snapshot is consistent with the current chain state.
+			headHash := rawdb.ReadHeadBlockHash(t.db)
+			if headHash == (common.Hash{}) {
+				return nil
+			}
+			num, ok := rawdb.ReadHeaderNumber(t.db, headHash)
+			if !ok {
+				return nil
+			}
+			blockNumber = num
+		}
+
+		ch := make(chan buildResult)
+		go t.build(root, blockNumber, ch)
+		log.Info("Measuring persistent state size", "root", root.Hex(), "number", blockNumber)
+		return ch
+	}
+
+	// Check immediately if we can start the build (e.g., genesis state in dev mode)
+	done = tryStartBuild()
 
 	for {
 		select {
@@ -448,17 +496,7 @@ wait:
 			if done != nil {
 				continue
 			}
-			root := rawdb.ReadSnapshotRoot(t.db)
-			if root == (common.Hash{}) {
-				continue
-			}
-			entry, exists := updates[root]
-			if !exists {
-				continue
-			}
-			done = make(chan buildResult)
-			go t.build(entry.root, entry.blockNumber, done)
-			log.Info("Measuring persistent state size", "root", root.Hex(), "number", entry.blockNumber)
+			done = tryStartBuild()
 
 		case result := <-done:
 			if result.err != nil {
