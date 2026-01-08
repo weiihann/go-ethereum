@@ -1680,6 +1680,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		if err != nil {
 			return err
 		}
+		update.BlockHash = block.Hash()
 		if hasStateHook {
 			trUpdate, err := update.ToTracingUpdate()
 			if err != nil {
