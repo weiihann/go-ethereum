@@ -82,6 +82,7 @@ type StateUpdate struct {
 	OriginRoot  common.Hash // Hash of the state before applying mutation
 	Root        common.Hash // Hash of the state after applying mutation
 	BlockNumber uint64      // Associated block number
+	BlockHash   common.Hash // Associated block hash (set externally for logging)
 
 	// Accounts contains mutated accounts, keyed by address hash.
 	Accounts map[common.Hash]*types.StateAccount
