@@ -168,6 +168,9 @@ type Config struct {
 	// Number of recent block state sizes to track
 	StateSizeTrackingDepth uint64
 
+	// Wait for state size tracker to initialize before starting
+	StateSizeTrackingWait bool
+
 	// Enables VM tracing
 	VMTrace           string
 	VMTraceJsonConfig string

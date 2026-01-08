@@ -245,6 +245,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			TrieJournalDirectory:   stack.ResolvePath("triedb"),
 			StateSizeTracking:      config.EnableStateSizeTracking,
 			StateSizeTrackingDepth: config.StateSizeTrackingDepth,
+			StateSizeTrackingWait:  config.StateSizeTrackingWait,
 			SlowBlockThreshold:     config.SlowBlockThreshold,
 		}
 	)
