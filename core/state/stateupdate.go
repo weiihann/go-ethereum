@@ -68,6 +68,7 @@ type stateUpdate struct {
 	originRoot  common.Hash // hash of the state before applying mutation
 	root        common.Hash // hash of the state after applying mutation
 	blockNumber uint64      // Associated block number
+	blockHash   common.Hash // Associated block hash (set externally for logging)
 
 	accounts       map[common.Hash][]byte    // accounts stores mutated accounts in 'slim RLP' encoding
 	accountsOrigin map[common.Address][]byte // accountsOrigin stores the original values of mutated accounts in 'slim RLP' encoding

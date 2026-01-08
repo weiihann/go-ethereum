@@ -1389,11 +1389,13 @@ func (s *StateDB) Commit(block uint64, deleteEmptyObjects bool, noStorageWiping 
 }
 
 // CommitAndTrack writes the state mutations and notifies the size tracker of the state changes.
-func (s *StateDB) CommitAndTrack(block uint64, deleteEmptyObjects bool, noStorageWiping bool, sizer *SizeTracker) (common.Hash, error) {
+// The blockHash parameter is used for logging purposes to correlate state size updates with blocks.
+func (s *StateDB) CommitAndTrack(block uint64, blockHash common.Hash, deleteEmptyObjects bool, noStorageWiping bool, sizer *SizeTracker) (common.Hash, error) {
 	ret, err := s.commitAndFlush(block, deleteEmptyObjects, noStorageWiping, true)
 	if err != nil {
 		return common.Hash{}, err
 	}
+	ret.blockHash = blockHash
 	sizer.Notify(ret)
 	return ret.root, nil
 }
