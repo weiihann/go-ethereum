@@ -295,11 +295,6 @@ var (
 		Value:    10000,
 		Category: flags.StateCategory,
 	}
-	StateSizeTrackingWaitFlag = &cli.BoolFlag{
-		Name:     "state.size-tracking-wait",
-		Usage:    "Wait for state size tracker to initialize before starting (blocks until snapshot is ready)",
-		Category: flags.StateCategory,
-	}
 	StateHistoryFlag = &cli.Uint64Flag{
 		Name:     "history.state",
 		Usage:    "Number of recent blocks to retain state history for, only relevant in state.scheme=path (default = 90,000 blocks, 0 = entire chain)",
@@ -1822,9 +1817,6 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	}
 	if ctx.IsSet(StateSizeTrackingDepthFlag.Name) {
 		cfg.StateSizeTrackingDepth = ctx.Uint64(StateSizeTrackingDepthFlag.Name)
-	}
-	if ctx.Bool(StateSizeTrackingWaitFlag.Name) {
-		cfg.StateSizeTrackingWait = true
 	}
 	// Override any default configs for hard coded networks.
 	switch {
