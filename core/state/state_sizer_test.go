@@ -113,26 +113,10 @@ func TestSizeTracker(t *testing.T) {
 		triedb: tdb,
 		abort:  make(chan struct{}),
 	}
-	done := make(chan buildResult)
-
-	go baselineTracker.build(baselineRoot, baselineBlockNum, done)
-	var baselineResult buildResult
-	select {
-	case baselineResult = <-done:
-		if baselineResult.err != nil {
-			t.Fatalf("Failed to get baseline stats: %v", baselineResult.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Timeout waiting for baseline stats")
-	}
-	baseline := baselineResult.stat
-
-	// Now start the tracker and notify it of updates that happen AFTER the baseline
-	tracker, err := NewSizeTracker(db, tdb, 128)
+	baseline, err := baselineTracker.measure(baselineRoot, baselineBlockNum, common.Hash{})
 	if err != nil {
-		t.Fatalf("Failed to create size tracker: %v", err)
+		t.Fatalf("Failed to get baseline stats: %v", err)
 	}
-	defer tracker.Stop()
 
 	var trackedUpdates []SizeStats
 	currentRoot = baselineRoot
@@ -158,8 +142,6 @@ func TestSizeTracker(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to commit state at block %d: %v", blockNum, err)
 		}
-		tracker.Notify(ret)
-
 		if err := tdb.Commit(ret.root, false); err != nil {
 			t.Fatalf("Failed to commit trie at block %d: %v", blockNum, err)
 		}
@@ -186,19 +168,10 @@ func TestSizeTracker(t *testing.T) {
 		triedb: tdb,
 		abort:  make(chan struct{}),
 	}
-	finalDone := make(chan buildResult)
-
-	go finalTracker.build(finalRoot, uint64(132), finalDone)
-	var result buildResult
-	select {
-	case result = <-finalDone:
-		if result.err != nil {
-			t.Fatalf("Failed to build final stats: %v", result.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Timeout waiting for final stats")
+	actualStats, err := finalTracker.measure(finalRoot, uint64(132), common.Hash{})
+	if err != nil {
+		t.Fatalf("Failed to build final stats: %v", err)
 	}
-	actualStats := result.stat
 
 	expectedStats := baseline
 	for _, diff := range trackedUpdates {

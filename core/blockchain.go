@@ -548,7 +548,10 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		} else {
 			log.Info("Failed to setup size tracker", "err", err)
 		}
+
+		bc.SetHead(head.Number.Uint64() - 1)
 	}
+
 	return bc, nil
 }
 
