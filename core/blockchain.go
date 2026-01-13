@@ -202,9 +202,6 @@ type BlockChainConfig struct {
 	// StateSizeTrackingDepth is the number of recent block state sizes to track.
 	StateSizeTrackingDepth uint64
 
-	// StateSizeTrackingWait indicates whether to wait for state size tracker to initialize.
-	StateSizeTrackingWait bool
-
 	// SlowBlockThreshold is the block execution time threshold beyond which
 	// detailed statistics will be logged.
 	SlowBlockThreshold time.Duration
@@ -548,20 +545,13 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		if err == nil {
 			bc.stateSizer = stateSizer
 			log.Info("Enabled state size metrics", "depth", bc.cfg.StateSizeTrackingDepth)
-
-			// Wait for state size tracker to initialize if requested
-			if bc.cfg.StateSizeTrackingWait {
-				log.Info("Waiting for state size tracker to initialize...")
-				if err := stateSizer.WaitReady(); err != nil {
-					log.Warn("State size tracker initialization failed", "err", err)
-				} else {
-					log.Info("State size tracker initialized")
-				}
-			}
 		} else {
 			log.Info("Failed to setup size tracker", "err", err)
 		}
+
+		bc.SetHead(head.Number.Uint64() - 1)
 	}
+
 	return bc, nil
 }
 
