@@ -285,6 +285,12 @@ func (t *StateTrie) Witness() map[string][]byte {
 // Once the trie is committed, it's not usable anymore. A new trie must
 // be created with new root and updated trie database for following usage
 func (t *StateTrie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
+	return t.CommitWithPeriod(collectLeaf, 0)
+}
+
+// CommitWithPeriod is like Commit but allows specifying a period counter that
+// will be stored alongside each node in the database.
+func (t *StateTrie) CommitWithPeriod(collectLeaf bool, period uint64) (common.Hash, *trienode.NodeSet) {
 	// Write all the pre-images to the actual disk database
 	if len(t.secKeyCache) > 0 {
 		if t.preimages != nil {
@@ -293,7 +299,7 @@ func (t *StateTrie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 		clear(t.secKeyCache)
 	}
 	// Commit the trie and return its modified nodeset.
-	return t.trie.Commit(collectLeaf)
+	return t.trie.CommitWithPeriod(collectLeaf, period)
 }
 
 // Hash returns the root hash of StateTrie. It does not write to the
