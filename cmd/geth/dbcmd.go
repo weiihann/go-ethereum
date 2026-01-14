@@ -82,6 +82,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbTrieVersionCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -205,6 +206,13 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbTrieVersionCmd = &cli.Command{
+		Action:      dbTrieVersion,
+		Name:        "trie-version",
+		Usage:       "Check storage format version of path-based trie nodes",
+		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Description: "This command iterates through all path-based trie nodes and reports their storage format version (old RLP format vs new versioned format with period).",
 	}
 )
 
@@ -905,4 +913,119 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+// dbTrieVersion iterates through all path-based trie nodes and checks their storage format version.
+func dbTrieVersion(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	var (
+		oldFormat     int64 // RLP format (first byte >= 0xc0)
+		newFormat     int64 // Versioned format (first byte == 0x01)
+		unknownFormat int64
+		totalNodes    int64
+		startTime     = time.Now()
+		lastLog       = time.Now()
+	)
+
+	// checkVersion determines the storage format version of a trie node value.
+	// Returns: "old" for RLP format, "new" for versioned format, "unknown" otherwise.
+	checkVersion := func(data []byte) string {
+		if len(data) == 0 {
+			return "unknown"
+		}
+		// Old format: RLP lists start with 0xc0 or higher
+		if data[0] >= 0xc0 {
+			return "old"
+		}
+		// New versioned format: version byte 0x01 + 8 bytes period + blob
+		if data[0] == 0x01 && len(data) >= 9 {
+			return "new"
+		}
+		return "unknown"
+	}
+
+	// Iterate account trie nodes
+	log.Info("Checking account trie nodes...")
+	accountIter := db.NewIterator(rawdb.TrieNodeAccountPrefix, nil)
+	for accountIter.Next() {
+		key := accountIter.Key()
+		if !rawdb.IsAccountTrieNode(key) {
+			continue
+		}
+		version := checkVersion(accountIter.Value())
+		switch version {
+		case "old":
+			oldFormat++
+		case "new":
+			newFormat++
+		default:
+			unknownFormat++
+		}
+		totalNodes++
+
+		if time.Since(lastLog) > 8*time.Second {
+			log.Info("Checking account trie nodes", "total", totalNodes, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			lastLog = time.Now()
+		}
+	}
+	accountIter.Release()
+	if err := accountIter.Error(); err != nil {
+		return fmt.Errorf("account trie iteration failed: %w", err)
+	}
+
+	accountNodes := totalNodes
+	log.Info("Finished checking account trie nodes", "count", accountNodes)
+
+	// Iterate storage trie nodes
+	log.Info("Checking storage trie nodes...")
+	storageIter := db.NewIterator(rawdb.TrieNodeStoragePrefix, nil)
+	for storageIter.Next() {
+		key := storageIter.Key()
+		if !rawdb.IsStorageTrieNode(key) {
+			continue
+		}
+		version := checkVersion(storageIter.Value())
+		switch version {
+		case "old":
+			oldFormat++
+		case "new":
+			newFormat++
+		default:
+			unknownFormat++
+		}
+		totalNodes++
+
+		if time.Since(lastLog) > 8*time.Second {
+			log.Info("Checking storage trie nodes", "total", totalNodes-accountNodes, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			lastLog = time.Now()
+		}
+	}
+	storageIter.Release()
+	if err := storageIter.Error(); err != nil {
+		return fmt.Errorf("storage trie iteration failed: %w", err)
+	}
+
+	storageNodes := totalNodes - accountNodes
+
+	// Print results
+	fmt.Println("\nTrie Node Storage Format Version (Path-based)")
+	fmt.Println("==============================================")
+	fmt.Printf("Account trie nodes:  %d\n", accountNodes)
+	fmt.Printf("Storage trie nodes:  %d\n", storageNodes)
+	fmt.Println("----------------------------------------------")
+	fmt.Printf("Old format (RLP):    %d\n", oldFormat)
+	fmt.Printf("New format (v1):     %d\n", newFormat)
+	if unknownFormat > 0 {
+		fmt.Printf("Unknown format:      %d\n", unknownFormat)
+	}
+	fmt.Println("----------------------------------------------")
+	fmt.Printf("Total nodes:         %d\n", totalNodes)
+	fmt.Printf("Time elapsed:        %s\n", common.PrettyDuration(time.Since(startTime)))
+
+	return nil
 }
