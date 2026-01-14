@@ -29,13 +29,14 @@ import (
 // node hash. It is general enough that can be used to represent trie node
 // corresponding to different trie implementations.
 type Node struct {
-	Hash common.Hash // Node hash, empty for deleted node
-	Blob []byte      // Encoded node blob, nil for the deleted node
+	Hash   common.Hash // Node hash, empty for deleted node
+	Blob   []byte      // Encoded node blob, nil for the deleted node
+	Period uint64      // Period when this node was last written
 }
 
 // Size returns the total memory size used by this node.
 func (n *Node) Size() int {
-	return len(n.Blob) + common.HashLength
+	return len(n.Blob) + common.HashLength + 8 // +8 for Period
 }
 
 // IsDeleted returns the indicator if the node is marked as deleted.
@@ -45,7 +46,12 @@ func (n *Node) IsDeleted() bool {
 
 // New constructs a node with provided node information.
 func New(hash common.Hash, blob []byte) *Node {
-	return &Node{Hash: hash, Blob: blob}
+	return NewWithPeriod(hash, blob, 0)
+}
+
+// NewWithPeriod constructs a node with provided node information and period.
+func NewWithPeriod(hash common.Hash, blob []byte, period uint64) *Node {
+	return &Node{Hash: hash, Blob: blob, Period: period}
 }
 
 // NewDeleted constructs a node which is deleted.
@@ -59,10 +65,16 @@ type NodeWithPrev struct {
 
 // NewNodeWithPrev constructs a node with the additional original value.
 func NewNodeWithPrev(hash common.Hash, blob []byte, prev []byte) *NodeWithPrev {
+	return NewNodeWithPrevAndPeriod(hash, blob, prev, 0)
+}
+
+// NewNodeWithPrevAndPeriod constructs a node with the additional original value and period.
+func NewNodeWithPrevAndPeriod(hash common.Hash, blob []byte, prev []byte, period uint64) *NodeWithPrev {
 	return &NodeWithPrev{
 		Node: &Node{
-			Hash: hash,
-			Blob: blob,
+			Hash:   hash,
+			Blob:   blob,
+			Period: period,
 		},
 		Prev: prev,
 	}
@@ -71,10 +83,16 @@ func NewNodeWithPrev(hash common.Hash, blob []byte, prev []byte) *NodeWithPrev {
 // NewDeletedWithPrev constructs a node which is deleted with the additional
 // original value.
 func NewDeletedWithPrev(prev []byte) *NodeWithPrev {
+	return NewDeletedWithPrevAndPeriod(prev, 0)
+}
+
+// NewDeletedWithPrevAndPeriod constructs a deleted node with original value and period.
+func NewDeletedWithPrevAndPeriod(prev []byte, period uint64) *NodeWithPrev {
 	return &NodeWithPrev{
 		Node: &Node{
-			Hash: common.Hash{},
-			Blob: nil,
+			Hash:   common.Hash{},
+			Blob:   nil,
+			Period: period,
 		},
 		Prev: prev,
 	}
@@ -93,6 +111,7 @@ type NodeSet struct {
 	Leaves  []*leaf
 	Nodes   map[string]*Node
 	Origins map[string][]byte
+	Period  uint64 // Period for nodes in this set
 
 	updates int // the count of updated and inserted nodes
 	deletes int // the count of deleted nodes
@@ -101,8 +120,14 @@ type NodeSet struct {
 // NewNodeSet initializes a node set. The owner is zero for the account trie and
 // the owning account address hash for storage tries.
 func NewNodeSet(owner common.Hash) *NodeSet {
+	return NewNodeSetWithPeriod(owner, 0)
+}
+
+// NewNodeSetWithPeriod initializes a node set with a specific period.
+func NewNodeSetWithPeriod(owner common.Hash, period uint64) *NodeSet {
 	return &NodeSet{
 		Owner:   owner,
+		Period:  period,
 		Nodes:   make(map[string]*Node),
 		Origins: make(map[string][]byte),
 	}

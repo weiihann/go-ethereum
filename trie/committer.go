@@ -31,6 +31,7 @@ type committer struct {
 	nodes       *trienode.NodeSet
 	tracer      *PrevalueTracer
 	collectLeaf bool
+	period      uint64 // Period for nodes in this commit
 }
 
 // newCommitter creates a new committer or picks one from the pool.
@@ -39,6 +40,7 @@ func newCommitter(nodeset *trienode.NodeSet, tracer *PrevalueTracer, collectLeaf
 		nodes:       nodeset,
 		tracer:      tracer,
 		collectLeaf: collectLeaf,
+		period:      nodeset.Period,
 	}
 }
 
@@ -113,7 +115,7 @@ func (c *committer) commitChildren(path []byte, n *fullNode, parallel bool) {
 				defer wg.Done()
 
 				p := append(path, byte(index))
-				childSet := trienode.NewNodeSet(c.nodes.Owner)
+				childSet := trienode.NewNodeSetWithPeriod(c.nodes.Owner, c.period)
 				childCommitter := newCommitter(childSet, c.tracer, c.collectLeaf)
 				n.Children[index] = childCommitter.commit(p, child, false)
 
@@ -144,13 +146,13 @@ func (c *committer) store(path []byte, n node) node {
 		// deleted only if the node was existent in database before.
 		origin := c.tracer.Get(path)
 		if len(origin) != 0 {
-			c.nodes.AddNode(path, trienode.NewDeletedWithPrev(origin))
+			c.nodes.AddNode(path, trienode.NewDeletedWithPrevAndPeriod(origin, c.period))
 		}
 		return n
 	}
 	// Collect the dirty node to nodeset for return.
 	nhash := common.BytesToHash(hash)
-	c.nodes.AddNode(path, trienode.NewNodeWithPrev(nhash, nodeToBytes(n), c.tracer.Get(path)))
+	c.nodes.AddNode(path, trienode.NewNodeWithPrevAndPeriod(nhash, nodeToBytes(n), c.tracer.Get(path), c.period))
 
 	// Collect the corresponding leaf node if it's required. We don't check
 	// full node since it's impossible to store value in fullNode. The key
