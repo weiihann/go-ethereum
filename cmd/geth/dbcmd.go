@@ -1097,7 +1097,7 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 			for addr := range addrChan {
 				copy(input[12:32], addr.Bytes()) // Left-padded address in first 32 bytes
 
-				for slot := 0; slot < 32; slot++ {
+				for slot := 32; slot < 64; slot++ {
 					// Set slot number in second 32 bytes (big-endian)
 					// Clear previous slot value
 					for j := 32; j < 64; j++ {
