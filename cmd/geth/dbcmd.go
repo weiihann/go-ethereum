@@ -17,8 +17,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -216,14 +219,19 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Flags: slices.Concat([]cli.Flag{
 			&cli.IntFlag{
 				Name:  "cache",
-				Usage: "Cache size in MB for account hash lookup",
-				Value: 100 * 1024, // 100GB default to contain all accounts
+				Usage: "Cache size in MB for address hash lookup",
+				Value: 100 * 1024, // 100GB default to contain all addresses
+			},
+			&cli.StringFlag{
+				Name:     "addresses",
+				Usage:    "CSV file containing addresses (expects 'address' column)",
+				Required: true,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: `
 This command analyzes snapshot storage to determine how much is keyed by addresses.
-It builds a cache of all account hashes, then checks each storage slot's hash
-against the cache to identify address-keyed storage.`,
+It reads addresses from a CSV file, computes their left-padded keccak256 hashes,
+then checks each storage slot's hash against the cache to identify address-keyed storage.`,
 	}
 )
 
@@ -934,54 +942,81 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
 
-	// Build set of excluded address hashes (precompiles and special addresses)
-	// Precompiles: 0x01-0x11 and 0x100 (p256Verify)
-	excludedHashes := make(map[common.Hash]struct{})
-	for i := 1; i <= 0x11; i++ {
-		addr := common.BytesToAddress([]byte{byte(i)})
-		excludedHashes[crypto.Keccak256Hash(addr.Bytes())] = struct{}{}
-	}
-	// p256Verify at 0x100
-	excludedHashes[crypto.Keccak256Hash(common.BytesToAddress([]byte{0x1, 0x00}).Bytes())] = struct{}{}
-	log.Info("Built excluded address set", "count", len(excludedHashes))
-
-	// Create fastcache for account hashes
+	// Create fastcache for address hashes
 	cacheSize := ctx.Int("cache") * 1024 * 1024
-	log.Info("Creating account hash cache", "size", common.StorageSize(cacheSize))
-	accountCache := fastcache.New(cacheSize)
+	log.Info("Creating address hash cache", "size", common.StorageSize(cacheSize))
+	addressCache := fastcache.New(cacheSize)
 
-	// Phase 1: Build account hash cache
-	log.Info("Phase 1: Building account hash cache from snapshot")
+	// Phase 1: Read addresses from CSV and build hash cache
+	csvPath := ctx.String("addresses")
+	log.Info("Phase 1: Loading addresses from CSV", "file", csvPath)
+
+	file, err := os.Open(csvPath)
+	if err != nil {
+		return fmt.Errorf("failed to open CSV file: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(bufio.NewReader(file))
+
+	// Read header to find address column
+	header, err := reader.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read CSV header: %w", err)
+	}
+	addressCol := -1
+	for i, col := range header {
+		if strings.ToLower(col) == "address" {
+			addressCol = i
+			break
+		}
+	}
+	if addressCol == -1 {
+		return fmt.Errorf("CSV file must have an 'address' column")
+	}
+
 	var (
-		totalAccounts   uint64
-		skippedAccounts uint64
-		lastReport      = time.Now()
-		startTime       = time.Now()
+		totalAddresses uint64
+		lastReport     = time.Now()
+		startTime      = time.Now()
 	)
-	accountIt := rawdb.NewKeyLengthIterator(
-		db.NewIterator(rawdb.SnapshotAccountPrefix, nil),
-		len(rawdb.SnapshotAccountPrefix)+common.HashLength,
-	)
-	for accountIt.Next() {
-		key := accountIt.Key()
-		accountHash := key[len(rawdb.SnapshotAccountPrefix):]
 
-		// Skip excluded addresses (precompiles, etc.)
-		if _, excluded := excludedHashes[common.BytesToHash(accountHash)]; excluded {
-			skippedAccounts++
+	// Read addresses and compute left-padded hashes
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read CSV record: %w", err)
+		}
+		if addressCol >= len(record) {
 			continue
 		}
 
-		accountCache.Set(accountHash, nil)
-		totalAccounts++
+		addrStr := strings.TrimSpace(record[addressCol])
+		if addrStr == "" {
+			continue
+		}
+
+		// Parse address
+		addr := common.HexToAddress(addrStr)
+
+		// Compute left-padded hash: keccak256([12 zero bytes][20 byte address])
+		// This is how Solidity encodes addresses in abi.encode for mappings
+		var padded [32]byte
+		copy(padded[12:], addr.Bytes()) // Left-pad with 12 zero bytes
+		hash := crypto.Keccak256Hash(padded[:])
+
+		addressCache.Set(hash.Bytes(), nil)
+		totalAddresses++
 
 		if time.Since(lastReport) > 8*time.Second {
-			log.Info("Building account cache", "accounts", totalAccounts, "skipped", skippedAccounts, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			log.Info("Loading addresses", "count", totalAddresses, "elapsed", common.PrettyDuration(time.Since(startTime)))
 			lastReport = time.Now()
 		}
 	}
-	accountIt.Release()
-	log.Info("Account cache complete", "accounts", totalAccounts, "skipped", skippedAccounts, "elapsed", common.PrettyDuration(time.Since(startTime)))
+	log.Info("Address cache complete", "addresses", totalAddresses, "elapsed", common.PrettyDuration(time.Since(startTime)))
 
 	// Phase 2: Scan storage and check against cache
 	log.Info("Phase 2: Scanning storage snapshots")
@@ -1007,7 +1042,7 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 		totalSlots++
 		totalBytes += uint64(len(value))
 
-		if accountCache.Has(storageHash) {
+		if addressCache.Has(storageHash) {
 			addressKeyedSlots++
 			addressKeyedBytes += uint64(len(value))
 		}
@@ -1029,7 +1064,7 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 		addressKeyedPercent = float64(addressKeyedSlots) * 100 / float64(totalSlots)
 	}
 	log.Info("Analysis complete",
-		"totalAccounts", totalAccounts,
+		"totalAddresses", totalAddresses,
 		"totalStorageSlots", totalSlots,
 		"addressKeyedSlots", addressKeyedSlots,
 		"addressKeyedPercent", fmt.Sprintf("%.2f%%", addressKeyedPercent),
