@@ -25,9 +25,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -978,7 +981,7 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 		accountHash       common.Hash
 		storageCache      *fastcache.Cache // storageHash -> nil (existence check only)
 		totalSlots        uint64
-		addressKeyedSlots uint64
+		addressKeyedSlots atomic.Uint64 // atomic for concurrent access
 	}
 
 	contracts := make([]*contractData, len(targetContracts))
@@ -1073,19 +1076,82 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	}
 
 	var (
-		totalAddresses   uint64
-		skippedAddresses uint64
+		totalAddresses   atomic.Uint64
+		skippedAddresses atomic.Uint64
 	)
 	startTime = time.Now()
 	lastReport = time.Now()
 
-	// Read addresses and compute mapping slot hashes for slots 0-63
+	// Set up worker pool for parallel processing
+	numWorkers := runtime.NumCPU()
+	addrChan := make(chan common.Address, numWorkers*100)
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var input [64]byte
+
+			for addr := range addrChan {
+				copy(input[12:32], addr.Bytes()) // Left-padded address in first 32 bytes
+
+				for slot := 0; slot < 32; slot++ {
+					// Set slot number in second 32 bytes (big-endian)
+					// Clear previous slot value
+					for j := 32; j < 64; j++ {
+						input[j] = 0
+					}
+					input[63] = byte(slot)
+
+					// storageKey = keccak256(abi.encode(addr, slot))
+					storageKey := crypto.Keccak256(input[:])
+					// storageHash = keccak256(storageKey) - this is what's stored in the snapshot
+					storageHash := crypto.Keccak256(storageKey)
+
+					// Check against each contract's storage (fastcache is thread-safe)
+					for _, contract := range contracts {
+						if contract.storageCache.Has(storageHash) {
+							contract.addressKeyedSlots.Add(1)
+							// Remove from cache to avoid double counting
+							contract.storageCache.Del(storageHash)
+						}
+					}
+				}
+				totalAddresses.Add(1)
+			}
+		}()
+	}
+
+	// Progress reporter goroutine
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				log.Info("Processing addresses",
+					"addresses", totalAddresses.Load(),
+					"skipped", skippedAddresses.Load(),
+					"elapsed", common.PrettyDuration(time.Since(startTime)),
+				)
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Read addresses and send to workers
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			close(addrChan)
+			close(done)
 			return fmt.Errorf("failed to read CSV record: %w", err)
 		}
 		if addressCol >= len(record) {
@@ -1102,51 +1168,20 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 
 		// Skip excluded addresses (precompiles, zero address, etc.)
 		if _, excluded := excludedAddresses[addr]; excluded {
-			skippedAddresses++
+			skippedAddresses.Add(1)
 			continue
 		}
 
-		// For each base slot 0-63, compute the mapping slot hash and check against each contract
-		var input [64]byte
-		copy(input[12:32], addr.Bytes()) // Left-padded address in first 32 bytes
-
-		for slot := 0; slot < 64; slot++ {
-			// Set slot number in second 32 bytes (big-endian)
-			// Clear previous slot value
-			for j := 32; j < 64; j++ {
-				input[j] = 0
-			}
-			input[63] = byte(slot)
-
-			// storageKey = keccak256(abi.encode(addr, slot))
-			storageKey := crypto.Keccak256(input[:])
-			// storageHash = keccak256(storageKey) - this is what's stored in the snapshot
-			storageHash := crypto.Keccak256(storageKey)
-
-			// Check against each contract's storage
-			for _, contract := range contracts {
-				if contract.storageCache.Has(storageHash) {
-					contract.addressKeyedSlots++
-					// Remove from cache to avoid double counting
-					contract.storageCache.Del(storageHash)
-				}
-			}
-		}
-		totalAddresses++
-
-		if time.Since(lastReport) > 8*time.Second {
-			log.Info("Processing addresses",
-				"addresses", totalAddresses,
-				"skipped", skippedAddresses,
-				"elapsed", common.PrettyDuration(time.Since(startTime)),
-			)
-			lastReport = time.Now()
-		}
+		addrChan <- addr
 	}
 
+	close(addrChan)
+	wg.Wait()
+	close(done)
+
 	log.Info("Phase 2 complete",
-		"totalAddresses", totalAddresses,
-		"skipped", skippedAddresses,
+		"totalAddresses", totalAddresses.Load(),
+		"skipped", skippedAddresses.Load(),
 		"elapsed", common.PrettyDuration(time.Since(startTime)),
 	)
 
@@ -1158,19 +1193,20 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 
 	fmt.Println("\n=== Per-Contract Results ===")
 	for _, contract := range contracts {
+		keyed := contract.addressKeyedSlots.Load()
 		var pct float64
 		if contract.totalSlots > 0 {
-			pct = float64(contract.addressKeyedSlots) * 100 / float64(contract.totalSlots)
+			pct = float64(keyed) * 100 / float64(contract.totalSlots)
 		}
 		log.Info("Contract analysis",
 			"contract", contract.name,
 			"totalSlots", contract.totalSlots,
-			"addressKeyedSlots", contract.addressKeyedSlots,
+			"addressKeyedSlots", keyed,
 			"percent", fmt.Sprintf("%.2f%%", pct),
 		)
 
 		totalSlots += contract.totalSlots
-		addressKeyedSlots += contract.addressKeyedSlots
+		addressKeyedSlots += keyed
 	}
 
 	// Print final summary
@@ -1181,7 +1217,7 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 
 	fmt.Println("\n=== Final Summary ===")
 	log.Info("Analysis complete",
-		"totalAddresses", totalAddresses,
+		"totalAddresses", totalAddresses.Load(),
 		"totalStorageSlots", totalSlots,
 		"addressKeyedSlots", addressKeyedSlots,
 		"addressKeyedPercent", fmt.Sprintf("%.2f%%", addressKeyedPercent),
