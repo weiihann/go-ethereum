@@ -119,6 +119,7 @@ type stateSizeTracerConfig struct {
 	ClientName    string `json:"clientName"`    // Client name for metadata
 	ClientVersion string `json:"clientVersion"` // Client version
 	NetworkID     uint64 `json:"networkId"`     // Network ID
+	NetworkName   string `json:"networkName"`   // Network name
 
 	// Parsed durations
 	batchTimeout  time.Duration
@@ -271,10 +272,11 @@ func (s *stateSizeTracer) createDecoratedEvent(
 		Name:       s.config.ClientName,
 		Version:    s.config.ClientVersion,
 		Id:         s.clientID,
-		ModuleName: xatu.ModuleName_EL_MIMICRY,
+		ModuleName: xatu.ModuleName_EL_TRACER,
 		Ethereum: &xatu.ClientMeta_Ethereum{
 			Network: &xatu.ClientMeta_Ethereum_Network{
-				Id: s.config.NetworkID,
+				Name: s.config.NetworkName,
+				Id:   s.config.NetworkID,
 			},
 			Execution: &xatu.ClientMeta_Ethereum_Execution{
 				Implementation: s.config.ClientName,
