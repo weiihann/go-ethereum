@@ -934,6 +934,17 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
 
+	// Build set of excluded address hashes (precompiles and special addresses)
+	// Precompiles: 0x01-0x11 and 0x100 (p256Verify)
+	excludedHashes := make(map[common.Hash]struct{})
+	for i := 1; i <= 0x11; i++ {
+		addr := common.BytesToAddress([]byte{byte(i)})
+		excludedHashes[crypto.Keccak256Hash(addr.Bytes())] = struct{}{}
+	}
+	// p256Verify at 0x100
+	excludedHashes[crypto.Keccak256Hash(common.BytesToAddress([]byte{0x1, 0x00}).Bytes())] = struct{}{}
+	log.Info("Built excluded address set", "count", len(excludedHashes))
+
 	// Create fastcache for account hashes
 	cacheSize := ctx.Int("cache") * 1024 * 1024
 	log.Info("Creating account hash cache", "size", common.StorageSize(cacheSize))
@@ -942,9 +953,10 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	// Phase 1: Build account hash cache
 	log.Info("Phase 1: Building account hash cache from snapshot")
 	var (
-		totalAccounts uint64
-		lastReport    = time.Now()
-		startTime     = time.Now()
+		totalAccounts   uint64
+		skippedAccounts uint64
+		lastReport      = time.Now()
+		startTime       = time.Now()
 	)
 	accountIt := rawdb.NewKeyLengthIterator(
 		db.NewIterator(rawdb.SnapshotAccountPrefix, nil),
@@ -953,16 +965,23 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	for accountIt.Next() {
 		key := accountIt.Key()
 		accountHash := key[len(rawdb.SnapshotAccountPrefix):]
+
+		// Skip excluded addresses (precompiles, etc.)
+		if _, excluded := excludedHashes[common.BytesToHash(accountHash)]; excluded {
+			skippedAccounts++
+			continue
+		}
+
 		accountCache.Set(accountHash, nil)
 		totalAccounts++
 
 		if time.Since(lastReport) > 8*time.Second {
-			log.Info("Building account cache", "accounts", totalAccounts, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			log.Info("Building account cache", "accounts", totalAccounts, "skipped", skippedAccounts, "elapsed", common.PrettyDuration(time.Since(startTime)))
 			lastReport = time.Now()
 		}
 	}
 	accountIt.Release()
-	log.Info("Account cache complete", "accounts", totalAccounts, "elapsed", common.PrettyDuration(time.Since(startTime)))
+	log.Info("Account cache complete", "accounts", totalAccounts, "skipped", skippedAccounts, "elapsed", common.PrettyDuration(time.Since(startTime)))
 
 	// Phase 2: Scan storage and check against cache
 	log.Info("Phase 2: Scanning storage snapshots")
