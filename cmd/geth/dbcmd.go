@@ -217,11 +217,6 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Usage:     "Analyze storage slots keyed by addresses",
 		ArgsUsage: "",
 		Flags: slices.Concat([]cli.Flag{
-			&cli.IntFlag{
-				Name:  "cache",
-				Usage: "Cache size in MB for address hash lookup",
-				Value: 100 * 1024, // 100GB default to contain all addresses
-			},
 			&cli.StringFlag{
 				Name:     "addresses",
 				Usage:    "CSV file containing addresses (expects 'address' column)",
@@ -230,8 +225,9 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: `
 This command analyzes snapshot storage to determine how much is keyed by addresses.
-It reads addresses from a CSV file, computes their left-padded keccak256 hashes,
-then checks each storage slot's hash against the cache to identify address-keyed storage.`,
+It first collects all storage hashes from target contracts, then reads addresses
+from a CSV file and computes 64 mapping slot hashes per address (for slots 0-63)
+to check against the collected storage.`,
 	}
 )
 
@@ -935,6 +931,9 @@ func inspectHistory(ctx *cli.Context) error {
 }
 
 // analyzeAddressStorage analyzes snapshot storage to determine how much is keyed by addresses.
+// It uses an inverted approach:
+// Phase 1: Collect all storage hashes from target contracts into a map (per-contract)
+// Phase 2: Iterate addresses from CSV, compute 64 hashes per address on-the-fly, check against storage
 func analyzeAddressStorage(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
@@ -942,8 +941,26 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
 
+	// Target contracts to analyze
+	targetContracts := []common.Address{
+		common.HexToAddress("0x06450dee7fd2fb8e39061434babcfc05599a6fb8"), // Xen Crypto
+		common.HexToAddress("0x000000000022d473030f116ddee9f6b43ac78ba3"), // Permit2
+		common.HexToAddress("0xdac17f958d2ee523a2206206994597c13d831ec7"), // USDT
+		common.HexToAddress("0x00000000006c3852cbef3e08e8df289169ede581"), // Seaport
+		common.HexToAddress("0x5acc84a3e955bdd76467d3348077d003f00ffb97"), // Forsage.io
+		common.HexToAddress("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"), // USDC
+		common.HexToAddress("0x1a2a1c938ce3ec39b6d47113c7955baa9dd454f2"), // Axie Infinity: Ronin Bridge
+		common.HexToAddress("0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e"), // ENSRegistryWithFallback
+		common.HexToAddress("0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9"), // Aave Token
+		common.HexToAddress("0x06012c8cf97bead5deae237070f9587f8e7a266d"), // CryptoKitties: Core
+		common.HexToAddress("0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"), // WETH
+		common.HexToAddress("0x8315177ab297ba92a06054ce80a67ed4dbd7ed3a"), // Arbitrum: Bridge
+	}
+
+	log.Info("Target contracts", "count", len(targetContracts))
+
 	// Build set of excluded addresses (precompiles and special addresses)
-	excludedAddresses := make(map[common.Address]struct{})
+	excludedAddresses := make(map[common.Address]struct{}, 20)
 	// Zero/burn address
 	excludedAddresses[common.Address{}] = struct{}{}
 	// Precompiles: 0x01-0x11
@@ -954,14 +971,82 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	excludedAddresses[common.BytesToAddress([]byte{0x1, 0x00})] = struct{}{}
 	log.Info("Built excluded address set", "count", len(excludedAddresses))
 
-	// Create fastcache for address hashes
-	cacheSize := ctx.Int("cache") * 1024 * 1024
-	log.Info("Creating address hash cache", "size", common.StorageSize(cacheSize))
-	addressCache := fastcache.New(cacheSize)
+	// Per-contract statistics and storage hash sets
+	type contractData struct {
+		name              string
+		address           common.Address
+		accountHash       common.Hash
+		storageCache      *fastcache.Cache // storageHash -> nil (existence check only)
+		totalSlots        uint64
+		addressKeyedSlots uint64
+	}
 
-	// Phase 1: Read addresses from CSV and build hash cache
+	contracts := make([]*contractData, len(targetContracts))
+	for i, addr := range targetContracts {
+		contracts[i] = &contractData{
+			name:         addr.Hex(),
+			address:      addr,
+			accountHash:  crypto.Keccak256Hash(addr.Bytes()),
+			storageCache: fastcache.New(64 * 1024 * 1024), // 64MB per contract initially
+		}
+	}
+
+	// Phase 1: Collect all storage hashes from target contracts
+	log.Info("Phase 1: Collecting storage hashes from target contracts")
+	var (
+		startTime  = time.Now()
+		lastReport = time.Now()
+	)
+
+	for _, contract := range contracts {
+		log.Info("Collecting storage for contract", "contract", contract.name, "accountHash", contract.accountHash.Hex())
+
+		// Use prefix iterator for this specific account's storage
+		prefix := append(rawdb.SnapshotStoragePrefix, contract.accountHash.Bytes()...)
+		storageIt := rawdb.NewKeyLengthIterator(
+			db.NewIterator(prefix, nil),
+			len(rawdb.SnapshotStoragePrefix)+2*common.HashLength,
+		)
+
+		for storageIt.Next() {
+			key := storageIt.Key()
+			// Extract storageHash (after prefix and accountHash)
+			storageHash := key[len(rawdb.SnapshotStoragePrefix)+common.HashLength:]
+
+			// Store the hash for existence check only
+			contract.storageCache.Set(storageHash, nil)
+			contract.totalSlots++
+
+			if time.Since(lastReport) > 8*time.Second {
+				log.Info("Collecting storage",
+					"contract", contract.name,
+					"slots", contract.totalSlots,
+					"elapsed", common.PrettyDuration(time.Since(startTime)),
+				)
+				lastReport = time.Now()
+			}
+		}
+		storageIt.Release()
+
+		log.Info("Contract storage collected",
+			"contract", contract.name,
+			"slots", contract.totalSlots,
+		)
+	}
+
+	// Calculate total slots collected
+	var totalContractSlots uint64
+	for _, contract := range contracts {
+		totalContractSlots += contract.totalSlots
+	}
+	log.Info("Phase 1 complete",
+		"totalSlots", totalContractSlots,
+		"elapsed", common.PrettyDuration(time.Since(startTime)),
+	)
+
+	// Phase 2: Read addresses from CSV and check against storage hashes
 	csvPath := ctx.String("addresses")
-	log.Info("Phase 1: Loading addresses from CSV", "file", csvPath)
+	log.Info("Phase 2: Checking addresses against storage hashes", "file", csvPath, "slotsPerAddress", 64)
 
 	file, err := os.Open(csvPath)
 	if err != nil {
@@ -990,11 +1075,11 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	var (
 		totalAddresses   uint64
 		skippedAddresses uint64
-		lastReport       = time.Now()
-		startTime        = time.Now()
 	)
+	startTime = time.Now()
+	lastReport = time.Now()
 
-	// Read addresses and compute left-padded hashes
+	// Read addresses and compute mapping slot hashes for slots 0-63
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -1021,75 +1106,85 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 			continue
 		}
 
-		// Compute left-padded hash: keccak256([12 zero bytes][20 byte address])
-		// This is how Solidity encodes addresses in abi.encode for mappings
-		var padded [32]byte
-		copy(padded[12:], addr.Bytes()) // Left-pad with 12 zero bytes
-		hash := crypto.Keccak256Hash(padded[:])
+		// For each base slot 0-63, compute the mapping slot hash and check against each contract
+		var input [64]byte
+		copy(input[12:32], addr.Bytes()) // Left-padded address in first 32 bytes
 
-		addressCache.Set(hash.Bytes(), nil)
+		for slot := 0; slot < 64; slot++ {
+			// Set slot number in second 32 bytes (big-endian)
+			// Clear previous slot value
+			for j := 32; j < 64; j++ {
+				input[j] = 0
+			}
+			input[63] = byte(slot)
+
+			// storageKey = keccak256(abi.encode(addr, slot))
+			storageKey := crypto.Keccak256(input[:])
+			// storageHash = keccak256(storageKey) - this is what's stored in the snapshot
+			storageHash := crypto.Keccak256(storageKey)
+
+			// Check against each contract's storage
+			for _, contract := range contracts {
+				if contract.storageCache.Has(storageHash) {
+					contract.addressKeyedSlots++
+					// Remove from cache to avoid double counting
+					contract.storageCache.Del(storageHash)
+				}
+			}
+		}
 		totalAddresses++
 
 		if time.Since(lastReport) > 8*time.Second {
-			log.Info("Loading addresses", "count", totalAddresses, "skipped", skippedAddresses, "elapsed", common.PrettyDuration(time.Since(startTime)))
-			lastReport = time.Now()
-		}
-	}
-	log.Info("Address cache complete", "addresses", totalAddresses, "skipped", skippedAddresses, "elapsed", common.PrettyDuration(time.Since(startTime)))
-
-	// Phase 2: Scan storage and check against cache
-	log.Info("Phase 2: Scanning storage snapshots")
-	var (
-		totalSlots        uint64
-		addressKeyedSlots uint64
-		totalBytes        uint64
-		addressKeyedBytes uint64
-	)
-	lastReport = time.Now()
-	startTime = time.Now()
-
-	storageIt := rawdb.NewKeyLengthIterator(
-		db.NewIterator(rawdb.SnapshotStoragePrefix, nil),
-		len(rawdb.SnapshotStoragePrefix)+2*common.HashLength,
-	)
-	for storageIt.Next() {
-		key := storageIt.Key()
-		// Extract storageHash (second 32 bytes after prefix and accountHash)
-		storageHash := key[len(rawdb.SnapshotStoragePrefix)+common.HashLength:]
-		value := storageIt.Value()
-
-		totalSlots++
-		totalBytes += uint64(len(value))
-
-		if addressCache.Has(storageHash) {
-			addressKeyedSlots++
-			addressKeyedBytes += uint64(len(value))
-		}
-
-		if time.Since(lastReport) > 8*time.Second {
-			log.Info("Scanning storage",
-				"slots", totalSlots,
-				"addressKeyed", addressKeyedSlots,
+			log.Info("Processing addresses",
+				"addresses", totalAddresses,
+				"skipped", skippedAddresses,
 				"elapsed", common.PrettyDuration(time.Since(startTime)),
 			)
 			lastReport = time.Now()
 		}
 	}
-	storageIt.Release()
 
-	// Print final results
+	log.Info("Phase 2 complete",
+		"totalAddresses", totalAddresses,
+		"skipped", skippedAddresses,
+		"elapsed", common.PrettyDuration(time.Since(startTime)),
+	)
+
+	// Print per-contract results
+	var (
+		totalSlots        uint64
+		addressKeyedSlots uint64
+	)
+
+	fmt.Println("\n=== Per-Contract Results ===")
+	for _, contract := range contracts {
+		var pct float64
+		if contract.totalSlots > 0 {
+			pct = float64(contract.addressKeyedSlots) * 100 / float64(contract.totalSlots)
+		}
+		log.Info("Contract analysis",
+			"contract", contract.name,
+			"totalSlots", contract.totalSlots,
+			"addressKeyedSlots", contract.addressKeyedSlots,
+			"percent", fmt.Sprintf("%.2f%%", pct),
+		)
+
+		totalSlots += contract.totalSlots
+		addressKeyedSlots += contract.addressKeyedSlots
+	}
+
+	// Print final summary
 	var addressKeyedPercent float64
 	if totalSlots > 0 {
 		addressKeyedPercent = float64(addressKeyedSlots) * 100 / float64(totalSlots)
 	}
+
+	fmt.Println("\n=== Final Summary ===")
 	log.Info("Analysis complete",
 		"totalAddresses", totalAddresses,
 		"totalStorageSlots", totalSlots,
 		"addressKeyedSlots", addressKeyedSlots,
 		"addressKeyedPercent", fmt.Sprintf("%.2f%%", addressKeyedPercent),
-		"totalBytes", common.StorageSize(totalBytes),
-		"addressKeyedBytes", common.StorageSize(addressKeyedBytes),
-		"elapsed", common.PrettyDuration(time.Since(startTime)),
 	)
 	return nil
 }
