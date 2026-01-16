@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VictoriaMetrics/fastcache"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -82,6 +83,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbAddressStorageCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -205,6 +207,23 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbAddressStorageCmd = &cli.Command{
+		Action:    analyzeAddressStorage,
+		Name:      "address-storage",
+		Usage:     "Analyze storage slots keyed by addresses",
+		ArgsUsage: "",
+		Flags: slices.Concat([]cli.Flag{
+			&cli.IntFlag{
+				Name:  "cache",
+				Usage: "Cache size in MB for account hash lookup",
+				Value: 100 * 1024, // 100GB default to contain all accounts
+			},
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Description: `
+This command analyzes snapshot storage to determine how much is keyed by addresses.
+It builds a cache of all account hashes, then checks each storage slot's hash
+against the cache to identify address-keyed storage.`,
 	}
 )
 
@@ -905,4 +924,99 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+// analyzeAddressStorage analyzes snapshot storage to determine how much is keyed by addresses.
+func analyzeAddressStorage(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	// Create fastcache for account hashes
+	cacheSize := ctx.Int("cache") * 1024 * 1024
+	log.Info("Creating account hash cache", "size", common.StorageSize(cacheSize))
+	accountCache := fastcache.New(cacheSize)
+
+	// Phase 1: Build account hash cache
+	log.Info("Phase 1: Building account hash cache from snapshot")
+	var (
+		totalAccounts uint64
+		lastReport    = time.Now()
+		startTime     = time.Now()
+	)
+	accountIt := rawdb.NewKeyLengthIterator(
+		db.NewIterator(rawdb.SnapshotAccountPrefix, nil),
+		len(rawdb.SnapshotAccountPrefix)+common.HashLength,
+	)
+	for accountIt.Next() {
+		key := accountIt.Key()
+		accountHash := key[len(rawdb.SnapshotAccountPrefix):]
+		accountCache.Set(accountHash, nil)
+		totalAccounts++
+
+		if time.Since(lastReport) > 8*time.Second {
+			log.Info("Building account cache", "accounts", totalAccounts, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			lastReport = time.Now()
+		}
+	}
+	accountIt.Release()
+	log.Info("Account cache complete", "accounts", totalAccounts, "elapsed", common.PrettyDuration(time.Since(startTime)))
+
+	// Phase 2: Scan storage and check against cache
+	log.Info("Phase 2: Scanning storage snapshots")
+	var (
+		totalSlots        uint64
+		addressKeyedSlots uint64
+		totalBytes        uint64
+		addressKeyedBytes uint64
+	)
+	lastReport = time.Now()
+	startTime = time.Now()
+
+	storageIt := rawdb.NewKeyLengthIterator(
+		db.NewIterator(rawdb.SnapshotStoragePrefix, nil),
+		len(rawdb.SnapshotStoragePrefix)+2*common.HashLength,
+	)
+	for storageIt.Next() {
+		key := storageIt.Key()
+		// Extract storageHash (second 32 bytes after prefix and accountHash)
+		storageHash := key[len(rawdb.SnapshotStoragePrefix)+common.HashLength:]
+		value := storageIt.Value()
+
+		totalSlots++
+		totalBytes += uint64(len(value))
+
+		if accountCache.Has(storageHash) {
+			addressKeyedSlots++
+			addressKeyedBytes += uint64(len(value))
+		}
+
+		if time.Since(lastReport) > 8*time.Second {
+			log.Info("Scanning storage",
+				"slots", totalSlots,
+				"addressKeyed", addressKeyedSlots,
+				"elapsed", common.PrettyDuration(time.Since(startTime)),
+			)
+			lastReport = time.Now()
+		}
+	}
+	storageIt.Release()
+
+	// Print final results
+	var addressKeyedPercent float64
+	if totalSlots > 0 {
+		addressKeyedPercent = float64(addressKeyedSlots) * 100 / float64(totalSlots)
+	}
+	log.Info("Analysis complete",
+		"totalAccounts", totalAccounts,
+		"totalStorageSlots", totalSlots,
+		"addressKeyedSlots", addressKeyedSlots,
+		"addressKeyedPercent", fmt.Sprintf("%.2f%%", addressKeyedPercent),
+		"totalBytes", common.StorageSize(totalBytes),
+		"addressKeyedBytes", common.StorageSize(addressKeyedBytes),
+		"elapsed", common.PrettyDuration(time.Since(startTime)),
+	)
+	return nil
 }
