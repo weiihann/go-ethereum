@@ -942,6 +942,18 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
 
+	// Build set of excluded addresses (precompiles and special addresses)
+	excludedAddresses := make(map[common.Address]struct{})
+	// Zero/burn address
+	excludedAddresses[common.Address{}] = struct{}{}
+	// Precompiles: 0x01-0x11
+	for i := 1; i <= 0x11; i++ {
+		excludedAddresses[common.BytesToAddress([]byte{byte(i)})] = struct{}{}
+	}
+	// p256Verify at 0x100
+	excludedAddresses[common.BytesToAddress([]byte{0x1, 0x00})] = struct{}{}
+	log.Info("Built excluded address set", "count", len(excludedAddresses))
+
 	// Create fastcache for address hashes
 	cacheSize := ctx.Int("cache") * 1024 * 1024
 	log.Info("Creating address hash cache", "size", common.StorageSize(cacheSize))
@@ -976,9 +988,10 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 	}
 
 	var (
-		totalAddresses uint64
-		lastReport     = time.Now()
-		startTime      = time.Now()
+		totalAddresses   uint64
+		skippedAddresses uint64
+		lastReport       = time.Now()
+		startTime        = time.Now()
 	)
 
 	// Read addresses and compute left-padded hashes
@@ -1002,6 +1015,12 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 		// Parse address
 		addr := common.HexToAddress(addrStr)
 
+		// Skip excluded addresses (precompiles, zero address, etc.)
+		if _, excluded := excludedAddresses[addr]; excluded {
+			skippedAddresses++
+			continue
+		}
+
 		// Compute left-padded hash: keccak256([12 zero bytes][20 byte address])
 		// This is how Solidity encodes addresses in abi.encode for mappings
 		var padded [32]byte
@@ -1012,11 +1031,11 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 		totalAddresses++
 
 		if time.Since(lastReport) > 8*time.Second {
-			log.Info("Loading addresses", "count", totalAddresses, "elapsed", common.PrettyDuration(time.Since(startTime)))
+			log.Info("Loading addresses", "count", totalAddresses, "skipped", skippedAddresses, "elapsed", common.PrettyDuration(time.Since(startTime)))
 			lastReport = time.Now()
 		}
 	}
-	log.Info("Address cache complete", "addresses", totalAddresses, "elapsed", common.PrettyDuration(time.Since(startTime)))
+	log.Info("Address cache complete", "addresses", totalAddresses, "skipped", skippedAddresses, "elapsed", common.PrettyDuration(time.Since(startTime)))
 
 	// Phase 2: Scan storage and check against cache
 	log.Info("Phase 2: Scanning storage snapshots")
