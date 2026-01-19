@@ -90,6 +90,7 @@ Remove blockchain and state databases`,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
 			dbAddressStorageCmd,
+			dbContractSlotsCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -231,6 +232,16 @@ This command analyzes snapshot storage to determine how much is keyed by address
 It first collects all storage hashes from target contracts, then reads addresses
 from a CSV file and computes 64 mapping slot hashes per address (for slots 0-63)
 to check against the collected storage.`,
+	}
+	dbContractSlotsCmd = &cli.Command{
+		Action:    countContractSlots,
+		Name:      "contract-slots",
+		Usage:     "Count storage slots for a contract address",
+		ArgsUsage: "<contract-address>",
+		Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Description: `
+This command counts the number of storage slots held by a contract address
+by iterating over the snapshot storage prefix for the given account.`,
 	}
 )
 
@@ -1221,6 +1232,71 @@ func analyzeAddressStorage(ctx *cli.Context) error {
 		"totalStorageSlots", totalSlots,
 		"addressKeyedSlots", addressKeyedSlots,
 		"addressKeyedPercent", fmt.Sprintf("%.2f%%", addressKeyedPercent),
+	)
+	return nil
+}
+
+// countContractSlots counts the number of storage slots held by a contract address.
+func countContractSlots(ctx *cli.Context) error {
+	if ctx.NArg() != 1 {
+		return fmt.Errorf("required argument: <contract-address>")
+	}
+
+	// Parse contract address
+	addrStr := ctx.Args().Get(0)
+	var addr common.Address
+	if err := addr.UnmarshalText([]byte(addrStr)); err != nil {
+		return fmt.Errorf("invalid address %q: %w", addrStr, err)
+	}
+
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	// Compute account hash
+	accountHash := crypto.Keccak256Hash(addr.Bytes())
+
+	log.Info("Counting storage slots",
+		"address", addr.Hex(),
+		"accountHash", accountHash.Hex(),
+	)
+
+	// Iterate storage snapshot for this account
+	var (
+		count      uint64
+		startTime  = time.Now()
+		lastReport = time.Now()
+	)
+
+	prefix := append(rawdb.SnapshotStoragePrefix, accountHash.Bytes()...)
+	it := rawdb.NewKeyLengthIterator(
+		db.NewIterator(prefix, nil),
+		len(rawdb.SnapshotStoragePrefix)+2*common.HashLength,
+	)
+	defer it.Release()
+
+	for it.Next() {
+		count++
+
+		if time.Since(lastReport) > 8*time.Second {
+			log.Info("Counting slots",
+				"count", count,
+				"elapsed", common.PrettyDuration(time.Since(startTime)),
+			)
+			lastReport = time.Now()
+		}
+	}
+
+	if err := it.Error(); err != nil {
+		return fmt.Errorf("iterator error: %w", err)
+	}
+
+	log.Info("Storage slot count complete",
+		"address", addr.Hex(),
+		"slots", count,
+		"elapsed", common.PrettyDuration(time.Since(startTime)),
 	)
 	return nil
 }
