@@ -185,6 +185,10 @@ func (t *TransitionTrie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSe
 	return t.overlay.Commit(collectLeaf)
 }
 
+func (t *TransitionTrie) CommitWithPeriod(collectLeaf bool, period uint64) (common.Hash, *trienode.NodeSet) {
+	panic("not implemented")
+}
+
 // NodeIterator returns an iterator that returns nodes of the trie. Iteration
 // starts at the key after the given start key.
 func (t *TransitionTrie) NodeIterator(startKey []byte) (trie.NodeIterator, error) {

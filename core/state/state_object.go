@@ -424,7 +424,7 @@ func (s *stateObject) commitStorage(op *accountUpdate) {
 //
 // Note, commit may run concurrently across all the state objects. Do not assume
 // thread-safe access to the statedb.
-func (s *stateObject) commit() (*accountUpdate, *trienode.NodeSet, error) {
+func (s *stateObject) commit(period uint64) (*accountUpdate, *trienode.NodeSet, error) {
 	// commit the account metadata changes
 	op := &accountUpdate{
 		address: s.address,
