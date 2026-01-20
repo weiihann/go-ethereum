@@ -45,6 +45,8 @@ import (
 // TriesInMemory represents the number of layers that are kept in RAM.
 const TriesInMemory = 128
 
+const numBlocksPerPeriod = 1_314_000 // 1 period = 6 months worth of blocks
+
 type mutationType int
 
 const (
@@ -1180,9 +1182,10 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 		storageTrieNodesUpdated int
 		storageTrieNodesDeleted int
 
-		lock    sync.Mutex                                               // protect two maps below
-		nodes   = trienode.NewMergedNodeSet()                            // aggregated trie nodes
-		updates = make(map[common.Hash]*accountUpdate, len(s.mutations)) // aggregated account updates
+		lock      sync.Mutex                                               // protect two maps below
+		nodes     = trienode.NewMergedNodeSet()                            // aggregated trie nodes
+		updates   = make(map[common.Hash]*accountUpdate, len(s.mutations)) // aggregated account updates
+		curPeriod = getCurPeriod(blockNumber)
 
 		// merge aggregates the dirty trie nodes into the global set.
 		//
@@ -1243,7 +1246,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 	// code didn't anticipate for.
 	workers.Go(func() error {
 		// Write the account trie changes, measuring the amount of wasted time
-		newroot, set := s.trie.Commit(true)
+		newroot, set := s.trie.CommitWithPeriod(true, curPeriod)
 		root = newroot
 
 		if err := merge(set); err != nil {
@@ -1271,7 +1274,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 		// Run the storage updates concurrently to one another
 		workers.Go(func() error {
 			// Write any storage changes in the state object to its storage trie
-			update, set, err := obj.commit()
+			update, set, err := obj.commit(curPeriod)
 			if err != nil {
 				return err
 			}
@@ -1501,4 +1504,9 @@ func (s *StateDB) Witness() *stateless.Witness {
 
 func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
+}
+
+// TODO(weiihann): just a temp function for now
+func getCurPeriod(block uint64) uint64 {
+	return block / numBlocksPerPeriod
 }
