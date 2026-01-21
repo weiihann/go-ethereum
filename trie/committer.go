@@ -35,12 +35,12 @@ type committer struct {
 }
 
 // newCommitter creates a new committer or picks one from the pool.
-func newCommitter(nodeset *trienode.NodeSet, tracer *PrevalueTracer, collectLeaf bool) *committer {
+func newCommitter(nodeset *trienode.NodeSet, tracer *PrevalueTracer, collectLeaf bool, period uint64) *committer {
 	return &committer{
 		nodes:       nodeset,
 		tracer:      tracer,
 		collectLeaf: collectLeaf,
-		period:      nodeset.Period,
+		period:      period,
 	}
 }
 
@@ -115,8 +115,8 @@ func (c *committer) commitChildren(path []byte, n *fullNode, parallel bool) {
 				defer wg.Done()
 
 				p := append(path, byte(index))
-				childSet := trienode.NewNodeSetWithPeriod(c.nodes.Owner, c.period)
-				childCommitter := newCommitter(childSet, c.tracer, c.collectLeaf)
+				childSet := trienode.NewNodeSet(c.nodes.Owner)
+				childCommitter := newCommitter(childSet, c.tracer, c.collectLeaf, c.period)
 				n.Children[index] = childCommitter.commit(p, child, false)
 
 				nodesMu.Lock()

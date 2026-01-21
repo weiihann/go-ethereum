@@ -111,7 +111,6 @@ type NodeSet struct {
 	Leaves  []*leaf
 	Nodes   map[string]*Node
 	Origins map[string][]byte
-	Period  uint64 // Period for nodes in this set
 
 	updates int // the count of updated and inserted nodes
 	deletes int // the count of deleted nodes
@@ -120,14 +119,8 @@ type NodeSet struct {
 // NewNodeSet initializes a node set. The owner is zero for the account trie and
 // the owning account address hash for storage tries.
 func NewNodeSet(owner common.Hash) *NodeSet {
-	return NewNodeSetWithPeriod(owner, 0)
-}
-
-// NewNodeSetWithPeriod initializes a node set with a specific period.
-func NewNodeSetWithPeriod(owner common.Hash, period uint64) *NodeSet {
 	return &NodeSet{
 		Owner:   owner,
-		Period:  period,
 		Nodes:   make(map[string]*Node),
 		Origins: make(map[string][]byte),
 	}
