@@ -45,7 +45,9 @@ import (
 // TriesInMemory represents the number of layers that are kept in RAM.
 const TriesInMemory = 128
 
-const numBlocksPerPeriod = 1_314_000 // 1 period = 6 months worth of blocks
+// NumBlocksPerPeriod defines how many blocks constitute one period for archive expiry.
+// Default is 1,314,000 blocks (~6 months). Can be configured via --state.blocks-per-period.
+var NumBlocksPerPeriod uint64 = 1_314_000
 
 type mutationType int
 
@@ -1506,7 +1508,6 @@ func (s *StateDB) AccessEvents() *AccessEvents {
 	return s.accessEvents
 }
 
-// TODO(weiihann): just a temp function for now
 func getCurPeriod(block uint64) uint64 {
-	return block / numBlocksPerPeriod
+	return block / NumBlocksPerPeriod
 }

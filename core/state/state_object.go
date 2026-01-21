@@ -454,7 +454,7 @@ func (s *stateObject) commit(period uint64) (*accountUpdate, *trienode.NodeSet, 
 		s.origin = s.data.Copy()
 		return op, nil, nil
 	}
-	root, nodes := s.trie.Commit(false)
+	root, nodes := s.trie.CommitWithPeriod(false, period)
 	s.data.Root = root
 	s.origin = s.data.Copy()
 	return op, nodes, nil
