@@ -472,7 +472,7 @@ func (g *generator) generateRange(ctx *generatorContext, trieId *trie.ID, prefix
 		for i, key := range result.keys {
 			tr.Update(key, result.vals[i])
 		}
-		_, nodes := tr.Commit(false)
+		_, nodes := tr.Commit(false, 0)
 		hashSet := nodes.HashSet()
 		resolver = func(owner common.Hash, path []byte, hash common.Hash) []byte {
 			return hashSet[hash]
