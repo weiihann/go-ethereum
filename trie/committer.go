@@ -146,13 +146,13 @@ func (c *committer) store(path []byte, n node) node {
 		// deleted only if the node was existent in database before.
 		origin := c.tracer.Get(path)
 		if len(origin) != 0 {
-			c.nodes.AddNode(path, trienode.NewDeletedWithPrevAndPeriod(origin, c.period))
+			c.nodes.AddNode(path, trienode.NewDeletedWithPrev(origin, c.period))
 		}
 		return n
 	}
 	// Collect the dirty node to nodeset for return.
 	nhash := common.BytesToHash(hash)
-	c.nodes.AddNode(path, trienode.NewNodeWithPrevAndPeriod(nhash, nodeToBytes(n), c.tracer.Get(path), c.period))
+	c.nodes.AddNode(path, trienode.NewNodeWithPrev(nhash, nodeToBytes(n), c.tracer.Get(path), c.period))
 
 	// Collect the corresponding leaf node if it's required. We don't check
 	// full node since it's impossible to store value in fullNode. The key
