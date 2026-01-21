@@ -326,7 +326,7 @@ func (t *BinaryTrie) Commit(_ bool, _ uint64) (common.Hash, *trienode.NodeSet) {
 	// The root can be any type of BinaryNode (InternalNode, StemNode, etc.)
 	err := t.root.CollectNodes(nil, func(path []byte, node BinaryNode) {
 		serialized := SerializeNode(node)
-		nodeset.AddNode(path, trienode.NewNodeWithPrev(node.Hash(), serialized, t.tracer.Get(path)))
+		nodeset.AddNode(path, trienode.NewNodeWithPrev(node.Hash(), serialized, t.tracer.Get(path), 0))
 	})
 	if err != nil {
 		panic(fmt.Errorf("CollectNodes failed: %v", err))

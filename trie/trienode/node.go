@@ -45,17 +45,12 @@ func (n *Node) IsDeleted() bool {
 }
 
 // New constructs a node with provided node information.
-func New(hash common.Hash, blob []byte) *Node {
-	return NewWithPeriod(hash, blob, 0)
-}
-
-// NewWithPeriod constructs a node with provided node information and period.
-func NewWithPeriod(hash common.Hash, blob []byte, period uint64) *Node {
+func New(hash common.Hash, blob []byte, period uint64) *Node {
 	return &Node{Hash: hash, Blob: blob, Period: period}
 }
 
-// NewDeleted constructs a node which is deleted.
-func NewDeleted() *Node { return New(common.Hash{}, nil) }
+// NewDeleted constructs a deleted node.
+func NewDeleted() *Node { return New(common.Hash{}, nil, 0) }
 
 // NodeWithPrev is a wrapper over Node by tracking the original value of node.
 type NodeWithPrev struct {
@@ -64,36 +59,17 @@ type NodeWithPrev struct {
 }
 
 // NewNodeWithPrev constructs a node with the additional original value.
-func NewNodeWithPrev(hash common.Hash, blob []byte, prev []byte) *NodeWithPrev {
-	return NewNodeWithPrevAndPeriod(hash, blob, prev, 0)
-}
-
-// NewNodeWithPrevAndPeriod constructs a node with the additional original value and period.
-func NewNodeWithPrevAndPeriod(hash common.Hash, blob []byte, prev []byte, period uint64) *NodeWithPrev {
+func NewNodeWithPrev(hash common.Hash, blob []byte, prev []byte, period uint64) *NodeWithPrev {
 	return &NodeWithPrev{
-		Node: &Node{
-			Hash:   hash,
-			Blob:   blob,
-			Period: period,
-		},
+		Node: &Node{Hash: hash, Blob: blob, Period: period},
 		Prev: prev,
 	}
 }
 
-// NewDeletedWithPrev constructs a node which is deleted with the additional
-// original value.
-func NewDeletedWithPrev(prev []byte) *NodeWithPrev {
-	return NewDeletedWithPrevAndPeriod(prev, 0)
-}
-
-// NewDeletedWithPrevAndPeriod constructs a deleted node with original value and period.
-func NewDeletedWithPrevAndPeriod(prev []byte, period uint64) *NodeWithPrev {
+// NewDeletedWithPrev constructs a deleted node with original value.
+func NewDeletedWithPrev(prev []byte, period uint64) *NodeWithPrev {
 	return &NodeWithPrev{
-		Node: &Node{
-			Hash:   common.Hash{},
-			Blob:   nil,
-			Period: period,
-		},
+		Node: &Node{Hash: common.Hash{}, Blob: nil, Period: period},
 		Prev: prev,
 	}
 }
