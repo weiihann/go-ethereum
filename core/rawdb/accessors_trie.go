@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // HashScheme is the legacy hash-based state scheme with which trie nodes are
@@ -45,48 +46,49 @@ const HashScheme = "hash"
 // on extra state diffs to survive deep reorg.
 const PathScheme = "path"
 
-// nodeStorageVersion is the version marker for the versioned trie node storage
-// format that includes a period counter. Old format nodes (RLP-encoded) start
-// with 0xc0 or higher, so using 0x01 as version marker is safe.
-const nodeStorageVersion = 0x01
+// periodSize is the size of the period counter appended to trie nodes.
+const periodSize = 8
 
-// encodeTrieNode encodes a trie node blob with period metadata for storage.
-// Format: [version byte][8-byte period BE][blob]
-// This format allows storing period metadata alongside the node without affecting
-// the node's hash (which is computed from the blob alone).
-func encodeTrieNode(period uint64, blob []byte) []byte {
-	result := make([]byte, 1+8+len(blob))
-	result[0] = nodeStorageVersion
-	binary.BigEndian.PutUint64(result[1:9], period)
-	copy(result[9:], blob)
+// encodeTrieNode encodes a trie node blob with optional period metadata.
+// Format: [RLP blob][8-byte period BE] if period > 0, otherwise just [RLP blob].
+// The period can be detected on read by checking if data length exceeds RLP length.
+func encodeTrieNode(blob []byte, period uint64) []byte {
+	if period == 0 {
+		return blob
+	}
+	result := make([]byte, len(blob)+periodSize)
+	copy(result, blob)
+	binary.BigEndian.PutUint64(result[len(blob):], period)
 	return result
 }
 
-// decodeTrieNode decodes a trie node from storage, returning the period and raw blob.
-// It handles both the old format (raw RLP blob) and new versioned format.
-// For old format nodes, period defaults to 0 (backward compatible).
-func decodeTrieNode(data []byte) (period uint64, blob []byte) {
+// decodeTrieNode decodes a trie node from storage, returning the blob and period.
+// It detects period by comparing stored length with RLP-decoded length.
+// For nodes without period suffix, period defaults to 0 (backward compatible).
+func decodeTrieNode(data []byte) ([]byte, uint64) {
 	if len(data) == 0 {
-		return 0, nil
+		return nil, 0
 	}
-	// Old format: RLP lists start with 0xc0 or higher
-	if data[0] >= 0xc0 {
-		return 0, data
+	// Use rlp.Split to find where the RLP value ends
+	_, _, rest, err := rlp.Split(data)
+	if err != nil {
+		return data, 0 // malformed, return as-is
 	}
-	// New versioned format
-	if data[0] == nodeStorageVersion && len(data) >= 9 {
-		period = binary.BigEndian.Uint64(data[1:9])
-		blob = data[9:]
-		return period, blob
+	blobLen := len(data) - len(rest)
+	blob := data[:blobLen]
+
+	// If there are exactly 8 trailing bytes, that's the period
+	if len(rest) == periodSize {
+		return blob, binary.BigEndian.Uint64(rest)
 	}
-	// Unknown format - treat as raw blob for safety
-	return 0, data
+
+	return blob, 0
 }
 
-// DecodeTrieNodeToBlob extracts the raw node blob from a stored trie node value.
-// This is useful for tests that need to compute hashes from raw database values.
+// DecodeTrieNodeToBlob extracts the raw node blob from stored data,
+// stripping any period metadata. Useful for computing node hashes.
 func DecodeTrieNodeToBlob(data []byte) []byte {
-	_, blob := decodeTrieNode(data)
+	blob, _ := decodeTrieNode(data)
 	return blob
 }
 
@@ -94,13 +96,13 @@ func DecodeTrieNodeToBlob(data []byte) []byte {
 // It strips any period metadata and returns only the raw node blob.
 func ReadAccountTrieNode(db ethdb.KeyValueReader, path []byte) []byte {
 	data, _ := db.Get(accountTrieNodeKey(path))
-	_, blob := decodeTrieNode(data)
+	blob, _ := decodeTrieNode(data)
 	return blob
 }
 
 // ReadAccountTrieNodeWithPeriod retrieves the account trie node along with its
 // period counter. For old format nodes without period metadata, period is 0.
-func ReadAccountTrieNodeWithPeriod(db ethdb.KeyValueReader, path []byte) (uint64, []byte) {
+func ReadAccountTrieNodeWithPeriod(db ethdb.KeyValueReader, path []byte) ([]byte, uint64) {
 	data, _ := db.Get(accountTrieNodeKey(path))
 	return decodeTrieNode(data)
 }
@@ -125,7 +127,7 @@ func WriteAccountTrieNode(db ethdb.KeyValueWriter, path []byte, node []byte) {
 // WriteAccountTrieNodeWithPeriod writes the provided account trie node into
 // database along with its period counter.
 func WriteAccountTrieNodeWithPeriod(db ethdb.KeyValueWriter, path []byte, node []byte, period uint64) {
-	encoded := encodeTrieNode(period, node)
+	encoded := encodeTrieNode(node, period)
 	if err := db.Put(accountTrieNodeKey(path), encoded); err != nil {
 		log.Crit("Failed to store account trie node", "err", err)
 	}
@@ -142,13 +144,13 @@ func DeleteAccountTrieNode(db ethdb.KeyValueWriter, path []byte) {
 // It strips any period metadata and returns only the raw node blob.
 func ReadStorageTrieNode(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) []byte {
 	data, _ := db.Get(storageTrieNodeKey(accountHash, path))
-	_, blob := decodeTrieNode(data)
+	blob, _ := decodeTrieNode(data)
 	return blob
 }
 
 // ReadStorageTrieNodeWithPeriod retrieves the storage trie node along with its
 // period counter. For old format nodes without period metadata, period is 0.
-func ReadStorageTrieNodeWithPeriod(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) (uint64, []byte) {
+func ReadStorageTrieNodeWithPeriod(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) ([]byte, uint64) {
 	data, _ := db.Get(storageTrieNodeKey(accountHash, path))
 	return decodeTrieNode(data)
 }
@@ -173,7 +175,7 @@ func WriteStorageTrieNode(db ethdb.KeyValueWriter, accountHash common.Hash, path
 // WriteStorageTrieNodeWithPeriod writes the provided storage trie node into
 // database along with its period counter.
 func WriteStorageTrieNodeWithPeriod(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte, node []byte, period uint64) {
-	encoded := encodeTrieNode(period, node)
+	encoded := encodeTrieNode(node, period)
 	if err := db.Put(storageTrieNodeKey(accountHash, path), encoded); err != nil {
 		log.Crit("Failed to store storage trie node", "err", err)
 	}
