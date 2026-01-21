@@ -61,7 +61,7 @@ func updateTrie(db *Database, stateRoot common.Hash, addrHash common.Hash, root 
 	for _, key := range deletes {
 		tr.Delete(key.Bytes())
 	}
-	return tr.Commit(false)
+	return tr.Commit(false, 0)
 }
 
 func generateAccount(storageRoot common.Hash) types.StateAccount {

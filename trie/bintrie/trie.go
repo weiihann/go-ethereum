@@ -320,7 +320,7 @@ func (t *BinaryTrie) Hash() common.Hash {
 
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
-func (t *BinaryTrie) Commit(_ bool) (common.Hash, *trienode.NodeSet) {
+func (t *BinaryTrie) Commit(_ bool, _ uint64) (common.Hash, *trienode.NodeSet) {
 	nodeset := trienode.NewNodeSet(common.Hash{})
 
 	// The root can be any type of BinaryNode (InternalNode, StemNode, etc.)
@@ -333,10 +333,6 @@ func (t *BinaryTrie) Commit(_ bool) (common.Hash, *trienode.NodeSet) {
 	}
 	// Serialize root commitment form
 	return t.Hash(), nodeset
-}
-
-func (t *BinaryTrie) CommitWithPeriod(_ bool, _ uint64) (common.Hash, *trienode.NodeSet) {
-	panic("not implemented")
 }
 
 // NodeIterator returns an iterator that returns nodes of the trie. Iteration

@@ -76,7 +76,7 @@ func apply(db database.NodeDatabase, prevRoot common.Hash, postRoot common.Hash,
 			return nil, fmt.Errorf("failed to revert state, err: %w", err)
 		}
 	}
-	root, result := tr.Commit(false)
+	root, result := tr.Commit(false, 0)
 	if root != prevRoot {
 		return nil, fmt.Errorf("failed to revert state, want %#x, got %#x", prevRoot, root)
 	}
@@ -135,7 +135,7 @@ func updateAccount(ctx *context, db database.NodeDatabase, addr common.Address) 
 			return err
 		}
 	}
-	root, result := st.Commit(false)
+	root, result := st.Commit(false, 0)
 	if root != prev.Root {
 		return errors.New("failed to reset storage trie")
 	}
@@ -187,7 +187,7 @@ func deleteAccount(ctx *context, db database.NodeDatabase, addr common.Address) 
 			return err
 		}
 	}
-	root, result := st.Commit(false)
+	root, result := st.Commit(false, 0)
 	if root != types.EmptyRootHash {
 		return errors.New("failed to clear storage trie")
 	}

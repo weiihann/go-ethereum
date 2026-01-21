@@ -81,7 +81,7 @@ func fuzz(data []byte, debugging bool) {
 		return
 	}
 	// Flush trie -> database
-	rootA, nodes := trieA.Commit(false)
+	rootA, nodes := trieA.Commit(false, 0)
 	if nodes != nil {
 		dbA.Update(rootA, types.EmptyRootHash, trienode.NewWithNodeSet(nodes))
 	}

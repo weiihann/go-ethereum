@@ -1248,7 +1248,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 	// code didn't anticipate for.
 	workers.Go(func() error {
 		// Write the account trie changes, measuring the amount of wasted time
-		newroot, set := s.trie.CommitWithPeriod(true, curPeriod)
+		newroot, set := s.trie.Commit(true, curPeriod)
 		root = newroot
 
 		if err := merge(set); err != nil {
