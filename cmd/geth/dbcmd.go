@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/signal"
@@ -915,7 +916,8 @@ func inspectHistory(ctx *cli.Context) error {
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
 }
 
-// dbTrieVersion iterates through all path-based trie nodes and checks their storage format version.
+// dbTrieVersion iterates through all path-based trie nodes and reports storage
+// format statistics including period distribution.
 func dbTrieVersion(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
@@ -923,30 +925,31 @@ func dbTrieVersion(ctx *cli.Context) error {
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
 
+	const periodSize = 8
+
 	var (
-		oldFormat     int64 // RLP format (first byte >= 0xc0)
-		newFormat     int64 // Versioned format (first byte == 0x01)
-		unknownFormat int64
-		totalNodes    int64
-		startTime     = time.Now()
-		lastLog       = time.Now()
+		periodCounts = make(map[uint64]int64) // Count per period
+		totalNodes   int64
+		startTime    = time.Now()
+		lastLog      = time.Now()
 	)
 
-	// checkVersion determines the storage format version of a trie node value.
-	// Returns: "old" for RLP format, "new" for versioned format, "unknown" otherwise.
-	checkVersion := func(data []byte) string {
+	// decodePeriod extracts the period from a trie node value.
+	// Nodes without period suffix are treated as period 0.
+	decodePeriod := func(data []byte) uint64 {
 		if len(data) == 0 {
-			return "unknown"
+			return 0
 		}
-		// Old format: RLP lists start with 0xc0 or higher
-		if data[0] >= 0xc0 {
-			return "old"
+		// Use rlp.Split to find where the RLP value ends
+		_, _, rest, err := rlp.Split(data)
+		if err != nil {
+			return 0
 		}
-		// New versioned format: version byte 0x01 + 8 bytes period + blob
-		if data[0] == 0x01 && len(data) >= 9 {
-			return "new"
+		// If there are exactly 8 trailing bytes, that's the period
+		if len(rest) == periodSize {
+			return binary.BigEndian.Uint64(rest)
 		}
-		return "unknown"
+		return 0
 	}
 
 	// Iterate account trie nodes
@@ -957,15 +960,8 @@ func dbTrieVersion(ctx *cli.Context) error {
 		if !rawdb.IsAccountTrieNode(key) {
 			continue
 		}
-		version := checkVersion(accountIter.Value())
-		switch version {
-		case "old":
-			oldFormat++
-		case "new":
-			newFormat++
-		default:
-			unknownFormat++
-		}
+		period := decodePeriod(accountIter.Value())
+		periodCounts[period]++
 		totalNodes++
 
 		if time.Since(lastLog) > 8*time.Second {
@@ -989,15 +985,8 @@ func dbTrieVersion(ctx *cli.Context) error {
 		if !rawdb.IsStorageTrieNode(key) {
 			continue
 		}
-		version := checkVersion(storageIter.Value())
-		switch version {
-		case "old":
-			oldFormat++
-		case "new":
-			newFormat++
-		default:
-			unknownFormat++
-		}
+		period := decodePeriod(storageIter.Value())
+		periodCounts[period]++
 		totalNodes++
 
 		if time.Since(lastLog) > 8*time.Second {
@@ -1013,19 +1002,25 @@ func dbTrieVersion(ctx *cli.Context) error {
 	storageNodes := totalNodes - accountNodes
 
 	// Print results
-	fmt.Println("\nTrie Node Storage Format Version (Path-based)")
-	fmt.Println("==============================================")
+	fmt.Println("\nTrie Node Storage Format (Path-based)")
+	fmt.Println("======================================")
 	fmt.Printf("Account trie nodes:  %d\n", accountNodes)
 	fmt.Printf("Storage trie nodes:  %d\n", storageNodes)
-	fmt.Println("----------------------------------------------")
-	fmt.Printf("Old format (RLP):    %d\n", oldFormat)
-	fmt.Printf("New format (v1):     %d\n", newFormat)
-	if unknownFormat > 0 {
-		fmt.Printf("Unknown format:      %d\n", unknownFormat)
-	}
-	fmt.Println("----------------------------------------------")
+	fmt.Println("--------------------------------------")
 	fmt.Printf("Total nodes:         %d\n", totalNodes)
 	fmt.Printf("Time elapsed:        %s\n", common.PrettyDuration(time.Since(startTime)))
+
+	// Print period distribution
+	fmt.Println("\nPeriod Distribution")
+	fmt.Println("-------------------")
+	periods := make([]uint64, 0, len(periodCounts))
+	for p := range periodCounts {
+		periods = append(periods, p)
+	}
+	slices.Sort(periods)
+	for _, p := range periods {
+		fmt.Printf("Period %d: %d nodes\n", p, periodCounts[p])
+	}
 
 	return nil
 }
