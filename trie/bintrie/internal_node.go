@@ -24,16 +24,19 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// keyToPath converts a key (stem) and depth into a compact path representation.
+// It extracts the first depth+1 bits from the key and returns them as a
+// packed byte slice. For example, depth=10 with key starting 0xFF 0x00
+// returns [0x07, 0xF8] (the first 11 bits: 11111111000).
 func keyToPath(depth int, key []byte) ([]byte, error) {
 	if depth > 31*8 {
 		return nil, errors.New("node too deep")
 	}
-	path := make([]byte, 0, depth+1)
-	for i := range depth + 1 {
-		bit := key[i/8] >> (7 - (i % 8)) & 1
-		path = append(path, bit)
-	}
-	return path, nil
+	// Cap key length to 31 bytes (248 bits) to avoid uint8 overflow
+	keyLen := min(len(key), 31)
+	ba := new(BitArray).SetBytes(uint8(keyLen*8), key[:keyLen])
+	path := new(BitArray).MSBs(ba, uint8(depth+1))
+	return path.ActiveBytes(), nil
 }
 
 // InternalNode is a binary trie internal node.
