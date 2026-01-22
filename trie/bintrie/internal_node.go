@@ -186,21 +186,15 @@ func (bt *InternalNode) InsertValuesAtStem(stem []byte, values [][]byte, resolve
 
 // CollectNodes collects all child nodes at a given path, and flushes it
 // into the provided node collector.
-func (bt *InternalNode) CollectNodes(path []byte, flushfn NodeFlushFn) error {
+func (bt *InternalNode) CollectNodes(path *BitArray, flushfn NodeFlushFn) error {
 	if bt.left != nil {
-		var p [256]byte
-		copy(p[:], path)
-		childpath := p[:len(path)]
-		childpath = append(childpath, 0)
+		childpath := new(BitArray).AppendBit(path, 0)
 		if err := bt.left.CollectNodes(childpath, flushfn); err != nil {
 			return err
 		}
 	}
 	if bt.right != nil {
-		var p [256]byte
-		copy(p[:], path)
-		childpath := p[:len(path)]
-		childpath = append(childpath, 1)
+		childpath := new(BitArray).AppendBit(path, 1)
 		if err := bt.right.CollectNodes(childpath, flushfn); err != nil {
 			return err
 		}
