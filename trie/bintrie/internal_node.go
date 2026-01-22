@@ -28,6 +28,7 @@ import (
 // It extracts the first depth+1 bits from the key and returns them as a
 // packed byte slice. For example, depth=10 with key starting 0xFF 0x00
 // returns [0x07, 0xF8] (the first 11 bits: 11111111000).
+// TODO(weiihann): double check on the correctness, depth=0 should point to root node in which the path should be nil?
 func keyToPath(depth int, key []byte) ([]byte, error) {
 	if depth > 31*8 {
 		return nil, errors.New("node too deep")
