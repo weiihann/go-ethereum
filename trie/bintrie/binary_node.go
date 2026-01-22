@@ -23,7 +23,7 @@ import (
 )
 
 type (
-	NodeFlushFn    func([]byte, BinaryNode)
+	NodeFlushFn    func(*BitArray, BinaryNode)
 	NodeResolverFn func([]byte, common.Hash) ([]byte, error)
 )
 
@@ -51,7 +51,7 @@ type BinaryNode interface {
 	Hash() common.Hash
 	GetValuesAtStem([]byte, NodeResolverFn) ([][]byte, error)
 	InsertValuesAtStem([]byte, [][]byte, NodeResolverFn, int) (BinaryNode, error)
-	CollectNodes([]byte, NodeFlushFn) error
+	CollectNodes(*BitArray, NodeFlushFn) error
 
 	toDot(parent, path string) string
 	GetHeight() int
