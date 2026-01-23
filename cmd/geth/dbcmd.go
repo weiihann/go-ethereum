@@ -71,6 +71,7 @@ Remove blockchain and state databases`,
 		Subcommands: []*cli.Command{
 			dbInspectCmd,
 			dbInspectTrieDepthCmd,
+			dbInspectSlotsCmd,
 			dbStatCmd,
 			dbCompactCmd,
 			dbGetCmd,
@@ -100,6 +101,16 @@ Remove blockchain and state databases`,
 		ArgsUsage:   "<start> <end>",
 		Flags:       slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command inspects the depth of the trie",
+	}
+	dbInspectSlotsCmd = &cli.Command{
+		Action: inspectStorageSlots,
+		Name:   "inspect-slots",
+		Usage:  "Count unique contracts per low-numbered storage slot in snapshot",
+		Flags:  slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Description: `This command iterates all snapshot storage entries and counts how many unique
+contracts have each low-numbered storage slot (0-64) stored. Storage slots are
+hashed with keccak256 in the snapshot, so this precomputes hashes for slots 0-64
+and looks for matches.`,
 	}
 	dbCheckStateContentCmd = &cli.Command{
 		Action:    checkStateContent,
@@ -348,6 +359,16 @@ func inspectTrieDepth(ctx *cli.Context) error {
 	defer db.Close()
 
 	return rawdb.InspectTrieDepth(db)
+}
+
+func inspectStorageSlots(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	return rawdb.InspectStorageSlots(db, 64)
 }
 
 func checkStateContent(ctx *cli.Context) error {
