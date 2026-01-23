@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -917,6 +918,100 @@ func InspectTrieDepth(db ethdb.Database) error {
 	for i := 0; i < 65; i++ {
 		if accountDepths[i] > 0 || storageDepths[i] > 0 {
 			fmt.Printf("%5d | %13d | %13d\n", i, accountDepths[i], storageDepths[i])
+		}
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// InspectStorageSlots iterates all snapshot storage entries and counts how many
+// unique contracts have each low-numbered storage slot (0 to maxSlot) stored.
+// Storage slots in the snapshot are keyed by keccak256(slot), so this function
+// precomputes hashes for slots 0 through maxSlot and looks for matches.
+func InspectStorageSlots(db ethdb.Database, maxSlot uint64) error {
+	var (
+		start   = time.Now()
+		lastLog = time.Now()
+	)
+
+	log.Info("Starting storage slot inspection", "maxSlot", maxSlot)
+
+	// Step 1: Precompute keccak256 hashes for slots 0 to maxSlot
+	hashToSlot := make(map[common.Hash]uint64, maxSlot+1)
+	slotAccounts := make([]map[common.Hash]struct{}, maxSlot+1)
+
+	for i := uint64(0); i <= maxSlot; i++ {
+		// Create 32-byte big-endian representation of slot number
+		slotKey := common.BigToHash(new(big.Int).SetUint64(i))
+		slotHash := crypto.Keccak256Hash(slotKey[:])
+
+		hashToSlot[slotHash] = i
+		slotAccounts[i] = make(map[common.Hash]struct{}, 1024)
+	}
+
+	log.Info("Precomputed slot hashes", "count", maxSlot+1)
+
+	// Step 2: Iterate all snapshot storage entries
+	// Key format: SnapshotStoragePrefix (1 byte) + accountHash (32 bytes) + storageHash (32 bytes)
+	expectedKeyLen := len(SnapshotStoragePrefix) + 2*common.HashLength // 1 + 64 = 65
+
+	it := NewKeyLengthIterator(db.NewIterator(SnapshotStoragePrefix, nil), expectedKeyLen)
+	defer it.Release()
+
+	var (
+		count      uint64
+		matchCount uint64
+	)
+
+	for it.Next() {
+		count++
+		key := it.Key()
+
+		// Extract storageHash from the last 32 bytes of the key
+		storageHash := common.BytesToHash(key[len(SnapshotStoragePrefix)+common.HashLength:])
+
+		// Check if this storageHash matches any of our precomputed slot hashes
+		if slotNum, found := hashToSlot[storageHash]; found {
+			// Extract accountHash from bytes [1:33]
+			accountHash := common.BytesToHash(key[len(SnapshotStoragePrefix) : len(SnapshotStoragePrefix)+common.HashLength])
+
+			// Add to the unique accounts set for this slot
+			slotAccounts[slotNum][accountHash] = struct{}{}
+			matchCount++
+		}
+
+		// Progress logging every 8 seconds
+		if time.Since(lastLog) > 8*time.Second {
+			log.Info("Inspecting storage slots",
+				"processed", count,
+				"matches", matchCount,
+				"elapsed", common.PrettyDuration(time.Since(start)))
+			lastLog = time.Now()
+		}
+	}
+
+	if err := it.Error(); err != nil {
+		return err
+	}
+
+	log.Info("Storage slot inspection complete",
+		"totalEntries", count,
+		"totalMatches", matchCount,
+		"elapsed", common.PrettyDuration(time.Since(start)))
+
+	// Step 3: Output results
+	fmt.Println()
+	fmt.Println("=== Storage Slot Usage ===")
+	fmt.Printf("Total storage entries scanned: %d\n", count)
+	fmt.Printf("Entries matching slots 0-%d: %d\n\n", maxSlot, matchCount)
+
+	fmt.Println("Slot | Unique Contracts")
+	fmt.Println("-----|------------------")
+	for i := uint64(0); i <= maxSlot; i++ {
+		uniqueCount := len(slotAccounts[i])
+		if uniqueCount > 0 {
+			fmt.Printf("%4d | %16d\n", i, uniqueCount)
 		}
 	}
 	fmt.Println()
