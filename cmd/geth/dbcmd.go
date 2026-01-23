@@ -368,7 +368,7 @@ func inspectStorageSlots(ctx *cli.Context) error {
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
 
-	return rawdb.InspectStorageSlots(db, 64)
+	return rawdb.InspectStorageSlots(db, 63)
 }
 
 func checkStateContent(ctx *cli.Context) error {
