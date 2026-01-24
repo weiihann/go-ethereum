@@ -24,9 +24,8 @@ import (
 )
 
 const (
-	maxUint64       = uint64(math.MaxUint64) // 0xFFFFFFFFFFFFFFFF
-	maxUint8        = uint8(math.MaxUint8)
-	MaxBitArraySize = 33 // (1 + 4 * 8) bytes
+	maxUint64 = uint64(math.MaxUint64) // 0xFFFFFFFFFFFFFFFF
+	maxUint8  = uint8(math.MaxUint8)
 )
 
 var emptyBitArray = new(BitArray)
