@@ -78,7 +78,7 @@ func (b *BitArray) Append(x, y *BitArray) *BitArray {
 	}
 
 	// Then shift left by y's length and OR with y
-	return b.lsh(x, y.len).Or(b, y)
+	return b.lsh(x, y.len).or(b, y)
 }
 
 // AppendBit sets the bit array to the concatenation of x and a single bit.
@@ -133,36 +133,7 @@ func (b *BitArray) Subset(x *BitArray, startPos, endPos uint8) *BitArray {
 	mask.Append(mask, zeros)
 
 	// Apply the mask to the bit array and then only take the first `length` bits
-	return b.And(b, mask).MSBs(b, length)
-}
-
-// Or sets the bit array to x | y and returns the bit array.
-func (b *BitArray) Or(x, y *BitArray) *BitArray {
-	b.words[0] = x.words[0] | y.words[0]
-	b.words[1] = x.words[1] | y.words[1]
-	b.words[2] = x.words[2] | y.words[2]
-	b.words[3] = x.words[3] | y.words[3]
-	b.len = x.len
-	return b
-}
-
-// And sets the bit array to x & y and returns the bit array.
-func (b *BitArray) And(x, y *BitArray) *BitArray {
-	b.words[0] = x.words[0] & y.words[0]
-	b.words[1] = x.words[1] & y.words[1]
-	b.words[2] = x.words[2] & y.words[2]
-	b.words[3] = x.words[3] & y.words[3]
-	b.len = x.len
-	return b
-}
-
-// Xor sets the bit array to x ^ y and returns the bit array.
-func (b *BitArray) Xor(x, y *BitArray) *BitArray {
-	b.words[0] = x.words[0] ^ y.words[0]
-	b.words[1] = x.words[1] ^ y.words[1]
-	b.words[2] = x.words[2] ^ y.words[2]
-	b.words[3] = x.words[3] ^ y.words[3]
-	return b
+	return b.and(b, mask).MSBs(b, length)
 }
 
 // Equal checks if two bit arrays are equal
@@ -557,10 +528,39 @@ func (b *BitArray) commonMSBs(x, y *BitArray) *BitArray {
 	//   0001 (difference at last position)
 	// We can then use the position of the first set bit and right-shift to get the common MSBs
 	diff := long.len - short.len
-	b.rsh(long, diff).Xor(b, short)
+	b.rsh(long, diff).xor(b, short)
 	divergentBit := findFirstSetBit(b)
 
 	return b.rsh(short, divergentBit)
+}
+
+// or sets the bit array to x | y and returns the bit array.
+func (b *BitArray) or(x, y *BitArray) *BitArray {
+	b.words[0] = x.words[0] | y.words[0]
+	b.words[1] = x.words[1] | y.words[1]
+	b.words[2] = x.words[2] | y.words[2]
+	b.words[3] = x.words[3] | y.words[3]
+	b.len = x.len
+	return b
+}
+
+// And sets the bit array to x & y and returns the bit array.
+func (b *BitArray) and(x, y *BitArray) *BitArray {
+	b.words[0] = x.words[0] & y.words[0]
+	b.words[1] = x.words[1] & y.words[1]
+	b.words[2] = x.words[2] & y.words[2]
+	b.words[3] = x.words[3] & y.words[3]
+	b.len = x.len
+	return b
+}
+
+// Xor sets the bit array to x ^ y and returns the bit array.
+func (b *BitArray) xor(x, y *BitArray) *BitArray {
+	b.words[0] = x.words[0] ^ y.words[0]
+	b.words[1] = x.words[1] ^ y.words[1]
+	b.words[2] = x.words[2] ^ y.words[2]
+	b.words[3] = x.words[3] ^ y.words[3]
+	return b
 }
 
 // rsh sets the bit array to x >> n and returns the bit array.
