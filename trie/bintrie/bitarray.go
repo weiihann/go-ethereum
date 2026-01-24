@@ -33,7 +33,7 @@ var emptyBitArray = new(BitArray)
 // Represents a bit array with length representing the number of used bits.
 // It uses a little endian representation to do bitwise operations of the words efficiently.
 // For example, if len is 10, it means that the 2^9, 2^8, ..., 2^0 bits are used.
-// The max length is 255 bits (uint8), because our use case only need up to 251 bits for a given trie key.
+// The max length is 255 bits (uint8), because our use case only need up to 248 bits for a given trie key.
 // Although words can be used to represent 256 bits, we don't want to add an additional byte for the length.
 type BitArray struct {
 	len   uint8     // number of used bits
