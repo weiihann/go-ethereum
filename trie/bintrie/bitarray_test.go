@@ -216,9 +216,9 @@ func TestRsh(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := new(BitArray).Rsh(tt.initial, tt.shiftBy)
+			result := new(BitArray).rsh(tt.initial, tt.shiftBy)
 			if !result.Equal(tt.expected) {
-				t.Errorf("Rsh() got = %+v, want %+v", result, tt.expected)
+				t.Errorf("rsh() got = %+v, want %+v", result, tt.expected)
 			}
 		})
 	}
@@ -371,7 +371,7 @@ func TestLsh(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := new(BitArray).Lsh(tt.x, tt.n)
+			got := new(BitArray).lsh(tt.x, tt.n)
 			if !got.Equal(tt.want) {
 				t.Errorf("Lsh() = %v, want %v", got, tt.want)
 			}
@@ -625,11 +625,11 @@ func TestEqualMSBs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.a.EqualMSBs(tt.b); got != tt.want {
+			if got := tt.a.equalMSBs(tt.b); got != tt.want {
 				t.Errorf("PrefixEqual() = %v, want %v", got, tt.want)
 			}
 			// Test symmetry: a.PrefixEqual(b) should equal b.PrefixEqual(a)
-			if got := tt.b.EqualMSBs(tt.a); got != tt.want {
+			if got := tt.b.equalMSBs(tt.a); got != tt.want {
 				t.Errorf("PrefixEqual() symmetric test = %v, want %v", got, tt.want)
 			}
 		})
@@ -740,7 +740,7 @@ func TestLSBs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := new(BitArray).LSBs(tt.x, tt.pos)
+			got := new(BitArray).lsb(tt.x, tt.pos)
 			if !got.Equal(tt.want) {
 				t.Errorf("LSBs() = %v, want %v", got, tt.want)
 			}
@@ -903,7 +903,7 @@ func TestLSBsFromLSB(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := new(BitArray).LSBsFromLSB(&tt.initial, tt.length)
+			result := new(BitArray).copyLsb(&tt.initial, tt.length)
 			if !result.Equal(&tt.expected) {
 				t.Errorf("Truncate() got = %+v, want %+v", result, tt.expected)
 			}
@@ -1218,133 +1218,15 @@ func TestCommonPrefix(t *testing.T) {
 			got := new(BitArray)
 			gotSymmetric := new(BitArray)
 
-			got.CommonMSBs(tt.x, tt.y)
+			got.commonMSBs(tt.x, tt.y)
 			if !got.Equal(tt.want) {
-				t.Errorf("CommonMSBs() = %v, want %v", got, tt.want)
+				t.Errorf("commonMSBs() = %v, want %v", got, tt.want)
 			}
 
-			// Test symmetry: x.CommonMSBs(y) should equal y.CommonMSBs(x)
-			gotSymmetric.CommonMSBs(tt.y, tt.x)
+			// Test symmetry: x.commonMSBs(y) should equal y.commonMSBs(x)
+			gotSymmetric.commonMSBs(tt.y, tt.x)
 			if !gotSymmetric.Equal(tt.want) {
-				t.Errorf("CommonMSBs() symmetric test = %v, want %v", gotSymmetric, tt.want)
-			}
-		})
-	}
-}
-
-func TestIsBitSetFromLSB(t *testing.T) {
-	tests := []struct {
-		name string
-		ba   BitArray
-		pos  uint8
-		want bool
-	}{
-		{
-			name: "empty array",
-			ba: BitArray{
-				len:   0,
-				words: [4]uint64{0, 0, 0, 0},
-			},
-			pos:  0,
-			want: false,
-		},
-		{
-			name: "first bit set",
-			ba: BitArray{
-				len:   64,
-				words: [4]uint64{1, 0, 0, 0},
-			},
-			pos:  0,
-			want: true,
-		},
-		{
-			name: "last bit in first word",
-			ba: BitArray{
-				len:   64,
-				words: [4]uint64{1 << 63, 0, 0, 0},
-			},
-			pos:  63,
-			want: true,
-		},
-		{
-			name: "first bit in second word",
-			ba: BitArray{
-				len:   128,
-				words: [4]uint64{0, 1, 0, 0},
-			},
-			pos:  64,
-			want: true,
-		},
-		{
-			name: "bit beyond length",
-			ba: BitArray{
-				len:   64,
-				words: [4]uint64{maxUint64, maxUint64, 0, 0},
-			},
-			pos:  65,
-			want: false,
-		},
-		{
-			name: "alternating bits",
-			ba: BitArray{
-				len:   8,
-				words: [4]uint64{0xAA, 0, 0, 0}, // 10101010 in binary
-			},
-			pos:  1,
-			want: true,
-		},
-		{
-			name: "alternating bits - unset position",
-			ba: BitArray{
-				len:   8,
-				words: [4]uint64{0xAA, 0, 0, 0}, // 10101010 in binary
-			},
-			pos:  0,
-			want: false,
-		},
-		{
-			name: "bit in last word",
-			ba: BitArray{
-				len:   251,
-				words: [4]uint64{0, 0, 0, 1 << 59},
-			},
-			pos:  251,
-			want: false, // position 251 is beyond the highest valid bit (250)
-		},
-		{
-			name: "251 bits",
-			ba: BitArray{
-				len:   251,
-				words: [4]uint64{0, 0, 0, 1 << 58},
-			},
-			pos:  250,
-			want: true,
-		},
-		{
-			name: "highest valid bit (255)",
-			ba: BitArray{
-				len:   255,
-				words: [4]uint64{0, 0, 0, 1 << 62}, // bit 255 set
-			},
-			pos:  254,
-			want: true,
-		},
-		{
-			name: "position at length boundary",
-			ba: BitArray{
-				len:   100,
-				words: [4]uint64{maxUint64, maxUint64, 0, 0},
-			},
-			pos:  100,
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.ba.IsBitSetFromLSB(tt.pos)
-			if got != tt.want {
-				t.Errorf("IsBitSetFromLSB(%d) = %v, want %v", tt.pos, got, tt.want)
+				t.Errorf("commonMSBs() symmetric test = %v, want %v", gotSymmetric, tt.want)
 			}
 		})
 	}
