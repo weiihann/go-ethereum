@@ -460,7 +460,7 @@ func (db *Database) Enable(root common.Hash) error {
 // canonical state and the corresponding trie histories are existent.
 //
 // The supplied root must be a valid trie hash value.
-func (db *Database) Recover(root common.Hash) error {
+func (db *Database) Recover(root common.Hash, period uint64) error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -485,6 +485,7 @@ func (db *Database) Recover(root common.Hash) error {
 		if err != nil {
 			return err
 		}
+		h.meta.period = period
 		dl, err = dl.revert(h)
 		if err != nil {
 			return err
