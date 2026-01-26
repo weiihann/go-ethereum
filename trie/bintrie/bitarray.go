@@ -20,7 +20,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
-	"math/bits"
 )
 
 const (
@@ -30,7 +29,7 @@ const (
 
 var emptyBitArray = new(BitArray)
 
-// Represents a bit array with length representing the number of used bits.
+// BitArray represents a bit array with length representing the number of used bits.
 // It uses a little endian representation to do bitwise operations of the words efficiently.
 // For example, if len is 10, it means that the 2^9, 2^8, ..., 2^0 bits are used.
 // The max length is 255 bits (uint8), because our use case only need up to 248 bits for a given trie key.
@@ -70,14 +69,17 @@ func (b *BitArray) Bytes() [32]byte {
 //	y = 111 (len=3)
 //	Append(x,y) = 000111 (len=6)
 func (b *BitArray) Append(x, y *BitArray) *BitArray {
-	if x.len == 0 || y.len == maxUint8 {
+	if x.len == 0 {
 		return b.Set(y)
 	}
 	if y.len == 0 {
 		return b.Set(x)
 	}
+	if x.len > maxUint8-y.len {
+		panic("error on bitarray append: result would exceed maximum length of 255 bits")
+	}
 
-	// Then shift left by y's length and OR with y
+	// Shift left by y's length and OR with y
 	return b.lsh(x, y.len).or(b, y)
 }
 
@@ -138,18 +140,11 @@ func (b *BitArray) Subset(x *BitArray, startPos, endPos uint8) *BitArray {
 
 // Equal checks if two bit arrays are equal
 func (b *BitArray) Equal(x *BitArray) bool {
-	// TODO(weiihann): this is really not a good thing to do...
-	if b == nil && x == nil {
-		return true
-	} else if b == nil || x == nil {
-		return false
+	if b == nil || x == nil {
+		panic("bit array is nil")
 	}
 
-	return b.len == x.len &&
-		b.words[0] == x.words[0] &&
-		b.words[1] == x.words[1] &&
-		b.words[2] == x.words[2] &&
-		b.words[3] == x.words[3]
+	return b.len == x.len && b.words == x.words
 }
 
 // SetBytes interprets the data as the big-endian bytes, sets the bit array to that value and returns it.
@@ -356,39 +351,6 @@ func (b *BitArray) ActiveBytes() []byte {
 	return wordsBytes[32-b.byteCount():]
 }
 
-// Cmp compares two bit arrays lexicographically.
-// The comparison is first done by length, then by content if lengths are equal.
-// Returns:
-//
-//	-1 if b < x
-//	 0 if b == x
-//	 1 if b > x
-func (b *BitArray) Cmp(x *BitArray) int {
-	// First compare lengths
-	if b.len < x.len {
-		return -1
-	}
-	if b.len > x.len {
-		return 1
-	}
-
-	// Lengths are equal, compare the actual bits
-	d0, carry := bits.Sub64(b.words[0], x.words[0], 0)
-	d1, carry := bits.Sub64(b.words[1], x.words[1], carry)
-	d2, carry := bits.Sub64(b.words[2], x.words[2], carry)
-	d3, carry := bits.Sub64(b.words[3], x.words[3], carry)
-
-	if carry == 1 {
-		return -1
-	}
-
-	if d0|d1|d2|d3 == 0 {
-		return 0
-	}
-
-	return 1
-}
-
 // bitFromLSB returns the bit value at position n, where n = 0 is LSB.
 // If n is out of bounds, returns 0.
 func (b *BitArray) bitFromLSB(n uint8) uint8 {
@@ -496,44 +458,6 @@ func (b *BitArray) equalMSBs(x *BitArray) bool {
 	return new(BitArray).MSBs(b, minLen).Equal(new(BitArray).MSBs(x, minLen))
 }
 
-// commonMSBs sets the bit array to the longest sequence of matching most significant bits between two bit arrays.
-// For example:
-//
-//	x = 1101 0111 (len=8)
-//	y = 1101 0000 (len=8)
-//	commonMSBs(x,y) = 1101 (len=4)
-func (b *BitArray) commonMSBs(x, y *BitArray) *BitArray {
-	if x.len == 0 || y.len == 0 {
-		return b.clear()
-	}
-
-	long, short := x, y
-	if x.len < y.len {
-		long, short = y, x
-	}
-
-	// Align arrays by right-shifting longer array and then XOR to find differences
-	// Example:
-	//   short = 1100 (len=4)
-	//   long  = 1101 0111 (len=8)
-	//
-	// Step 1: Right shift longer array by 4
-	//   short = 1100
-	//   long  = 1101
-	//
-	// Step 2: XOR shows difference at last bit
-	//   1100 (short)
-	//   1101 (aligned long)
-	//   ---- XOR
-	//   0001 (difference at last position)
-	// We can then use the position of the first set bit and right-shift to get the common MSBs
-	diff := long.len - short.len
-	b.rsh(long, diff).xor(b, short)
-	divergentBit := findFirstSetBit(b)
-
-	return b.rsh(short, divergentBit)
-}
-
 // or sets the bit array to x | y and returns the bit array.
 func (b *BitArray) or(x, y *BitArray) *BitArray {
 	b.words[0] = x.words[0] | y.words[0]
@@ -551,15 +475,6 @@ func (b *BitArray) and(x, y *BitArray) *BitArray {
 	b.words[2] = x.words[2] & y.words[2]
 	b.words[3] = x.words[3] & y.words[3]
 	b.len = x.len
-	return b
-}
-
-// Xor sets the bit array to x ^ y and returns the bit array.
-func (b *BitArray) xor(x, y *BitArray) *BitArray {
-	b.words[0] = x.words[0] ^ y.words[0]
-	b.words[1] = x.words[1] ^ y.words[1]
-	b.words[2] = x.words[2] ^ y.words[2]
-	b.words[3] = x.words[3] ^ y.words[3]
 	return b
 }
 
@@ -736,28 +651,6 @@ func (b *BitArray) ones(length uint8) *BitArray {
 	b.words[3] = maxUint64
 	b.truncateToLength()
 	return b
-}
-
-// findFirstSetBit returns the position of the first '1' bit in the array, scanning from most significant to least significant bit.
-// The bit position is counted from the least significant bit, starting at 0.
-// For example:
-//
-//	array = 0000 0000 ... 0100 (len=251)
-//	findFirstSetBit() = 3 // third bit from right is set
-func findFirstSetBit(b *BitArray) uint8 {
-	if b.len == 0 {
-		return 0
-	}
-
-	// Start from the most significant and move towards the least significant
-	for i := 3; i >= 0; i-- {
-		if word := b.words[i]; word != 0 {
-			return uint8((i+1)*64 - bits.LeadingZeros64(word))
-		}
-	}
-
-	// All bits are zero, no set bit found
-	return 0
 }
 
 func bigEndianUint40(b []byte) uint64 {
