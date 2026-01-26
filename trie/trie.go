@@ -724,8 +724,7 @@ func (t *Trie) Hash() common.Hash {
 // The returned nodeset can be nil if the trie is clean (nothing to commit).
 // Once the trie is committed, it's not usable anymore. A new trie must
 // be created with new root and updated trie database for following usage.
-// The period parameter specifies the period counter stored alongside nodes.
-func (t *Trie) Commit(collectLeaf bool, period uint64) (common.Hash, *trienode.NodeSet) {
+func (t *Trie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 	defer func() {
 		t.committed = true
 	}()
@@ -740,7 +739,7 @@ func (t *Trie) Commit(collectLeaf bool, period uint64) (common.Hash, *trienode.N
 		}
 		nodes := trienode.NewNodeSet(t.owner)
 		for _, path := range paths {
-			nodes.AddNode(path, trienode.NewDeletedWithPrev(t.prevalueTracer.Get(path), period))
+			nodes.AddNode(path, trienode.NewDeletedWithPrev(t.prevalueTracer.Get(path)))
 		}
 		return types.EmptyRootHash, nodes // case (b)
 	}
@@ -758,10 +757,10 @@ func (t *Trie) Commit(collectLeaf bool, period uint64) (common.Hash, *trienode.N
 	}
 	nodes := trienode.NewNodeSet(t.owner)
 	for _, path := range t.deletedNodes() {
-		nodes.AddNode(path, trienode.NewDeletedWithPrev(t.prevalueTracer.Get(path), period))
+		nodes.AddNode(path, trienode.NewDeletedWithPrev(t.prevalueTracer.Get(path)))
 	}
 	// If the number of changes is below 100, we let one thread handle it
-	t.root = newCommitter(nodes, t.prevalueTracer, collectLeaf, period).Commit(t.root, t.uncommitted > 100)
+	t.root = newCommitter(nodes, t.prevalueTracer, collectLeaf).Commit(t.root, t.uncommitted > 100)
 	t.uncommitted = 0
 	return rootHash, nodes
 }

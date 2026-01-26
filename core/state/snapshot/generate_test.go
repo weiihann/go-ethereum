@@ -229,7 +229,7 @@ func (t *testHelper) makeStorageTrie(accKey string, keys []string, vals []string
 	if !commit {
 		return stTrie.Hash()
 	}
-	root, nodes := stTrie.Commit(false, 0)
+	root, nodes := stTrie.Commit(false)
 	if nodes != nil {
 		t.nodes.Merge(nodes)
 	}
@@ -237,11 +237,11 @@ func (t *testHelper) makeStorageTrie(accKey string, keys []string, vals []string
 }
 
 func (t *testHelper) Commit() common.Hash {
-	root, nodes := t.accTrie.Commit(true, 0)
+	root, nodes := t.accTrie.Commit(true)
 	if nodes != nil {
 		t.nodes.Merge(nodes)
 	}
-	t.triedb.Update(root, types.EmptyRootHash, 0, t.nodes, t.states)
+	t.triedb.Update(root, types.EmptyRootHash, 0, 0, t.nodes, t.states)
 	t.triedb.Commit(root, false)
 	return root
 }

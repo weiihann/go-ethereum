@@ -109,7 +109,7 @@ func (t *genTester) makeStorageTrie(accKey string, keys []string, vals []string,
 	if !commit {
 		return tr.Hash()
 	}
-	root, nodes := tr.Commit(false, 0)
+	root, nodes := tr.Commit(false)
 	if nodes != nil {
 		t.nodes.Merge(nodes)
 	}
@@ -119,11 +119,11 @@ func (t *genTester) makeStorageTrie(accKey string, keys []string, vals []string,
 }
 
 func (t *genTester) Commit() common.Hash {
-	root, nodes := t.acctTrie.Commit(true, 0)
+	root, nodes := t.acctTrie.Commit(true)
 	if nodes != nil {
 		t.nodes.Merge(nodes)
 	}
-	t.db.Update(root, types.EmptyRootHash, 0, t.nodes, t.states)
+	t.db.Update(root, types.EmptyRootHash, 0, 0, t.nodes, t.states)
 	t.db.Commit(root, false)
 	return root
 }
