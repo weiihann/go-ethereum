@@ -59,17 +59,19 @@ type NodeWithPrev struct {
 }
 
 // NewNodeWithPrev constructs a node with the additional original value.
-func NewNodeWithPrev(hash common.Hash, blob []byte, prev []byte, period uint64) *NodeWithPrev {
+// Period is not set here; it will be populated when the node is committed to disk.
+func NewNodeWithPrev(hash common.Hash, blob []byte, prev []byte) *NodeWithPrev {
 	return &NodeWithPrev{
-		Node: &Node{Hash: hash, Blob: blob, Period: period},
+		Node: &Node{Hash: hash, Blob: blob},
 		Prev: prev,
 	}
 }
 
 // NewDeletedWithPrev constructs a deleted node with original value.
-func NewDeletedWithPrev(prev []byte, period uint64) *NodeWithPrev {
+// Period is not set here; it will be populated when the node is committed to disk.
+func NewDeletedWithPrev(prev []byte) *NodeWithPrev {
 	return &NodeWithPrev{
-		Node: &Node{Hash: common.Hash{}, Blob: nil, Period: period},
+		Node: &Node{Hash: common.Hash{}, Blob: nil},
 		Prev: prev,
 	}
 }

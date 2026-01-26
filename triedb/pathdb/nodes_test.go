@@ -41,14 +41,14 @@ func TestNodeSetEncode(t *testing.T) {
 		"1": trienode.New(crypto.Keccak256Hash([]byte{0x1}), []byte{0x1}, 0),
 		"2": trienode.New(crypto.Keccak256Hash([]byte{0x2}), []byte{0x2}, 0),
 	}
-	s := newNodeSet(nodes)
+	s := newNodeSet(nodes, 0)
 
 	buf := bytes.NewBuffer(nil)
 	if err := s.encode(buf); err != nil {
 		t.Fatalf("Failed to encode states, %v", err)
 	}
 	var dec nodeSet
-	if err := dec.decode(rlp.NewStream(buf, 0)); err != nil {
+	if err := dec.decode(rlp.NewStream(buf, 0), journalVersion); err != nil {
 		t.Fatalf("Failed to decode states, %v", err)
 	}
 	if !reflect.DeepEqual(s.accountNodes, dec.accountNodes) {
@@ -84,14 +84,14 @@ func TestNodeSetWithOriginEncode(t *testing.T) {
 	}
 
 	// Encode with origin set
-	s := NewNodeSetWithOrigin(nodes, origins)
+	s := NewNodeSetWithOrigin(nodes, origins, 0)
 
 	buf := bytes.NewBuffer(nil)
 	if err := s.encode(buf); err != nil {
 		t.Fatalf("Failed to encode states, %v", err)
 	}
 	var dec nodeSetWithOrigin
-	if err := dec.decode(rlp.NewStream(buf, 0)); err != nil {
+	if err := dec.decode(rlp.NewStream(buf, 0), 0); err != nil {
 		t.Fatalf("Failed to decode states, %v", err)
 	}
 	if !reflect.DeepEqual(s.accountNodes, dec.accountNodes) {
@@ -105,14 +105,14 @@ func TestNodeSetWithOriginEncode(t *testing.T) {
 	}
 
 	// Encode without origin set
-	s = NewNodeSetWithOrigin(nodes, nil)
+	s = NewNodeSetWithOrigin(nodes, nil, 0)
 
 	buf = bytes.NewBuffer(nil)
 	if err := s.encode(buf); err != nil {
 		t.Fatalf("Failed to encode states, %v", err)
 	}
 	var dec2 nodeSetWithOrigin
-	if err := dec2.decode(rlp.NewStream(buf, 0)); err != nil {
+	if err := dec2.decode(rlp.NewStream(buf, 0), 0); err != nil {
 		t.Fatalf("Failed to decode states, %v", err)
 	}
 	if !reflect.DeepEqual(s.accountNodes, dec2.accountNodes) {

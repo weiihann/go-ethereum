@@ -284,8 +284,7 @@ func (t *StateTrie) Witness() map[string][]byte {
 // All cached preimages will be also flushed if preimages recording is enabled.
 // Once the trie is committed, it's not usable anymore. A new trie must
 // be created with new root and updated trie database for following usage.
-// The period parameter specifies the period counter stored alongside nodes.
-func (t *StateTrie) Commit(collectLeaf bool, period uint64) (common.Hash, *trienode.NodeSet) {
+func (t *StateTrie) Commit(collectLeaf bool) (common.Hash, *trienode.NodeSet) {
 	// Write all the pre-images to the actual disk database
 	if len(t.secKeyCache) > 0 {
 		if t.preimages != nil {
@@ -294,7 +293,7 @@ func (t *StateTrie) Commit(collectLeaf bool, period uint64) (common.Hash, *trien
 		clear(t.secKeyCache)
 	}
 	// Commit the trie and return its modified nodeset.
-	return t.trie.Commit(collectLeaf, period)
+	return t.trie.Commit(collectLeaf)
 }
 
 // Hash returns the root hash of StateTrie. It does not write to the

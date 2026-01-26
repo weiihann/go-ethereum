@@ -1513,8 +1513,8 @@ func makeAccountTrieNoStorage(n int, scheme string) (string, *trie.Trie, []*kv) 
 
 	// Commit the state changes into db and re-create the trie
 	// for accessing later.
-	root, nodes := accTrie.Commit(false, 0)
-	db.Update(root, types.EmptyRootHash, 0, trienode.NewWithNodeSet(nodes), triedb.NewStateSet())
+	root, nodes := accTrie.Commit(false)
+	db.Update(root, types.EmptyRootHash, 0, 0, trienode.NewWithNodeSet(nodes), triedb.NewStateSet())
 
 	accTrie, _ = trie.New(trie.StateTrieID(root), db)
 	return db.Scheme(), accTrie, entries
@@ -1575,8 +1575,8 @@ func makeBoundaryAccountTrie(scheme string, n int) (string, *trie.Trie, []*kv) {
 
 	// Commit the state changes into db and re-create the trie
 	// for accessing later.
-	root, nodes := accTrie.Commit(false, 0)
-	db.Update(root, types.EmptyRootHash, 0, trienode.NewWithNodeSet(nodes), triedb.NewStateSet())
+	root, nodes := accTrie.Commit(false)
+	db.Update(root, types.EmptyRootHash, 0, 0, trienode.NewWithNodeSet(nodes), triedb.NewStateSet())
 
 	accTrie, _ = trie.New(trie.StateTrieID(root), db)
 	return db.Scheme(), accTrie, entries
@@ -1621,11 +1621,11 @@ func makeAccountTrieWithStorageWithUniqueStorage(scheme string, accounts, slots 
 	slices.SortFunc(entries, (*kv).cmp)
 
 	// Commit account trie
-	root, set := accTrie.Commit(true, 0)
+	root, set := accTrie.Commit(true)
 	nodes.Merge(set)
 
 	// Commit gathered dirty nodes into database
-	db.Update(root, types.EmptyRootHash, 0, nodes, triedb.NewStateSet())
+	db.Update(root, types.EmptyRootHash, 0, 0, nodes, triedb.NewStateSet())
 
 	// Re-create tries with new root
 	accTrie, _ = trie.New(trie.StateTrieID(root), db)
@@ -1688,11 +1688,11 @@ func makeAccountTrieWithStorage(scheme string, accounts, slots int, code, bounda
 	slices.SortFunc(entries, (*kv).cmp)
 
 	// Commit account trie
-	root, set := accTrie.Commit(true, 0)
+	root, set := accTrie.Commit(true)
 	nodes.Merge(set)
 
 	// Commit gathered dirty nodes into database
-	db.Update(root, types.EmptyRootHash, 0, nodes, triedb.NewStateSet())
+	db.Update(root, types.EmptyRootHash, 0, 0, nodes, triedb.NewStateSet())
 
 	// Re-create tries with new root
 	accTrie, err := trie.New(trie.StateTrieID(root), db)
@@ -1730,7 +1730,7 @@ func makeStorageTrieWithSeed(owner common.Hash, n, seed uint64, db *triedb.Datab
 		entries = append(entries, elem)
 	}
 	slices.SortFunc(entries, (*kv).cmp)
-	root, nodes := trie.Commit(false, 0)
+	root, nodes := trie.Commit(false)
 	return root, nodes, entries
 }
 
@@ -1781,7 +1781,7 @@ func makeBoundaryStorageTrie(owner common.Hash, n int, db *triedb.Database) (com
 		entries = append(entries, elem)
 	}
 	slices.SortFunc(entries, (*kv).cmp)
-	root, nodes := trie.Commit(false, 0)
+	root, nodes := trie.Commit(false)
 	return root, nodes, entries
 }
 
@@ -1813,7 +1813,7 @@ func makeUnevenStorageTrie(owner common.Hash, slots int, db *triedb.Database) (c
 		}
 	}
 	slices.SortFunc(entries, (*kv).cmp)
-	root, nodes := tr.Commit(false, 0)
+	root, nodes := tr.Commit(false)
 	return root, nodes, entries
 }
 

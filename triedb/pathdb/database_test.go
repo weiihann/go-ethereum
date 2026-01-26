@@ -61,7 +61,7 @@ func updateTrie(db *Database, stateRoot common.Hash, addrHash common.Hash, root 
 	for _, key := range deletes {
 		tr.Delete(key.Bytes())
 	}
-	return tr.Commit(false, 0)
+	return tr.Commit(false)
 }
 
 func generateAccount(storageRoot common.Hash) types.StateAccount {
@@ -201,7 +201,7 @@ func newTester(t *testing.T, config *testerConfig) *tester {
 		}
 		root, nodes, states := obj.generate(parent, i > 6)
 
-		if err := db.Update(root, parent, uint64(i), nodes, states); err != nil {
+		if err := db.Update(root, parent, uint64(i), 0, nodes, states); err != nil {
 			panic(fmt.Errorf("failed to update state changes, err: %w", err))
 		}
 		obj.roots = append(obj.roots, root)
@@ -226,7 +226,7 @@ func (t *tester) extend(layers int) {
 			parent = t.roots[len(t.roots)-1]
 		}
 		root, nodes, states := t.generate(parent, true)
-		if err := t.db.Update(root, parent, uint64(i), nodes, states); err != nil {
+		if err := t.db.Update(root, parent, uint64(i), 0, nodes, states); err != nil {
 			panic(fmt.Errorf("failed to update state changes, err: %w", err))
 		}
 		t.roots = append(t.roots, root)
@@ -996,7 +996,7 @@ func TestDatabaseIndexRecovery(t *testing.T) {
 
 	// Apply new states on top, ensuring state indexing can respond correctly
 	for i := dIndex + 1; i < len(roots); i++ {
-		if err := env.db.Update(roots[i], roots[i-1], uint64(i), env.nodes[i], env.states[i]); err != nil {
+		if err := env.db.Update(roots[i], roots[i-1], uint64(i), 0, env.nodes[i], env.states[i]); err != nil {
 			panic(fmt.Errorf("failed to update state changes, err: %w", err))
 		}
 	}

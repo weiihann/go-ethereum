@@ -284,7 +284,8 @@ func (dl *diskLayer) proveRange(ctx *generatorContext, trieId *trie.ID, prefix [
 			diskMore: diskMore,
 			trieMore: cont,
 			proofErr: err,
-			tr:       tr},
+			tr:       tr,
+		},
 		nil
 }
 
@@ -356,7 +357,7 @@ func (dl *diskLayer) generateRange(ctx *generatorContext, trieId *trie.ID, prefi
 		for i, key := range result.keys {
 			tr.Update(key, result.vals[i])
 		}
-		_, nodes := tr.Commit(false, 0)
+		_, nodes := tr.Commit(false)
 		hashSet := nodes.HashSet()
 		resolver = func(owner common.Hash, path []byte, hash common.Hash) []byte {
 			return hashSet[hash]

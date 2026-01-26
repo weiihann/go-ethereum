@@ -145,7 +145,7 @@ func (db *Database) HistoricReader(root common.Hash) (*pathdb.HistoricalStateRea
 //
 // The passed in maps(nodes, states) will be retained to avoid copying everything.
 // Therefore, these maps must not be changed afterwards.
-func (db *Database) Update(root common.Hash, parent common.Hash, block uint64, nodes *trienode.MergedNodeSet, states *StateSet) error {
+func (db *Database) Update(root common.Hash, parent common.Hash, block uint64, period uint64, nodes *trienode.MergedNodeSet, states *StateSet) error {
 	if db.preimages != nil {
 		db.preimages.commit(false)
 	}
@@ -153,7 +153,7 @@ func (db *Database) Update(root common.Hash, parent common.Hash, block uint64, n
 	case *hashdb.Database:
 		return b.Update(root, parent, block, nodes)
 	case *pathdb.Database:
-		return b.Update(root, parent, block, nodes, states.internal())
+		return b.Update(root, parent, block, period, nodes, states.internal())
 	}
 	return errors.New("unknown backend")
 }
