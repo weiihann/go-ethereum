@@ -64,7 +64,9 @@ func newNodeSet(nodes map[common.Hash]map[string]*trienode.Node, period uint64) 
 		}
 	}
 	s.computeSize()
-	s.setPeriod(period)
+	if period != 0 {
+		s.setPeriod(period)
+	}
 	return s
 }
 

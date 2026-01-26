@@ -597,7 +597,7 @@ func TestDatabaseRollback(t *testing.T) {
 		if i > 0 {
 			parent = tester.roots[i-1]
 		}
-		if err := tester.db.Recover(parent); err != nil {
+		if err := tester.db.Recover(parent, 0); err != nil {
 			t.Fatalf("Failed to revert db, err: %v", err)
 		}
 		if i > 0 {
@@ -703,7 +703,7 @@ func TestExecuteRollback(t *testing.T) {
 			}
 		}
 
-		if err := tester.db.Recover(h.meta.parent); err != nil {
+		if err := tester.db.Recover(h.meta.parent, h.meta.period); err != nil {
 			t.Fatalf("Failed to recover db, err: %v", err)
 		}
 	}

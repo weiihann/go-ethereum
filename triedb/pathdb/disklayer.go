@@ -494,6 +494,14 @@ func (dl *diskLayer) revert(h *stateHistory) (*diskLayer, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Populate the period for the nodes
+	for _, subset := range nodes {
+		for _, n := range subset {
+			n.Period = h.meta.period
+		}
+	}
+
 	// Derive the state modification set from the history, keyed by the hash
 	// of the account address and the storage key.
 	accounts, storages := h.stateSet()
