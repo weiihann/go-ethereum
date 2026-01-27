@@ -105,39 +105,6 @@ func (b *BitArray) MSBs(x *BitArray, n uint8) *BitArray {
 	return b.rsh(x, x.len-n)
 }
 
-// Subset sets the bit array to a subset of x from startPos (inclusive) to endPos (exclusive),
-// where position 0 is the MSB. If startPos >= endPos or if startPos >= x.len,
-// returns an empty BitArray.
-// Think of this method as array[start:end]
-// For example:
-//
-//	x = 001011011 (len=9)
-//	Subset(x, 2, 5) = 101 (len=3)
-func (b *BitArray) Subset(x *BitArray, startPos, endPos uint8) *BitArray {
-	// Check for invalid inputs
-	if startPos >= endPos || startPos >= x.len {
-		return b.clear()
-	}
-
-	// Clamp endPos to x.len if it exceeds it
-	if endPos > x.len {
-		endPos = x.len
-	}
-
-	length := endPos - startPos
-
-	// First, trim off the MSBs that are not part of the subset
-	b.lsb(x, startPos)
-
-	// Then, we create a mask of ones and appends zeros to the end to match the length
-	mask := new(BitArray).ones(length)
-	zeros := &BitArray{len: b.len - length}
-	mask.Append(mask, zeros)
-
-	// Apply the mask to the bit array and then only take the first `length` bits
-	return b.and(b, mask).MSBs(b, length)
-}
-
 // Equal checks if two bit arrays are equal
 func (b *BitArray) Equal(x *BitArray) bool {
 	if b == nil || x == nil {
@@ -300,11 +267,6 @@ func (b *BitArray) String() string {
 	return fmt.Sprintf("(%d) %s", b.len, hex.EncodeToString(bt[:]))
 }
 
-// IsBitSet returns true if bit n-th is set, where n = 0 is MSB.
-func (b *BitArray) IsBitSet(n uint8) bool {
-	return b.Bit(n) == 1
-}
-
 // Bit returns the bit value at position n, where n = 0 is MSB.
 // If n is out of bounds, returns 0.
 func (b *BitArray) Bit(n uint8) uint8 {
@@ -313,21 +275,6 @@ func (b *BitArray) Bit(n uint8) uint8 {
 	}
 
 	return b.bitFromLSB(b.Len() - n - 1)
-}
-
-// MSB returns the bit value at the most significant bit
-func (b *BitArray) MSB() uint8 {
-	return b.Bit(0)
-}
-
-// LSB returns the bit value at the least significant bit
-func (b *BitArray) LSB() uint8 {
-	return b.bitFromLSB(0)
-}
-
-// IsEmpty returns true if the bit array is empty.
-func (b *BitArray) IsEmpty() bool {
-	return b.len == 0
 }
 
 // Set sets the bit array to the same value as x.
@@ -426,54 +373,12 @@ func (b *BitArray) lsb(x *BitArray, n uint8) *BitArray {
 	return b.copyLsb(x, x.Len()-n)
 }
 
-// equalMSBs checks if the current bit array share the same most significant bits with another, where the length of
-// the check is determined by the shorter array. Returns true if either array has
-// length 0, or if the first min(b.len, x.len) MSBs are identical.
-//
-// For example:
-//
-//	a = 1101 (len=4)
-//	b = 11010111 (len=8)
-//	a.equalMSBs(b) = true  // First 4 MSBs match
-//
-//	a = 1100 (len=4)
-//	b = 1101 (len=4)
-//	a.equalMSBs(b) = false // All bits compared, not equal
-//
-//	a = 1100 (len=4)
-//	b = [] (len=0)
-//	a.equalMSBs(b) = true  // Zero length is always a prefix match
-func (b *BitArray) equalMSBs(x *BitArray) bool {
-	if b.len == x.len {
-		return b.Equal(x)
-	}
-
-	if b.len == 0 || x.len == 0 {
-		return true
-	}
-
-	// Compare only the first min(b.len, x.len) bits
-	minLen := min(b.len, x.len)
-
-	return new(BitArray).MSBs(b, minLen).Equal(new(BitArray).MSBs(x, minLen))
-}
-
 // or sets the bit array to x | y and returns the bit array.
 func (b *BitArray) or(x, y *BitArray) *BitArray {
 	b.words[0] = x.words[0] | y.words[0]
 	b.words[1] = x.words[1] | y.words[1]
 	b.words[2] = x.words[2] | y.words[2]
 	b.words[3] = x.words[3] | y.words[3]
-	b.len = x.len
-	return b
-}
-
-// And sets the bit array to x & y and returns the bit array.
-func (b *BitArray) and(x, y *BitArray) *BitArray {
-	b.words[0] = x.words[0] & y.words[0]
-	b.words[1] = x.words[1] & y.words[1]
-	b.words[2] = x.words[2] & y.words[2]
-	b.words[3] = x.words[3] & y.words[3]
 	b.len = x.len
 	return b
 }
@@ -640,17 +545,6 @@ func (b *BitArray) truncateToLength() {
 	default:
 		b.words[3] &= maxUint64 >> (256 - uint16(b.len))
 	}
-}
-
-// ones sets the bit array to a sequence of ones of the specified length.
-func (b *BitArray) ones(length uint8) *BitArray {
-	b.len = length
-	b.words[0] = maxUint64
-	b.words[1] = maxUint64
-	b.words[2] = maxUint64
-	b.words[3] = maxUint64
-	b.truncateToLength()
-	return b
 }
 
 func bigEndianUint40(b []byte) uint64 {
