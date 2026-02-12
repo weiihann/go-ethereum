@@ -184,6 +184,20 @@ func (p *TriePosition) SiblingIndex() int {
 	return siblingIndex(p.nodeIndex)
 }
 
+// SharedDepth returns the number of leading path bits shared between two
+// TriePositions, considering only bits up to the shorter depth.
+func (p *TriePosition) SharedDepth(other *TriePosition) int {
+	maxBits := min(int(p.depth), int(other.depth))
+	for i := range maxBits {
+		pBit := (p.path[i/8] >> (7 - i%8)) & 1
+		oBit := (other.path[i/8] >> (7 - i%8)) & 1
+		if pBit != oBit {
+			return i
+		}
+	}
+	return maxBits
+}
+
 // --- internal helpers ---
 
 // computeNodeIndex converts a page-local bit path to a level-order node index.
