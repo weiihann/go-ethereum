@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 
@@ -27,6 +28,10 @@ const (
 type Config struct {
 	// HTCapacity is the number of hash table buckets. Must be a power of 2.
 	HTCapacity uint64
+
+	// NumWorkers is the number of parallel goroutines for trie updates.
+	// Defaults to runtime.NumCPU() if zero.
+	NumWorkers int
 }
 
 // DefaultConfig returns a default configuration.
@@ -38,11 +43,12 @@ func DefaultConfig() Config {
 
 // DB is the NOMT trie database.
 type DB struct {
-	dataDir  string
-	bb       *bitbox.DB
-	root     core.Node
-	syncSeqn uint32
-	mu       sync.RWMutex
+	dataDir    string
+	bb         *bitbox.DB
+	root       core.Node
+	syncSeqn   uint32
+	numWorkers int
+	mu         sync.RWMutex
 }
 
 // Open opens or creates a NOMT trie database at the given directory.
@@ -75,10 +81,16 @@ func Open(dataDir string, config Config) (*DB, error) {
 		}
 	}
 
+	numWorkers := config.NumWorkers
+	if numWorkers <= 0 {
+		numWorkers = runtime.NumCPU()
+	}
+
 	db := &DB{
-		dataDir: dataDir,
-		bb:      bb,
-		root:    core.Terminator,
+		dataDir:    dataDir,
+		bb:         bb,
+		root:       core.Terminator,
+		numWorkers: numWorkers,
 	}
 
 	// Run WAL recovery.
@@ -136,52 +148,21 @@ func (db *DB) Update(ops []core.LeafOp) (core.Node, error) {
 		return ops[i].Key != ops[j].Key && keyLess(&ops[i].Key, &ops[j].Key)
 	})
 
-	// Build a BitboxPageSet that loads pages from disk.
-	pageSet := newBitboxPageSet(db.bb)
-
-	// For a simple implementation, treat the entire trie as a single
-	// terminal at the root and replace it.
+	// Convert to KeyValue (filter out deletes).
 	kvs := make([]core.KeyValue, 0, len(ops))
 	for _, op := range ops {
 		if op.Value != nil {
 			kvs = append(kvs, core.KeyValue{Key: op.Key, Value: *op.Value})
 		}
 	}
-
-	walker := merkle.NewPageWalker(db.root, nil)
-
-	if len(kvs) > 0 || len(ops) > 0 {
-		// Simple approach: single advance at root with all operations.
-		// For an incremental update on a non-empty trie, we'd need to
-		// seek to terminals first. This simplified version rebuilds.
-		pos := core.NewTriePosition()
-		pos.Down(false) // advance to position [0] for left subtree
-
-		// Split ops into left (0-prefix) and right (1-prefix).
-		leftKVs := make([]core.KeyValue, 0, len(kvs))
-		rightKVs := make([]core.KeyValue, 0, len(kvs))
-		for _, kv := range kvs {
-			if kv.Key[0]&0x80 == 0 {
-				leftKVs = append(leftKVs, kv)
-			} else {
-				rightKVs = append(rightKVs, kv)
-			}
-		}
-
-		leftPos := core.NewTriePosition()
-		leftPos.Down(false)
-		if len(leftKVs) > 0 {
-			walker.AdvanceAndReplace(pageSet, leftPos, leftKVs)
-		}
-
-		rightPos := core.NewTriePosition()
-		rightPos.Down(true)
-		if len(rightKVs) > 0 {
-			walker.AdvanceAndReplace(pageSet, rightPos, rightKVs)
-		}
+	if len(kvs) == 0 {
+		return db.root, nil
 	}
 
-	out := walker.Conclude()
+	pageSetFactory := func() merkle.PageSet {
+		return newBitboxPageSet(db.bb)
+	}
+	out := merkle.ParallelUpdate(db.root, kvs, db.numWorkers, pageSetFactory)
 
 	// Persist updated pages.
 	walPath := filepath.Join(db.dataDir, walFileName)
