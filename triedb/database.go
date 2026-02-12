@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb/database"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
+	"github.com/ethereum/go-ethereum/triedb/nomtdb"
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
 )
 
@@ -35,6 +36,7 @@ type Config struct {
 	IsVerkle  bool           // Flag whether the db is holding a verkle tree
 	HashDB    *hashdb.Config // Configs for hash-based scheme
 	PathDB    *pathdb.Config // Configs for experimental path-based scheme
+	NomtDB    *nomtdb.Config // Configs for NOMT page-based scheme
 }
 
 // HashDefaults represents a config for using hash-based scheme with
@@ -105,12 +107,26 @@ func NewDatabase(diskdb ethdb.Database, config *Config) *Database {
 		config:    config,
 		preimages: preimages,
 	}
-	if config.HashDB != nil && config.PathDB != nil {
-		log.Crit("Both 'hash' and 'path' mode are configured")
+	// Ensure at most one backend is configured.
+	configured := 0
+	if config.HashDB != nil {
+		configured++
 	}
 	if config.PathDB != nil {
+		configured++
+	}
+	if config.NomtDB != nil {
+		configured++
+	}
+	if configured > 1 {
+		log.Crit("Multiple trie backends configured (only one of hash/path/nomt allowed)")
+	}
+	switch {
+	case config.NomtDB != nil:
+		db.backend = nomtdb.New(diskdb, config.NomtDB)
+	case config.PathDB != nil:
 		db.backend = pathdb.New(diskdb, config.PathDB, config.IsVerkle)
-	} else {
+	default:
 		db.backend = hashdb.New(diskdb, config.HashDB)
 	}
 	return db
@@ -163,6 +179,13 @@ func (db *Database) Update(root common.Hash, parent common.Hash, block uint64, n
 		return b.Update(root, parent, block, nodes)
 	case *pathdb.Database:
 		return b.Update(root, parent, block, nodes, states.internal())
+	case *nomtdb.Database:
+		// For NOMT, trie pages are already committed during NomtTrie.Hash()/Commit().
+		// Here we only need to persist the flat state changes.
+		if states == nil {
+			return nil
+		}
+		return b.Update(states.Accounts, states.Storages)
 	}
 	return errors.New("unknown backend")
 }
@@ -194,10 +217,24 @@ func (db *Database) Size() (common.StorageSize, common.StorageSize, common.Stora
 
 // Scheme returns the node scheme used in the database.
 func (db *Database) Scheme() string {
+	if db.config.NomtDB != nil {
+		return rawdb.NomtScheme
+	}
 	if db.config.PathDB != nil {
 		return rawdb.PathScheme
 	}
 	return rawdb.HashScheme
+}
+
+// IsNomt returns true if the database is using the NOMT backend.
+func (db *Database) IsNomt() bool {
+	return db.config.NomtDB != nil
+}
+
+// NomtBackend returns the NOMT backend, or nil if not using NOMT.
+func (db *Database) NomtBackend() *nomtdb.Database {
+	ndb, _ := db.backend.(*nomtdb.Database)
+	return ndb
 }
 
 // Close flushes the dangling preimages to disk and closes the trie database.
