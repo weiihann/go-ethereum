@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/bintrie"
+	"github.com/ethereum/go-ethereum/trie/nomttrie"
 	"github.com/ethereum/go-ethereum/trie/transitiontrie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb"
@@ -200,6 +201,13 @@ func (db *CachingDB) StateReader(stateRoot common.Hash) (StateReader, error) {
 			readers = append(readers, newFlatReader(reader))
 		}
 	}
+	// Configure the state reader for NOMT mode.
+	if db.TrieDB().Scheme() == rawdb.NomtScheme {
+		reader, err := db.triedb.StateReader(stateRoot)
+		if err == nil {
+			readers = append(readers, newFlatReader(reader))
+		}
+	}
 	// Configure the trie reader, which is expected to be available as the
 	// gatekeeper unless the state is corrupted.
 	tr, err := newTrieReader(stateRoot, db.triedb)
@@ -238,6 +246,10 @@ func (db *CachingDB) ReadersWithCacheStats(stateRoot common.Hash) (ReaderWithSta
 
 // OpenTrie opens the main account trie at a specific root hash.
 func (db *CachingDB) OpenTrie(root common.Hash) (Trie, error) {
+	// NOMT uses its own page-based binary trie.
+	if db.triedb.IsNomt() {
+		return nomttrie.New(root, db.triedb.NomtBackend())
+	}
 	if db.triedb.IsVerkle() {
 		ts := overlay.LoadTransitionState(db.TrieDB().Disk(), root, db.triedb.IsVerkle())
 		if ts.InTransition() {
@@ -258,6 +270,10 @@ func (db *CachingDB) OpenTrie(root common.Hash) (Trie, error) {
 
 // OpenStorageTrie opens the storage trie of an account.
 func (db *CachingDB) OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash, self Trie) (Trie, error) {
+	// NOMT uses a single flat keyspace — no separate storage tries.
+	if db.triedb.IsNomt() {
+		return self, nil
+	}
 	if db.triedb.IsVerkle() {
 		return self, nil
 	}
@@ -300,6 +316,8 @@ func mustCopyTrie(t Trie) Trie {
 	case *trie.StateTrie:
 		return t.Copy()
 	case *transitiontrie.TransitionTrie:
+		return t.Copy()
+	case *nomttrie.NomtTrie:
 		return t.Copy()
 	default:
 		panic(fmt.Errorf("unknown trie type %T", t))

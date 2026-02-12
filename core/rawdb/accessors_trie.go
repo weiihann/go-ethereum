@@ -44,6 +44,11 @@ const HashScheme = "hash"
 // on extra state diffs to survive deep reorg.
 const PathScheme = "path"
 
+// NomtScheme is the NOMT page-based state scheme with which trie nodes are stored
+// in pages (126 nodes each) using the Bitbox hash table. This scheme offers
+// optimal I/O for binary merkle tries by batching nodes into fixed-size pages.
+const NomtScheme = "nomt"
+
 // ReadAccountTrieNode retrieves the account trie node with the specified node path.
 func ReadAccountTrieNode(db ethdb.KeyValueReader, path []byte) []byte {
 	data, _ := db.Get(accountTrieNodeKey(path))
