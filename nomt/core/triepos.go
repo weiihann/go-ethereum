@@ -13,13 +13,17 @@ func NewTriePosition() TriePosition {
 	return TriePosition{}
 }
 
+// MaxTrieDepth is the maximum depth of the internal node tree (248 bits = 31 bytes).
+// Stem nodes exist at this depth; the last 8 bits are the stem suffix.
+const MaxTrieDepth = StemSize * 8 // 248
+
 // TriePositionFromPathAndDepth creates a TriePosition at the given depth
 // within the path. Panics if depth is 0.
 func TriePositionFromPathAndDepth(path KeyPath, depth uint16) TriePosition {
 	if depth == 0 {
 		panic("triepos: depth must be non-zero")
 	}
-	if depth > 256 {
+	if depth > MaxTrieDepth {
 		panic("triepos: depth out of range")
 	}
 	pagePath := lastPagePath(path[:], depth)
@@ -57,8 +61,8 @@ func (p *TriePosition) NodeIndex() int {
 
 // Down moves the position down by 1 bit (left if bit=false, right if bit=true).
 func (p *TriePosition) Down(bit bool) {
-	if p.depth == 256 {
-		panic("triepos: can't descend past 256 bits")
+	if p.depth >= MaxTrieDepth {
+		panic("triepos: can't descend past 248 bits")
 	}
 	if int(p.depth)%PageDepth == 0 {
 		// Entering a new page: node index resets.
