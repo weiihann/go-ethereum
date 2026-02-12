@@ -13,13 +13,13 @@ import (
 // --- Unit tests for helpers ---
 
 func TestPartitionByChildIndex(t *testing.T) {
-	// Key 0x00... → child 0, key 0xFC... → child 63.
-	kvs := []core.KeyValue{
-		{Key: makeKVKey(0x00), Value: makeKVVal(1)},
-		{Key: makeKVKey(0x04), Value: makeKVVal(2)}, // 0x04 >> 2 = 1
-		{Key: makeKVKey(0xFC), Value: makeKVVal(3)}, // 0xFC >> 2 = 63
+	// Stem 0x00... → child 0, stem 0x04... → child 1, stem 0xFC... → child 63.
+	skvs := []core.StemKeyValue{
+		makeSKV(0x00),
+		makeSKV(0x04), // 0x04 >> 2 = 1
+		makeSKV(0xFC), // 0xFC >> 2 = 63
 	}
-	buckets := partitionByChildIndex(kvs)
+	buckets := partitionByChildIndex(skvs)
 
 	assert.Len(t, buckets[0], 1)
 	assert.Len(t, buckets[1], 1)
@@ -69,10 +69,10 @@ func TestChildPosition(t *testing.T) {
 
 func TestAssignToWorkers(t *testing.T) {
 	// 3 non-empty buckets, 2 workers.
-	var buckets [64][]core.KeyValue
-	buckets[0] = []core.KeyValue{{Key: makeKVKey(0x00), Value: makeKVVal(1)}}
-	buckets[10] = []core.KeyValue{{Key: makeKVKey(0x28), Value: makeKVVal(2)}} // 0x28>>2=10
-	buckets[63] = []core.KeyValue{{Key: makeKVKey(0xFC), Value: makeKVVal(3)}}
+	var buckets [64][]core.StemKeyValue
+	buckets[0] = []core.StemKeyValue{makeSKV(0x00)}
+	buckets[10] = []core.StemKeyValue{makeSKV(0x28)} // 0x28>>2=10
+	buckets[63] = []core.StemKeyValue{makeSKV(0xFC)}
 
 	tasks := assignToWorkers(buckets, 2)
 	require.Len(t, tasks, 2)
@@ -85,9 +85,9 @@ func TestAssignToWorkers(t *testing.T) {
 }
 
 func TestAssignToWorkersMoreWorkersThanChildren(t *testing.T) {
-	var buckets [64][]core.KeyValue
-	buckets[5] = []core.KeyValue{{Key: makeKVKey(0x14), Value: makeKVVal(1)}} // 0x14>>2=5
-	buckets[6] = []core.KeyValue{{Key: makeKVKey(0x18), Value: makeKVVal(2)}} // 0x18>>2=6
+	var buckets [64][]core.StemKeyValue
+	buckets[5] = []core.StemKeyValue{makeSKV(0x14)} // 0x14>>2=5
+	buckets[6] = []core.StemKeyValue{makeSKV(0x18)} // 0x18>>2=6
 
 	tasks := assignToWorkers(buckets, 8)
 	// Only 2 non-empty, so cap to 2 workers.
@@ -118,99 +118,152 @@ func memoryPageSetFactory() PageSet {
 	return &permissivePageSet{NewMemoryPageSet(true)}
 }
 
+// expectedWorkerRoot computes the expected root hash matching the depth-7
+// child-index partitioning used by both singleThreadedUpdate and ParallelUpdate.
+// This differs from expectedRoot (which splits at depth 1) because without
+// leaf compaction, the splitting depth affects intermediate hashes.
+func expectedWorkerRoot(skvs []core.StemKeyValue) core.Node {
+	if len(skvs) == 0 {
+		return core.Terminator
+	}
+
+	// Partition into 128 subtree roots (64 child indices × 2 sides).
+	buckets := partitionByChildIndex(skvs)
+	var roots [128]core.Node
+	for ci := range 64 {
+		if len(buckets[ci]) == 0 {
+			continue
+		}
+		var leftKVs, rightKVs []core.StemKeyValue
+		for i := range buckets[ci] {
+			if (buckets[ci][i].Stem[0]>>1)&1 == 0 {
+				leftKVs = append(leftKVs, buckets[ci][i])
+			} else {
+				rightKVs = append(rightKVs, buckets[ci][i])
+			}
+		}
+		if len(leftKVs) > 0 {
+			roots[ci*2] = core.BuildInternalTree(7, leftKVs, func(_ core.WriteNode) {})
+		}
+		if len(rightKVs) > 0 {
+			roots[ci*2+1] = core.BuildInternalTree(7, rightKVs, func(_ core.WriteNode) {})
+		}
+	}
+
+	// Hash up 7 levels: 128 → 64 → 32 → 16 → 8 → 4 → 2 → 1.
+	nodes := make([]core.Node, 128)
+	copy(nodes, roots[:])
+	for len(nodes) > 1 {
+		half := len(nodes) / 2
+		next := make([]core.Node, half)
+		for i := range half {
+			left := nodes[i*2]
+			right := nodes[i*2+1]
+			if core.IsTerminator(&left) && core.IsTerminator(&right) {
+				next[i] = core.Terminator
+			} else {
+				next[i] = core.HashInternal(&core.InternalData{Left: left, Right: right})
+			}
+		}
+		nodes = next
+	}
+
+	return nodes[0]
+}
+
 func TestParallelUpdateEmpty(t *testing.T) {
 	out := ParallelUpdate(core.Terminator, nil, 4, memoryPageSetFactory)
 	assert.Equal(t, core.Terminator, out.Root)
 }
 
 func TestParallelUpdateSingleKey(t *testing.T) {
-	kv := core.KeyValue{Key: makeKVKey(0x50), Value: makeKVVal(1)}
-	kvs := []core.KeyValue{kv}
+	skv := makeSKV(0x50)
+	skvs := []core.StemKeyValue{skv}
 
-	out := ParallelUpdate(core.Terminator, kvs, 4, memoryPageSetFactory)
-	expected := expectedRoot(kvs)
+	out := ParallelUpdate(core.Terminator, skvs, 4, memoryPageSetFactory)
+	expected := expectedWorkerRoot(skvs)
 	assert.Equal(t, expected, out.Root)
 }
 
 func TestParallelUpdateTwoKeysDifferentChildren(t *testing.T) {
 	// 0x00 → child 0, 0x80 → child 32.
-	kvs := []core.KeyValue{
-		{Key: makeKVKey(0x00), Value: makeKVVal(1)},
-		{Key: makeKVKey(0x80), Value: makeKVVal(2)},
+	skvs := []core.StemKeyValue{
+		makeSKV(0x00),
+		makeSKV(0x80),
 	}
 
-	out := ParallelUpdate(core.Terminator, kvs, 4, memoryPageSetFactory)
-	expected := expectedRoot(kvs)
+	out := ParallelUpdate(core.Terminator, skvs, 4, memoryPageSetFactory)
+	expected := expectedWorkerRoot(skvs)
 	assert.Equal(t, expected, out.Root)
 }
 
 func TestParallelUpdateSparseChildren(t *testing.T) {
 	// Only children 0 and 63 have ops.
-	kvs := []core.KeyValue{
-		{Key: makeKVKey(0x00), Value: makeKVVal(1)},
-		{Key: makeKVKey(0xFC), Value: makeKVVal(2)},
+	skvs := []core.StemKeyValue{
+		makeSKV(0x00),
+		makeSKV(0xFC),
 	}
 
-	out := ParallelUpdate(core.Terminator, kvs, 4, memoryPageSetFactory)
-	expected := expectedRoot(kvs)
+	out := ParallelUpdate(core.Terminator, skvs, 4, memoryPageSetFactory)
+	expected := expectedWorkerRoot(skvs)
 	assert.Equal(t, expected, out.Root)
 }
 
 func TestParallelUpdateSingleChild(t *testing.T) {
-	// All keys land in child 0 (first 6 bits = 000000).
-	kvs := []core.KeyValue{
-		{Key: makeKVKey(0x00), Value: makeKVVal(1)},
-		{Key: makeKVKey(0x01), Value: makeKVVal(2)},
-		{Key: makeKVKey(0x02), Value: makeKVVal(3)},
-		{Key: makeKVKey(0x03), Value: makeKVVal(4)},
+	// All stems land in child 0 (first 6 bits = 000000).
+	skvs := []core.StemKeyValue{
+		makeSKV(0x00),
+		makeSKV(0x01),
+		makeSKV(0x02),
+		makeSKV(0x03),
 	}
-	sort.Slice(kvs, func(i, j int) bool { return kvLess(&kvs[i], &kvs[j]) })
+	sort.Slice(skvs, func(i, j int) bool { return skvLess(&skvs[i], &skvs[j]) })
 
-	out := ParallelUpdate(core.Terminator, kvs, 4, memoryPageSetFactory)
-	expected := expectedRoot(kvs)
+	out := ParallelUpdate(core.Terminator, skvs, 4, memoryPageSetFactory)
+	expected := expectedWorkerRoot(skvs)
 	assert.Equal(t, expected, out.Root)
 }
 
 func TestParallelUpdateFallbackSmallBatch(t *testing.T) {
 	// Less than 64 ops → single-threaded fallback.
-	kvs := randomKVs(10, 42)
-	out := ParallelUpdate(core.Terminator, kvs, 8, memoryPageSetFactory)
-	expected := expectedRoot(kvs)
+	skvs := randomSKVs(10, 42)
+	out := ParallelUpdate(core.Terminator, skvs, 8, memoryPageSetFactory)
+	expected := expectedWorkerRoot(skvs)
 	assert.Equal(t, expected, out.Root)
 }
 
 func TestParallelUpdateDeterministic(t *testing.T) {
-	kvs := randomKVs(200, 99)
+	skvs := randomSKVs(200, 99)
 
-	r1 := ParallelUpdate(core.Terminator, kvs, 4, memoryPageSetFactory).Root
-	r2 := ParallelUpdate(core.Terminator, kvs, 4, memoryPageSetFactory).Root
+	r1 := ParallelUpdate(core.Terminator, skvs, 4, memoryPageSetFactory).Root
+	r2 := ParallelUpdate(core.Terminator, skvs, 4, memoryPageSetFactory).Root
 	assert.Equal(t, r1, r2, "same inputs should produce same root")
 }
 
 func TestParallelUpdateMatchesSingleThreaded(t *testing.T) {
 	tests := []struct {
 		name    string
-		numKVs  int
+		numSKVs int
 		workers int
 	}{
-		{"1kv_2w", 1, 2},
-		{"10kv_2w", 10, 2},
-		{"100kv_2w", 100, 2},
-		{"100kv_4w", 100, 4},
-		{"100kv_8w", 100, 8},
-		{"500kv_4w", 500, 4},
-		{"1000kv_8w", 1000, 8},
+		{"1skv_2w", 1, 2},
+		{"10skv_2w", 10, 2},
+		{"100skv_2w", 100, 2},
+		{"100skv_4w", 100, 4},
+		{"100skv_8w", 100, 8},
+		{"500skv_4w", 500, 4},
+		{"1000skv_8w", 1000, 8},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			kvs := randomKVs(tc.numKVs, 12345)
+			skvs := randomSKVs(tc.numSKVs, 12345)
 
 			single := singleThreadedUpdate(
-				core.Terminator, kvs, NewMemoryPageSet(true),
+				core.Terminator, skvs, memoryPageSetFactory(),
 			)
 			parallel := ParallelUpdate(
-				core.Terminator, kvs, tc.workers, memoryPageSetFactory,
+				core.Terminator, skvs, tc.workers, memoryPageSetFactory,
 			)
 
 			assert.Equal(t, single.Root, parallel.Root,
@@ -221,36 +274,38 @@ func TestParallelUpdateMatchesSingleThreaded(t *testing.T) {
 
 // --- helpers ---
 
-func randomKVs(n int, seed int64) []core.KeyValue {
+func randomSKVs(n int, seed int64) []core.StemKeyValue {
 	rng := rand.New(rand.NewSource(seed))
-	kvs := make([]core.KeyValue, n)
-	seen := make(map[core.KeyPath]bool, n)
+	skvs := make([]core.StemKeyValue, n)
+	seen := make(map[core.StemPath]bool, n)
 
 	for i := range n {
 		for {
-			var kp core.KeyPath
-			rng.Read(kp[:])
-			if seen[kp] {
+			var stem core.StemPath
+			rng.Read(stem[:])
+			if seen[stem] {
 				continue
 			}
-			seen[kp] = true
-			var vh core.ValueHash
-			rng.Read(vh[:])
-			kvs[i] = core.KeyValue{Key: kp, Value: vh}
+			seen[stem] = true
+			var hash core.Node
+			rng.Read(hash[:])
+			// Ensure non-zero hash (avoid terminator).
+			hash[0] |= 0x01
+			skvs[i] = core.StemKeyValue{Stem: stem, Hash: hash}
 			break
 		}
 	}
 
-	sort.Slice(kvs, func(i, j int) bool { return kvLess(&kvs[i], &kvs[j]) })
-	return kvs
+	sort.Slice(skvs, func(i, j int) bool { return skvLess(&skvs[i], &skvs[j]) })
+	return skvs
 }
 
-func kvLess(a, b *core.KeyValue) bool {
-	for i := range a.Key {
-		if a.Key[i] < b.Key[i] {
+func skvLess(a, b *core.StemKeyValue) bool {
+	for i := range a.Stem {
+		if a.Stem[i] < b.Stem[i] {
 			return true
 		}
-		if a.Key[i] > b.Key[i] {
+		if a.Stem[i] > b.Stem[i] {
 			return false
 		}
 	}
