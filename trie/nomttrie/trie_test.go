@@ -346,10 +346,9 @@ func TestHashProducesCorrectStemHash(t *testing.T) {
 	values[bintrie.CodeHashLeafKey] = codeHashVal
 	stemHash := core.HashStem(stem, values)
 
-	// The trie has one stem → the root is the stem hash placed at depth 248,
-	// surrounded by terminators. The exact root depends on the page tree
-	// hashing, but it should be deterministic.
+	// A single-stem trie's canonical root equals the stem hash directly,
+	// matching bintrie's behavior (StemNode hash IS the root).
 	assert.NotEqual(t, common.Hash{}, root)
-	assert.NotEqual(t, common.Hash(stemHash), root,
-		"root != stemHash because the page tree hashes internal nodes above the stem")
+	assert.Equal(t, common.Hash(stemHash), root,
+		"single-stem trie root should equal the stem hash")
 }
