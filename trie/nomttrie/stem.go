@@ -1,6 +1,7 @@
 package nomttrie
 
 import (
+	"bytes"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -54,16 +55,19 @@ func loadStemValues(diskdb ethdb.Database, stem core.StemPath) ([core.StemNodeWi
 }
 
 // writeStemValues writes updated stem values to an ethdb batch.
-// Nil values delete the key; non-nil values overwrite.
-func writeStemValues(batch ethdb.Batch, stem core.StemPath, updates map[byte][]byte) error {
-	for suffix, value := range updates {
-		key := stemValueDBKey(stem, suffix)
-		if value == nil {
+// Only slots marked dirty are written. Nil values delete the key.
+func writeStemValues(batch ethdb.Batch, stem core.StemPath, values [core.StemNodeWidth][]byte, dirty [core.StemNodeWidth]bool) error {
+	for i, d := range dirty {
+		if !d {
+			continue
+		}
+		key := stemValueDBKey(stem, byte(i))
+		if values[i] == nil {
 			if err := batch.Delete(key); err != nil {
 				return err
 			}
 		} else {
-			if err := batch.Put(key, value); err != nil {
+			if err := batch.Put(key, values[i]); err != nil {
 				return err
 			}
 		}
@@ -110,16 +114,16 @@ func groupAndHashStems(
 		}
 
 		// Apply updates.
-		flatUpdates := make(map[byte][]byte, 4)
+		var dirty [core.StemNodeWidth]bool
 		for idx < len(updates) && updates[idx].Stem == stem {
 			u := updates[idx]
 			values[u.Suffix] = u.Value
-			flatUpdates[u.Suffix] = u.Value
+			dirty[u.Suffix] = true
 			idx++
 		}
 
 		// Write to flat state.
-		if err := writeStemValues(batch, stem, flatUpdates); err != nil {
+		if err := writeStemValues(batch, stem, values, dirty); err != nil {
 			return nil, err
 		}
 
@@ -147,13 +151,5 @@ func groupAndHashStems(
 
 // stemLess compares two stem paths lexicographically.
 func stemLess(a, b *core.StemPath) bool {
-	for i := range a {
-		if a[i] < b[i] {
-			return true
-		}
-		if a[i] > b[i] {
-			return false
-		}
-	}
-	return false
+	return bytes.Compare(a[:], b[:]) < 0
 }

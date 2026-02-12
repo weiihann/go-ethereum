@@ -7,8 +7,8 @@
 package nomttrie
 
 import (
+	"bytes"
 	"encoding/binary"
-	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -47,20 +47,23 @@ type NomtTrie struct {
 	pending []stemUpdate     // accumulated stem updates
 	dirty   bool             // whether pending updates exist
 
-	// allStems tracks the stem hash for every active stem in the trie.
-	// Updated on each Hash() with results from groupAndHashStems.
-	// Used to compute the canonical root via BuildInternalTree(skip=0).
-	allStems map[core.StemPath]core.Node
+	// allStems tracks the stem hash for every active stem in the trie,
+	// kept sorted by stem path. Updated on each Hash() via sorted merge
+	// with results from groupAndHashStems.
+	allStems []core.StemKeyValue
+
+	// mergeBuf is reused across Hash() calls to avoid allocating a new
+	// slice on every merge. After merge, allStems and mergeBuf swap roles.
+	mergeBuf []core.StemKeyValue
 }
 
 // New creates a new NomtTrie. The root parameter is the current state root.
 func New(root common.Hash, backend *nomtdb.Database) (*NomtTrie, error) {
 	return &NomtTrie{
-		nomtDB:   backend.NomtDB(),
-		backend:  backend,
-		root:     root,
-		pending:  make([]stemUpdate, 0, 64),
-		allStems: make(map[core.StemPath]core.Node, 64),
+		nomtDB:  backend.NomtDB(),
+		backend: backend,
+		root:    root,
+		pending: make([]stemUpdate, 0, 64),
 	}, nil
 }
 
@@ -234,22 +237,23 @@ func (t *NomtTrie) Hash() common.Hash {
 		return t.root
 	}
 
-	// Update allStems with new/changed stem hashes.
-	for _, kv := range stemKVs {
-		t.allStems[kv.Stem] = kv.Hash
-	}
+	// Merge sorted stemKVs into allStems (both are sorted by stem path).
+	// Swap allStems and mergeBuf to reuse backing arrays across calls.
+	merged := mergeStemKVs(t.allStems, stemKVs, t.mergeBuf)
+	t.mergeBuf = t.allStems
+	t.allStems = merged
 
 	// Update the page tree for persistent storage.
+	// stemKVs is already sorted, so skip the redundant sort in db.Update.
 	if len(stemKVs) > 0 {
-		if _, err := t.nomtDB.Update(stemKVs); err != nil {
+		if _, err := t.nomtDB.UpdateSorted(stemKVs); err != nil {
 			log.Error("NOMT page tree update failed", "err", err)
 			return t.root
 		}
 	}
 
 	// Compute the canonical root via BuildInternalTree(skip=0).
-	// This produces roots identical to bintrie by avoiding the depth-7
-	// worker split that adds extra wrapping levels.
+	// allStems is already sorted, so no additional sort needed.
 	t.root = common.Hash(t.canonicalRoot())
 
 	t.pending = t.pending[:0]
@@ -258,19 +262,78 @@ func (t *NomtTrie) Hash() common.Hash {
 }
 
 // canonicalRoot computes the bintrie-compatible root hash from all known stems
-// using BuildInternalTree at skip=0.
+// using BuildInternalTree at skip=0. allStems is already sorted.
 func (t *NomtTrie) canonicalRoot() core.Node {
 	if len(t.allStems) == 0 {
 		return core.Terminator
 	}
-	sorted := make([]core.StemKeyValue, 0, len(t.allStems))
-	for stem, hash := range t.allStems {
-		sorted = append(sorted, core.StemKeyValue{Stem: stem, Hash: hash})
+	return core.BuildInternalTree(0, t.allStems, func(_ core.WriteNode) {})
+}
+
+// mergeStemKVs merges sorted new stemKVs into sorted existing allStems.
+// Existing entries with the same stem are replaced. The result is sorted.
+// The buf parameter is reused for the result to avoid allocation when new
+// stems need to be inserted.
+func mergeStemKVs(existing, updates, buf []core.StemKeyValue) []core.StemKeyValue {
+	if len(updates) == 0 {
+		return existing
 	}
-	sort.Slice(sorted, func(i, j int) bool {
-		return stemLess(&sorted[i].Stem, &sorted[j].Stem)
-	})
-	return core.BuildInternalTree(0, sorted, func(_ core.WriteNode) {})
+	if len(existing) == 0 {
+		return updates
+	}
+
+	// Fast path: check if all updates are in-place replacements (no new stems).
+	// This is the common case for incremental block updates where accounts
+	// already exist in the trie.
+	allInPlace := true
+	ei := 0
+	for _, u := range updates {
+		for ei < len(existing) && bytes.Compare(existing[ei].Stem[:], u.Stem[:]) < 0 {
+			ei++
+		}
+		if ei >= len(existing) || existing[ei].Stem != u.Stem {
+			allInPlace = false
+			break
+		}
+	}
+
+	if allInPlace {
+		// Update hashes in place — zero allocation.
+		ei = 0
+		for _, u := range updates {
+			for existing[ei].Stem != u.Stem {
+				ei++
+			}
+			existing[ei].Hash = u.Hash
+		}
+		return existing
+	}
+
+	// Slow path: some new stems need inserting. Use merge with buffer.
+	needed := len(existing) + len(updates)
+	if cap(buf) < needed {
+		buf = make([]core.StemKeyValue, 0, needed)
+	}
+	result := buf[:0]
+	i, j := 0, 0
+	for i < len(existing) && j < len(updates) {
+		cmp := bytes.Compare(existing[i].Stem[:], updates[j].Stem[:])
+		switch {
+		case cmp < 0:
+			result = append(result, existing[i])
+			i++
+		case cmp > 0:
+			result = append(result, updates[j])
+			j++
+		default:
+			result = append(result, updates[j])
+			i++
+			j++
+		}
+	}
+	result = append(result, existing[i:]...)
+	result = append(result, updates[j:]...)
+	return result
 }
 
 // Commit flushes pending operations and returns the root hash.
@@ -304,10 +367,8 @@ func (t *NomtTrie) IsVerkle() bool {
 func (t *NomtTrie) Copy() *NomtTrie {
 	pending := make([]stemUpdate, len(t.pending))
 	copy(pending, t.pending)
-	allStems := make(map[core.StemPath]core.Node, len(t.allStems))
-	for k, v := range t.allStems {
-		allStems[k] = v
-	}
+	allStems := make([]core.StemKeyValue, len(t.allStems))
+	copy(allStems, t.allStems)
 	return &NomtTrie{
 		nomtDB:   t.nomtDB,
 		backend:  t.backend,
