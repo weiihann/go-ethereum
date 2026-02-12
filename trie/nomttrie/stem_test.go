@@ -59,13 +59,17 @@ func TestWriteStemValues(t *testing.T) {
 	var stem core.StemPath
 	stem[0] = 0xCC
 
-	// Write a value.
+	// Write a value at slot 3.
 	val := make([]byte, 32)
 	val[0] = 0x42
 
+	var values [core.StemNodeWidth][]byte
+	var dirty [core.StemNodeWidth]bool
+	values[3] = val
+	dirty[3] = true
+
 	batch := diskdb.NewBatch()
-	updates := map[byte][]byte{3: val}
-	require.NoError(t, writeStemValues(batch, stem, updates))
+	require.NoError(t, writeStemValues(batch, stem, values, dirty))
 	require.NoError(t, batch.Write())
 
 	// Verify it was written.
@@ -74,9 +78,11 @@ func TestWriteStemValues(t *testing.T) {
 	assert.Equal(t, val, data)
 
 	// Delete it.
+	values[3] = nil
+	dirty[3] = true
+
 	batch = diskdb.NewBatch()
-	deletes := map[byte][]byte{3: nil}
-	require.NoError(t, writeStemValues(batch, stem, deletes))
+	require.NoError(t, writeStemValues(batch, stem, values, dirty))
 	require.NoError(t, batch.Write())
 
 	has, err := diskdb.Has(stemValueDBKey(stem, 3))

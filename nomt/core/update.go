@@ -1,5 +1,7 @@
 package core
 
+import "math/bits"
+
 // StemKeyValue is a resolved (stemPath, stemHash) pair for the page tree.
 // The stem hash is precomputed by the integration layer using HashStem.
 type StemKeyValue struct {
@@ -32,17 +34,26 @@ type WriteNode struct {
 // StemSharedBits counts the number of shared prefix bits between two stem
 // paths, starting after `skip` bits.
 func StemSharedBits(a, b *StemPath, skip int) int {
-	count := 0
-	maxBits := StemSize * 8 // 248
-	for i := skip; i < maxBits; i++ {
-		aBit := (a[i/8] >> (7 - i%8)) & 1
-		bBit := (b[i/8] >> (7 - i%8)) & 1
-		if aBit != bBit {
-			break
+	startByte := skip / 8
+
+	// Handle partial first byte if skip is not byte-aligned.
+	if skip%8 != 0 {
+		mask := byte(0xFF >> (skip % 8))
+		xor := (a[startByte] ^ b[startByte]) & mask
+		if xor != 0 {
+			return bits.LeadingZeros8(xor) - (skip % 8)
 		}
-		count++
+		startByte++
 	}
-	return count
+
+	// Compare full bytes.
+	for i := startByte; i < StemSize; i++ {
+		xor := a[i] ^ b[i]
+		if xor != 0 {
+			return i*8 + bits.LeadingZeros8(xor) - skip
+		}
+	}
+	return StemSize*8 - skip
 }
 
 // BuildInternalTree builds a compact internal-node sub-trie from sorted
@@ -132,9 +143,10 @@ func BuildInternalTree(skip int, ops []StemKeyValue, visit func(WriteNode)) Node
 		}
 		stemEndBit := skip + stemDepth
 
+		var downBuf [StemSize * 8]bool
 		var downBits []bool
 		if stemEndBit > downStart {
-			downBits = make([]bool, stemEndBit-downStart)
+			downBits = downBuf[:stemEndBit-downStart]
 			for i := downStart; i < stemEndBit; i++ {
 				downBits[i-downStart] = stemBitAt(thisStem, i)
 			}
@@ -190,16 +202,4 @@ func BuildInternalTree(skip int, ops []StemKeyValue, visit func(WriteNode)) Node
 
 func stemBitAt(stem *StemPath, idx int) bool {
 	return (stem[idx/8]>>(7-idx%8))&1 == 1
-}
-
-func stemPathCmp(a, b *StemPath) int {
-	for i := range a {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
-		}
-	}
-	return 0
 }

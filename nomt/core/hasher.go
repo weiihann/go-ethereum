@@ -1,6 +1,10 @@
 package core
 
-import "crypto/sha256"
+import (
+	"crypto/sha256"
+	"hash"
+	"sync"
+)
 
 const (
 	// StemSize is the number of bytes in a stem path (248 bits).
@@ -13,13 +17,19 @@ const (
 	HashSize = 32
 )
 
+var sha256Pool = sync.Pool{
+	New: func() any { return sha256.New() },
+}
+
 // HashInternal computes SHA256(left || right) matching EIP-7864's InternalNode.Hash().
 func HashInternal(data *InternalData) Node {
-	h := sha256.New()
+	h := sha256Pool.Get().(hash.Hash)
+	h.Reset()
 	h.Write(data.Left[:])
 	h.Write(data.Right[:])
 	var out Node
 	h.Sum(out[:0])
+	sha256Pool.Put(h)
 	return out
 }
 
@@ -38,7 +48,7 @@ func HashStem(stem [StemSize]byte, values [StemNodeWidth][]byte) Node {
 		}
 	}
 
-	h := sha256.New()
+	h := sha256Pool.Get().(hash.Hash)
 	for level := 1; level <= 8; level++ {
 		for i := range StemNodeWidth / (1 << level) {
 			if data[i*2] == (Node{}) && data[i*2+1] == (Node{}) {
@@ -58,5 +68,6 @@ func HashStem(stem [StemSize]byte, values [StemNodeWidth][]byte) Node {
 	h.Write(data[0][:])
 	var out Node
 	h.Sum(out[:0])
+	sha256Pool.Put(h)
 	return out
 }

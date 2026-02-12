@@ -6,6 +6,7 @@
 package db
 
 import (
+	"bytes"
 	"crypto/rand"
 	"fmt"
 	"os"
@@ -127,25 +128,24 @@ func (db *DB) SyncSeqn() uint32 {
 	return db.syncSeqn
 }
 
-// Update applies a sorted batch of stem key-value pairs to the trie.
-//
-// The pairs must be pre-sorted by stem path. The function:
-//  1. Builds a PageSet from Bitbox
-//  2. Runs the parallel PageWalker to produce updated pages
-//  3. Persists updated pages via Bitbox sync
-//  4. Returns the new root hash
+// Update applies a batch of stem key-value pairs to the trie.
+// The pairs are sorted internally before processing.
 func (db *DB) Update(ops []core.StemKeyValue) (core.Node, error) {
+	sort.Slice(ops, func(i, j int) bool {
+		return stemLess(&ops[i].Stem, &ops[j].Stem)
+	})
+	return db.UpdateSorted(ops)
+}
+
+// UpdateSorted applies a pre-sorted batch of stem key-value pairs to the trie.
+// The caller must ensure ops are sorted by stem path.
+func (db *DB) UpdateSorted(ops []core.StemKeyValue) (core.Node, error) {
 	if len(ops) == 0 {
 		return db.Root(), nil
 	}
 
 	db.mu.Lock()
 	defer db.mu.Unlock()
-
-	// Sort by stem path.
-	sort.Slice(ops, func(i, j int) bool {
-		return stemLess(&ops[i].Stem, &ops[j].Stem)
-	})
 
 	pageSetFactory := func() merkle.PageSet {
 		return newBitboxPageSet(db.bb)
@@ -249,13 +249,5 @@ func pageIDKey(id core.PageID) string {
 }
 
 func stemLess(a, b *core.StemPath) bool {
-	for i := range a {
-		if a[i] < b[i] {
-			return true
-		}
-		if a[i] > b[i] {
-			return false
-		}
-	}
-	return false
+	return bytes.Compare(a[:], b[:]) < 0
 }
