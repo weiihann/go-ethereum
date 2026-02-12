@@ -86,8 +86,9 @@ func groupAndHashStems(
 		return nil, nil
 	}
 
-	// Sort by stem, then suffix.
-	sort.Slice(updates, func(i, j int) bool {
+	// Stable sort by stem then suffix to preserve insertion order for
+	// duplicate (stem, suffix) pairs — the last queued value must win.
+	sort.SliceStable(updates, func(i, j int) bool {
 		if updates[i].Stem != updates[j].Stem {
 			return stemLess(&updates[i].Stem, &updates[j].Stem)
 		}
