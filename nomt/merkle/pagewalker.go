@@ -76,7 +76,7 @@ func NewPageWalker(root core.Node, parentPage *core.PageID) *PageWalker {
 }
 
 // AdvanceAndReplace advances to the given position and replaces the terminal
-// node there with a sub-trie built from the provided key-value pairs.
+// node there with a sub-trie built from the provided stem key-value pairs.
 //
 // The pairs must be sorted and must all share the prefix corresponding to
 // the position. An empty slice deletes the existing terminal node.
@@ -85,7 +85,7 @@ func NewPageWalker(root core.Node, parentPage *core.PageID) *PageWalker {
 func (w *PageWalker) AdvanceAndReplace(
 	pageSet PageSet,
 	newPos core.TriePosition,
-	ops []core.KeyValue,
+	ops []core.StemKeyValue,
 ) {
 	if w.lastPosition != nil {
 		w.assertForward(&newPos)
@@ -152,7 +152,7 @@ func (w *PageWalker) placeNode(node core.Node) {
 	}
 }
 
-func (w *PageWalker) replaceTerminal(pageSet PageSet, ops []core.KeyValue) {
+func (w *PageWalker) replaceTerminal(pageSet PageSet, ops []core.StemKeyValue) {
 	var existingNode core.Node
 	if w.position.IsRoot() {
 		existingNode = w.root
@@ -163,7 +163,7 @@ func (w *PageWalker) replaceTerminal(pageSet PageSet, ops []core.KeyValue) {
 
 	startDepth := w.position.Depth()
 
-	core.BuildTrie(int(w.position.Depth()), ops, func(wn core.WriteNode) {
+	core.BuildInternalTree(int(w.position.Depth()), ops, func(wn core.WriteNode) {
 		node := wn.Node
 
 		// For internal nodes, clear garbage in the sibling slot if the
@@ -443,41 +443,24 @@ func (w *PageWalker) compactUpToRoot() {
 }
 
 // compactStep performs one layer of compaction: reads the current node and
-// its sibling, then either compacts terminators/leaves upward or hashes
-// an internal node.
+// its sibling, then hashes them as an internal node. In EIP-7864, there is
+// no leaf compaction — stem hashes are opaque values that never float up.
 func (w *PageWalker) compactStep() core.Node {
 	node := w.node()
 	sibling := w.siblingNode()
-	bit := w.position.PeekLastBit()
 
-	nodeKind := core.NodeKindOf(&node)
-	sibKind := core.NodeKindOf(&sibling)
-
-	switch {
-	case nodeKind == core.NodeTerminator && sibKind == core.NodeTerminator:
+	if core.IsTerminator(&node) && core.IsTerminator(&sibling) {
 		return core.Terminator
-
-	case nodeKind == core.NodeLeaf && sibKind == core.NodeTerminator:
-		// Compact: clear this node, move leaf up.
-		w.setNode(core.Terminator)
-		return node
-
-	case nodeKind == core.NodeTerminator && sibKind == core.NodeLeaf:
-		// Compact: clear sibling, move leaf up.
-		w.position.Sibling()
-		w.setNode(core.Terminator)
-		return sibling
-
-	default:
-		// Internal: hash the two children together.
-		var id core.InternalData
-		if bit {
-			id = core.InternalData{Left: sibling, Right: node}
-		} else {
-			id = core.InternalData{Left: node, Right: sibling}
-		}
-		return core.HashInternal(&id)
 	}
+
+	bit := w.position.PeekLastBit()
+	var id core.InternalData
+	if bit {
+		id = core.InternalData{Left: sibling, Right: node}
+	} else {
+		id = core.InternalData{Left: node, Right: sibling}
+	}
+	return core.HashInternal(&id)
 }
 
 // --- page node access ---

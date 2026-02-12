@@ -8,10 +8,10 @@ import (
 	"github.com/ethereum/go-ethereum/nomt/core"
 )
 
-// childBucket groups key-value operations for a single root page child index.
+// childBucket groups stem key-value operations for a single root page child index.
 type childBucket struct {
 	childIndex uint8
-	kvs        []core.KeyValue
+	kvs        []core.StemKeyValue
 }
 
 // workerTask describes the work assigned to a single worker goroutine.
@@ -26,15 +26,15 @@ type workerResult struct {
 	err            error
 }
 
-// ParallelUpdate applies sorted key-value operations to the trie using
+// ParallelUpdate applies sorted stem key-value operations to the trie using
 // multiple worker goroutines. Each worker processes a disjoint set of root
-// page child subtrees (partitioned by the first 6 bits of each key path).
+// page child subtrees (partitioned by the first 6 bits of each stem path).
 //
 // If numWorkers <= 1 or the batch is small, falls back to single-threaded.
 // The pageSetFactory is called once per worker to create independent PageSets.
 func ParallelUpdate(
 	root core.Node,
-	kvs []core.KeyValue,
+	kvs []core.StemKeyValue,
 	numWorkers int,
 	pageSetFactory func() PageSet,
 ) Output {
@@ -115,42 +115,49 @@ func ParallelUpdate(
 
 // singleThreadedUpdate runs the trie update with a single PageWalker.
 // This is the fallback for small batches or single-worker configurations.
+//
+// Uses the same child-index partitioning as the parallel path to ensure
+// identical hash results. Without leaf compaction, splitting at depth 1
+// vs depth 7 produces different intermediate hashes, so both paths must
+// use the same splitting strategy.
 func singleThreadedUpdate(
 	root core.Node,
-	kvs []core.KeyValue,
+	kvs []core.StemKeyValue,
 	pageSet PageSet,
 ) Output {
 	walker := NewPageWalker(root, nil)
 
-	var leftKVs, rightKVs []core.KeyValue
-	for i := range kvs {
-		if kvs[i].Key[0]&0x80 == 0 {
-			leftKVs = append(leftKVs, kvs[i])
-		} else {
-			rightKVs = append(rightKVs, kvs[i])
+	buckets := partitionByChildIndex(kvs)
+	for childIdx, childKVs := range buckets {
+		if len(childKVs) == 0 {
+			continue
 		}
-	}
+		var leftKVs, rightKVs []core.StemKeyValue
+		for i := range childKVs {
+			if (childKVs[i].Stem[0]>>1)&1 == 0 {
+				leftKVs = append(leftKVs, childKVs[i])
+			} else {
+				rightKVs = append(rightKVs, childKVs[i])
+			}
+		}
 
-	if len(leftKVs) > 0 {
-		leftPos := core.NewTriePosition()
-		leftPos.Down(false)
-		walker.AdvanceAndReplace(pageSet, leftPos, leftKVs)
-	}
-	if len(rightKVs) > 0 {
-		rightPos := core.NewTriePosition()
-		rightPos.Down(true)
-		walker.AdvanceAndReplace(pageSet, rightPos, rightKVs)
+		if len(leftKVs) > 0 {
+			walker.AdvanceAndReplace(pageSet, childPosition(uint8(childIdx), false), leftKVs)
+		}
+		if len(rightKVs) > 0 {
+			walker.AdvanceAndReplace(pageSet, childPosition(uint8(childIdx), true), rightKVs)
+		}
 	}
 
 	return walker.Conclude()
 }
 
-// partitionByChildIndex buckets sorted KVs by the first 6 bits of each key
+// partitionByChildIndex buckets sorted SKVs by the first 6 bits of each stem
 // path (the root page's child index: 0-63).
-func partitionByChildIndex(kvs []core.KeyValue) [64][]core.KeyValue {
-	var buckets [64][]core.KeyValue
+func partitionByChildIndex(kvs []core.StemKeyValue) [64][]core.StemKeyValue {
+	var buckets [64][]core.StemKeyValue
 	for i := range kvs {
-		childIdx := kvs[i].Key[0] >> 2
+		childIdx := kvs[i].Stem[0] >> 2
 		buckets[childIdx] = append(buckets[childIdx], kvs[i])
 	}
 	return buckets
@@ -159,7 +166,7 @@ func partitionByChildIndex(kvs []core.KeyValue) [64][]core.KeyValue {
 // assignToWorkers distributes non-empty child buckets across numWorkers
 // contiguous ranges.
 func assignToWorkers(
-	buckets [64][]core.KeyValue,
+	buckets [64][]core.StemKeyValue,
 	numWorkers int,
 ) []workerTask {
 	var nonEmpty []childBucket
@@ -205,9 +212,9 @@ func runWorker(
 	walker := NewPageWalker(root, &rootPageID)
 
 	for _, child := range task.children {
-		var leftKVs, rightKVs []core.KeyValue
+		var leftKVs, rightKVs []core.StemKeyValue
 		for i := range child.kvs {
-			if (child.kvs[i].Key[0]>>1)&1 == 0 {
+			if (child.kvs[i].Stem[0]>>1)&1 == 0 {
 				leftKVs = append(leftKVs, child.kvs[i])
 			} else {
 				rightKVs = append(rightKVs, child.kvs[i])

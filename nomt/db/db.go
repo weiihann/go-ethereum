@@ -127,15 +127,14 @@ func (db *DB) SyncSeqn() uint32 {
 	return db.syncSeqn
 }
 
-// Update applies a batch of leaf operations to the trie.
+// Update applies a sorted batch of stem key-value pairs to the trie.
 //
-// Operations are sorted by key internally. The function:
+// The pairs must be pre-sorted by stem path. The function:
 //  1. Builds a PageSet from Bitbox
-//  2. Groups operations by their terminal node position
-//  3. Runs the PageWalker to produce updated pages
-//  4. Persists updated pages via Bitbox sync
-//  5. Returns the new root hash
-func (db *DB) Update(ops []core.LeafOp) (core.Node, error) {
+//  2. Runs the parallel PageWalker to produce updated pages
+//  3. Persists updated pages via Bitbox sync
+//  4. Returns the new root hash
+func (db *DB) Update(ops []core.StemKeyValue) (core.Node, error) {
 	if len(ops) == 0 {
 		return db.Root(), nil
 	}
@@ -143,26 +142,15 @@ func (db *DB) Update(ops []core.LeafOp) (core.Node, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// Sort ops by key path.
+	// Sort by stem path.
 	sort.Slice(ops, func(i, j int) bool {
-		return ops[i].Key != ops[j].Key && keyLess(&ops[i].Key, &ops[j].Key)
+		return stemLess(&ops[i].Stem, &ops[j].Stem)
 	})
-
-	// Convert to KeyValue (filter out deletes).
-	kvs := make([]core.KeyValue, 0, len(ops))
-	for _, op := range ops {
-		if op.Value != nil {
-			kvs = append(kvs, core.KeyValue{Key: op.Key, Value: *op.Value})
-		}
-	}
-	if len(kvs) == 0 {
-		return db.root, nil
-	}
 
 	pageSetFactory := func() merkle.PageSet {
 		return newBitboxPageSet(db.bb)
 	}
-	out := merkle.ParallelUpdate(db.root, kvs, db.numWorkers, pageSetFactory)
+	out := merkle.ParallelUpdate(db.root, ops, db.numWorkers, pageSetFactory)
 
 	// Persist updated pages.
 	walPath := filepath.Join(db.dataDir, walFileName)
@@ -260,7 +248,7 @@ func pageIDKey(id core.PageID) string {
 	return string(encoded[:])
 }
 
-func keyLess(a, b *core.KeyPath) bool {
+func stemLess(a, b *core.StemPath) bool {
 	for i := range a {
 		if a[i] < b[i] {
 			return true

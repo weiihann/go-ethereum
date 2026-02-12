@@ -31,9 +31,8 @@ func TestReopenPreservesState(t *testing.T) {
 	db, err := Open(dir, DefaultConfig())
 	require.NoError(t, err)
 
-	v := core.ValueHash{0x01}
-	newRoot, err := db.Update([]core.LeafOp{
-		{Key: makeKey(0x10), Value: &v},
+	newRoot, err := db.Update([]core.StemKeyValue{
+		{Stem: makeStem(0x10), Hash: makeHash(0x01)},
 	})
 	require.NoError(t, err)
 	require.False(t, core.IsTerminator(&newRoot))
@@ -55,15 +54,12 @@ func TestUpdateSingleKey(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	v := core.ValueHash{0x42}
-	kp := makeKey(0x10) // starts with 0 bit
-
-	newRoot, err := db.Update([]core.LeafOp{
-		{Key: kp, Value: &v},
+	newRoot, err := db.Update([]core.StemKeyValue{
+		{Stem: makeStem(0x10), Hash: makeHash(0x42)},
 	})
 	require.NoError(t, err)
 
-	assert.True(t, core.IsLeaf(&newRoot))
+	assert.False(t, core.IsTerminator(&newRoot))
 	assert.Equal(t, newRoot, db.Root())
 }
 
@@ -73,22 +69,20 @@ func TestUpdateMultipleKeys(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	v := core.ValueHash{0x01}
-	ops := []core.LeafOp{
-		{Key: makeKey(0x10), Value: &v},
-		{Key: makeKey(0x80), Value: &v},
+	ops := []core.StemKeyValue{
+		{Stem: makeStem(0x10), Hash: makeHash(0x01)},
+		{Stem: makeStem(0x80), Hash: makeHash(0x02)},
 	}
 
 	newRoot, err := db.Update(ops)
 	require.NoError(t, err)
-	assert.True(t, core.IsInternal(&newRoot))
+	assert.False(t, core.IsTerminator(&newRoot))
 }
 
 func TestUpdateDeterministic(t *testing.T) {
-	v := core.ValueHash{0x01}
-	ops := []core.LeafOp{
-		{Key: makeKey(0x10), Value: &v},
-		{Key: makeKey(0x80), Value: &v},
+	ops := []core.StemKeyValue{
+		{Stem: makeStem(0x10), Hash: makeHash(0x01)},
+		{Stem: makeStem(0x80), Hash: makeHash(0x02)},
 	}
 
 	run := func() core.Node {
@@ -118,22 +112,21 @@ func TestUpdateEmptyOps(t *testing.T) {
 	assert.Equal(t, core.Terminator, root)
 }
 
-func TestUpdateSortsByKey(t *testing.T) {
+func TestUpdateSortsByStem(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(dir, DefaultConfig())
 	require.NoError(t, err)
 	defer db.Close()
 
-	v := core.ValueHash{0x01}
-	// Provide keys in reverse order — should still work.
-	ops := []core.LeafOp{
-		{Key: makeKey(0x80), Value: &v},
-		{Key: makeKey(0x10), Value: &v},
+	// Provide stems in reverse order — should still work.
+	ops := []core.StemKeyValue{
+		{Stem: makeStem(0x80), Hash: makeHash(0x01)},
+		{Stem: makeStem(0x10), Hash: makeHash(0x02)},
 	}
 
 	root, err := db.Update(ops)
 	require.NoError(t, err)
-	assert.True(t, core.IsInternal(&root))
+	assert.False(t, core.IsTerminator(&root))
 }
 
 func TestSyncSeqnIncrements(t *testing.T) {
@@ -144,24 +137,33 @@ func TestSyncSeqnIncrements(t *testing.T) {
 
 	assert.Equal(t, uint32(0), db.SyncSeqn())
 
-	v := core.ValueHash{0x01}
-	_, err = db.Update([]core.LeafOp{
-		{Key: makeKey(0x10), Value: &v},
+	_, err = db.Update([]core.StemKeyValue{
+		{Stem: makeStem(0x10), Hash: makeHash(0x01)},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, uint32(1), db.SyncSeqn())
 
-	_, err = db.Update([]core.LeafOp{
-		{Key: makeKey(0x80), Value: &v},
+	_, err = db.Update([]core.StemKeyValue{
+		{Stem: makeStem(0x80), Hash: makeHash(0x02)},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), db.SyncSeqn())
 }
 
-func makeKey(b byte) core.KeyPath {
-	var kp core.KeyPath
-	for i := range kp {
-		kp[i] = b
+func makeStem(b byte) core.StemPath {
+	var sp core.StemPath
+	for i := range sp {
+		sp[i] = b
 	}
-	return kp
+	return sp
+}
+
+func makeHash(b byte) core.Node {
+	var h core.Node
+	for i := range h {
+		h[i] = b ^ byte(i)
+	}
+	// Ensure non-zero to avoid terminator.
+	h[0] |= 0x01
+	return h
 }
