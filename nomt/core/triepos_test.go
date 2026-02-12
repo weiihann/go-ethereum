@@ -158,13 +158,23 @@ func TestTriePositionChildPageIndex(t *testing.T) {
 	assert.Equal(t, uint8(0), p.ChildPageIndex())
 }
 
-func TestTriePositionMax255Depth(t *testing.T) {
+func TestTriePositionMax248Depth(t *testing.T) {
 	p := NewTriePosition()
-	for range 255 {
+	for range 247 {
 		p.Down(true)
 	}
-	assert.Equal(t, uint16(255), p.Depth())
-	// One more descent should work (to 256).
+	assert.Equal(t, uint16(247), p.Depth())
+	// One more descent should work (to 248, the max).
 	p.Down(false)
-	assert.Equal(t, uint16(256), p.Depth())
+	assert.Equal(t, uint16(248), p.Depth())
+}
+
+func TestTriePositionPanicsBeyond248(t *testing.T) {
+	p := NewTriePosition()
+	for range 248 {
+		p.Down(true)
+	}
+	assert.Equal(t, uint16(248), p.Depth())
+	// Going one more should panic.
+	assert.Panics(t, func() { p.Down(false) })
 }

@@ -7,43 +7,45 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSharedBits(t *testing.T) {
+func TestStemSharedBits(t *testing.T) {
 	tests := []struct {
 		name     string
-		a, b     KeyPath
+		a, b     StemPath
 		skip     int
 		expected int
 	}{
-		{"identical", KeyPath{0xFF}, KeyPath{0xFF}, 0, 256},
-		{"differ at bit 0", KeyPath{0x80}, KeyPath{0x00}, 0, 0},
-		{"share 4 bits", KeyPath{0xF0}, KeyPath{0xF8}, 0, 4},
-		{"with skip", KeyPath{0xF0}, KeyPath{0xF8}, 4, 0},
+		{"identical", StemPath{0xFF}, StemPath{0xFF}, 0, 248},
+		{"differ at bit 0", StemPath{0x80}, StemPath{0x00}, 0, 0},
+		{"share 4 bits", StemPath{0xF0}, StemPath{0xF8}, 0, 4},
+		{"with skip", StemPath{0xF0}, StemPath{0xF8}, 4, 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := SharedBits(&tt.a, &tt.b, tt.skip)
+			got := StemSharedBits(&tt.a, &tt.b, tt.skip)
 			assert.Equal(t, tt.expected, got)
 		})
 	}
 }
 
-// makeKV creates a (key, value) pair where both key and value are filled with b.
-func makeKV(b byte) KeyValue {
-	var key KeyPath
-	var val ValueHash
-	for i := range key {
-		key[i] = b
+// makeSKV creates a StemKeyValue where the stem is filled with b and
+// the hash is a deterministic non-zero value derived from b.
+func makeSKV(b byte) StemKeyValue {
+	var stem StemPath
+	for i := range stem {
+		stem[i] = b
 	}
-	for i := range val {
-		val[i] = b
+	// Use a simple deterministic hash for testing.
+	var hash Node
+	for i := range hash {
+		hash[i] = b ^ byte(i)
 	}
-	return KeyValue{Key: key, Value: val}
+	return StemKeyValue{Stem: stem, Hash: hash}
 }
 
-func TestBuildTrieEmpty(t *testing.T) {
+func TestBuildInternalTreeEmpty(t *testing.T) {
 	var visited []WriteNode
-	root := BuildTrie(0, nil, func(wn WriteNode) {
+	root := BuildInternalTree(0, nil, func(wn WriteNode) {
 		visited = append(visited, wn)
 	})
 
@@ -52,187 +54,99 @@ func TestBuildTrieEmpty(t *testing.T) {
 	assert.Equal(t, Terminator, root)
 }
 
-func TestBuildTrieSingleLeaf(t *testing.T) {
-	kv := makeKV(0xFF)
+func TestBuildInternalTreeSingleStem(t *testing.T) {
+	skv := makeSKV(0xFF)
 	var visited []WriteNode
-	root := BuildTrie(0, []KeyValue{kv}, func(wn WriteNode) {
+	root := BuildInternalTree(0, []StemKeyValue{skv}, func(wn WriteNode) {
 		visited = append(visited, wn)
 	})
 
 	require.Len(t, visited, 1)
-	assert.Equal(t, WriteNodeLeaf, visited[0].Kind)
+	assert.Equal(t, WriteNodeStem, visited[0].Kind)
 	assert.False(t, visited[0].GoUp)
-	assert.True(t, IsLeaf(&root))
-
-	expected := HashLeaf(&LeafData{
-		KeyPath:   kv.Key,
-		ValueHash: kv.Value,
-	})
-	assert.Equal(t, expected, root)
+	assert.False(t, IsTerminator(&root))
+	assert.Equal(t, skv.Hash, root)
 }
 
-func TestBuildTrieTwoLeaves(t *testing.T) {
-	// Keys: 0x00... and 0xFF... differ at bit 0.
-	kv0 := makeKV(0x00)
-	kvF := makeKV(0xFF)
+func TestBuildInternalTreeTwoStems(t *testing.T) {
+	// Stems: 0x00... and 0xFF... differ at bit 0.
+	skv0 := makeSKV(0x00)
+	skvF := makeSKV(0xFF)
 
 	var visited []WriteNode
-	root := BuildTrie(0, []KeyValue{kv0, kvF}, func(wn WriteNode) {
+	root := BuildInternalTree(0, []StemKeyValue{skv0, skvF}, func(wn WriteNode) {
 		visited = append(visited, wn)
 	})
 
-	// Should visit: leaf_0, leaf_F, internal(leaf_0, leaf_F).
+	// Should visit: stem_0, stem_F, internal(stem_0, stem_F).
 	require.Len(t, visited, 3)
-	assert.Equal(t, WriteNodeLeaf, visited[0].Kind)
-	assert.Equal(t, WriteNodeLeaf, visited[1].Kind)
+	assert.Equal(t, WriteNodeStem, visited[0].Kind)
+	assert.Equal(t, WriteNodeStem, visited[1].Kind)
 	assert.Equal(t, WriteNodeInternal, visited[2].Kind)
 
-	leaf0 := HashLeaf(&LeafData{KeyPath: kv0.Key, ValueHash: kv0.Value})
-	leafF := HashLeaf(&LeafData{KeyPath: kvF.Key, ValueHash: kvF.Value})
-	expected := HashInternal(&InternalData{Left: leaf0, Right: leafF})
-
+	expected := HashInternal(&InternalData{Left: skv0.Hash, Right: skvF.Hash})
 	assert.Equal(t, expected, root)
-	assert.True(t, IsInternal(&root))
 }
 
-func TestBuildTrieThreeLeaves(t *testing.T) {
-	// Three keys sharing common prefixes.
-	// 0b00010001... = 0x11
-	// 0b00010010... = 0x12
-	// 0b00010100... = 0x14
-	kv1 := makeKV(0x11)
-	kv2 := makeKV(0x12)
-	kv3 := makeKV(0x14)
+func TestBuildInternalTreeThreeStems(t *testing.T) {
+	skv1 := makeSKV(0x11)
+	skv2 := makeSKV(0x12)
+	skv3 := makeSKV(0x14)
 
 	var visited []WriteNode
-	root := BuildTrie(0, []KeyValue{kv1, kv2, kv3}, func(wn WriteNode) {
+	root := BuildInternalTree(0, []StemKeyValue{skv1, skv2, skv3}, func(wn WriteNode) {
 		visited = append(visited, wn)
 	})
 
-	assert.True(t, IsInternal(&root) || IsLeaf(&root),
-		"root should be non-terminator")
+	assert.False(t, IsTerminator(&root))
 
 	// Verify determinism.
 	var visited2 []WriteNode
-	root2 := BuildTrie(0, []KeyValue{kv1, kv2, kv3}, func(wn WriteNode) {
+	root2 := BuildInternalTree(0, []StemKeyValue{skv1, skv2, skv3}, func(wn WriteNode) {
 		visited2 = append(visited2, wn)
 	})
 	assert.Equal(t, root, root2)
 	assert.Equal(t, len(visited), len(visited2))
 }
 
-func TestBuildTrieWithSkip(t *testing.T) {
-	// Keys all share prefix 0001 (4 bits): 0x11, 0x12, 0x14.
-	kv1 := makeKV(0x11)
-	kv2 := makeKV(0x12)
-	kv3 := makeKV(0x14)
+func TestBuildInternalTreeWithSkip(t *testing.T) {
+	skv1 := makeSKV(0x11)
+	skv2 := makeSKV(0x12)
+	skv3 := makeSKV(0x14)
 
 	var visited []WriteNode
-	root := BuildTrie(4, []KeyValue{kv1, kv2, kv3}, func(wn WriteNode) {
+	root := BuildInternalTree(4, []StemKeyValue{skv1, skv2, skv3}, func(wn WriteNode) {
 		visited = append(visited, wn)
 	})
 
-	// Should produce a non-trivial sub-trie.
 	assert.False(t, IsTerminator(&root))
 	assert.True(t, len(visited) >= 3)
 }
 
-func TestBuildTrieMultiValue(t *testing.T) {
-	// Matches the Rust multi_value test pattern.
-	// 0b00010000 = 0x10
-	// 0b00100000 = 0x20
-	// 0b01000000 = 0x40
-	// 0b10100000 = 0xA0
-	// 0b10110000 = 0xB0
-	kvA := makeKV(0x10)
-	kvB := makeKV(0x20)
-	kvC := makeKV(0x40)
-	kvD := makeKV(0xA0)
-	kvE := makeKV(0xB0)
+func TestBuildInternalTreeMultiValue(t *testing.T) {
+	skvA := makeSKV(0x10)
+	skvB := makeSKV(0x20)
+	skvC := makeSKV(0x40)
+	skvD := makeSKV(0xA0)
+	skvE := makeSKV(0xB0)
 
 	var nodes []Node
-	root := BuildTrie(0, []KeyValue{kvA, kvB, kvC, kvD, kvE},
+	root := BuildInternalTree(0, []StemKeyValue{skvA, skvB, skvC, skvD, skvE},
 		func(wn WriteNode) {
 			nodes = append(nodes, wn.Node)
 		})
 
 	// Manually verify the trie structure.
-	leafA := HashLeaf(&LeafData{KeyPath: kvA.Key, ValueHash: kvA.Value})
-	leafB := HashLeaf(&LeafData{KeyPath: kvB.Key, ValueHash: kvB.Value})
-	leafC := HashLeaf(&LeafData{KeyPath: kvC.Key, ValueHash: kvC.Value})
-	leafD := HashLeaf(&LeafData{KeyPath: kvD.Key, ValueHash: kvD.Value})
-	leafE := HashLeaf(&LeafData{KeyPath: kvE.Key, ValueHash: kvE.Value})
+	// A=0x10 (0001...), B=0x20 (0010...), C=0x40 (0100...)
+	// D=0xA0 (1010...), E=0xB0 (1011...)
+	branchAB := HashInternal(&InternalData{Left: skvA.Hash, Right: skvB.Hash})
+	branchABC := HashInternal(&InternalData{Left: branchAB, Right: skvC.Hash})
 
-	branchAB := HashInternal(&InternalData{Left: leafA, Right: leafB})
-	branchABC := HashInternal(&InternalData{Left: branchAB, Right: leafC})
-
-	branchDE1 := HashInternal(&InternalData{Left: leafD, Right: leafE})
+	branchDE1 := HashInternal(&InternalData{Left: skvD.Hash, Right: skvE.Hash})
 	branchDE2 := HashInternal(&InternalData{Left: Terminator, Right: branchDE1})
 	branchDE3 := HashInternal(&InternalData{Left: branchDE2, Right: Terminator})
 
 	expected := HashInternal(&InternalData{Left: branchABC, Right: branchDE3})
 
 	assert.Equal(t, expected, root)
-}
-
-func TestLeafOpsSplicedNoExisting(t *testing.T) {
-	val := ValueHash{0x01}
-	ops := []LeafOp{
-		{Key: KeyPath{0x10}, Value: &val},
-		{Key: KeyPath{0x20}, Value: &val},
-	}
-
-	result := LeafOpsSpliced(nil, ops)
-	assert.Len(t, result, 2)
-}
-
-func TestLeafOpsSplicedWithExistingLeaf(t *testing.T) {
-	val := ValueHash{0x01}
-	ops := []LeafOp{
-		{Key: KeyPath{0x10}, Value: &val},
-		{Key: KeyPath{0x30}, Value: &val},
-	}
-
-	existing := &LeafData{
-		KeyPath:   KeyPath{0x20},
-		ValueHash: ValueHash{0x02},
-	}
-
-	result := LeafOpsSpliced(existing, ops)
-	assert.Len(t, result, 3)
-	assert.Equal(t, KeyPath{0x10}, result[0].Key)
-	assert.Equal(t, KeyPath{0x20}, result[1].Key)
-	assert.Equal(t, KeyPath{0x30}, result[2].Key)
-}
-
-func TestLeafOpsSplicedDeleteFiltered(t *testing.T) {
-	val := ValueHash{0x01}
-	ops := []LeafOp{
-		{Key: KeyPath{0x10}, Value: &val},
-		{Key: KeyPath{0x20}, Value: nil}, // delete
-		{Key: KeyPath{0x30}, Value: &val},
-	}
-
-	result := LeafOpsSpliced(nil, ops)
-	assert.Len(t, result, 2)
-	assert.Equal(t, KeyPath{0x10}, result[0].Key)
-	assert.Equal(t, KeyPath{0x30}, result[1].Key)
-}
-
-func TestLeafOpsSplicedExistingKeyInOps(t *testing.T) {
-	val := ValueHash{0x01}
-	newVal := ValueHash{0x99}
-	ops := []LeafOp{
-		{Key: KeyPath{0x20}, Value: &newVal},
-	}
-
-	existing := &LeafData{
-		KeyPath:   KeyPath{0x20},
-		ValueHash: val,
-	}
-
-	// The existing leaf should NOT be spliced because its key is in ops.
-	result := LeafOpsSpliced(existing, ops)
-	assert.Len(t, result, 1)
-	assert.Equal(t, newVal, result[0].Value)
 }
