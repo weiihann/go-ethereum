@@ -246,7 +246,7 @@ func (t *NomtTrie) Hash() common.Hash {
 	// Update the page tree for persistent storage.
 	// stemKVs is already sorted, so skip the redundant sort in db.Update.
 	if len(stemKVs) > 0 {
-		if _, err := t.nomtDB.UpdateSorted(stemKVs); err != nil {
+		if _, err := t.nomtDB.Update(stemKVs); err != nil {
 			log.Error("NOMT page tree update failed", "err", err)
 			return t.root
 		}
