@@ -17,15 +17,8 @@
 package live
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"net"
 	"slices"
-	"strconv"
-	"sync"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -34,15 +27,6 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethpandaops/xatu/pkg/proto/xatu"
-	"github.com/google/uuid"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/encoding/gzip"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/protobuf/types/known/timestamppb"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func init() {
@@ -78,143 +62,60 @@ type stateSizeDelta struct {
 	StorageTrienodeBytesDelta int64
 }
 
-// Default configuration values
-const (
-	defaultMaxQueueSize       = 51200
-	defaultBatchTimeout       = 5 * time.Second
-	defaultExportTimeout      = 30 * time.Second
-	defaultMaxExportBatchSize = 512
-	defaultWorkers            = 1
-)
+// JSON log output types following the "Slow block" pattern in blockchain_stats.go.
+// These structs control the exact JSON format captured by the sentry-logs Vector pipeline.
 
-type stateSizeTracer struct {
-	mu     sync.Mutex
-	config stateSizeTracerConfig
-
-	// gRPC connection
-	conn   *grpc.ClientConn
-	client xatu.EventIngesterClient
-
-	// Event batching
-	eventCh chan *xatu.DecoratedEvent
-	done    chan struct{}
-	wg      sync.WaitGroup
-
-	// Client metadata
-	clientID string
+type stateMetricsLog struct {
+	Level           string            `json:"level"`
+	Msg             string            `json:"msg"`
+	BlockNumber     uint64            `json:"block_number"`
+	StateRoot       string            `json:"state_root"`
+	ParentStateRoot string            `json:"parent_state_root"`
+	Delta           stateMetricsDelta `json:"delta"`
+	Depth           stateMetricsDepth `json:"depth"`
 }
 
-type stateSizeTracerConfig struct {
-	// Xatu server configuration
-	Address            string            `json:"address"`            // Required: Xatu server address
-	Headers            map[string]string `json:"headers"`            // Optional: HTTP headers (auth)
-	TLS                bool              `json:"tls"`                // Use TLS connection
-	MaxQueueSize       int               `json:"maxQueueSize"`       // Event queue size
-	BatchTimeout       string            `json:"batchTimeout"`       // Batch timeout duration
-	ExportTimeout      string            `json:"exportTimeout"`      // Export timeout duration
-	MaxExportBatchSize int               `json:"maxExportBatchSize"` // Max batch size
-	Workers            int               `json:"workers"`            // Worker count
-
-	// Client identification
-	ClientName    string `json:"clientName"`    // Client name for metadata
-	ClientVersion string `json:"clientVersion"` // Client version
-	NetworkID     uint64 `json:"networkId"`     // Network ID
-	NetworkName   string `json:"networkName"`   // Network name
-
-	// Parsed durations
-	batchTimeout  time.Duration
-	exportTimeout time.Duration
+type stateMetricsDelta struct {
+	Account              int64 `json:"account"`
+	AccountBytes         int64 `json:"account_bytes"`
+	AccountTrienode      int64 `json:"account_trienode"`
+	AccountTrienodeBytes int64 `json:"account_trienode_bytes"`
+	ContractCode         int64 `json:"contract_code"`
+	ContractCodeBytes    int64 `json:"contract_code_bytes"`
+	Storage              int64 `json:"storage"`
+	StorageBytes         int64 `json:"storage_bytes"`
+	StorageTrienode      int64 `json:"storage_trienode"`
+	StorageTrienodeBytes int64 `json:"storage_trienode_bytes"`
 }
+
+type stateMetricsDepth struct {
+	TotalAccountWrittenNodes uint64           `json:"total_account_written_nodes"`
+	TotalAccountWrittenBytes uint64           `json:"total_account_written_bytes"`
+	TotalAccountDeletedNodes uint64           `json:"total_account_deleted_nodes"`
+	TotalAccountDeletedBytes uint64           `json:"total_account_deleted_bytes"`
+	TotalStorageWrittenNodes uint64           `json:"total_storage_written_nodes"`
+	TotalStorageWrittenBytes uint64           `json:"total_storage_written_bytes"`
+	TotalStorageDeletedNodes uint64           `json:"total_storage_deleted_nodes"`
+	TotalStorageDeletedBytes uint64           `json:"total_storage_deleted_bytes"`
+	AccountWrittenNodes      map[uint8]uint64 `json:"account_written_nodes"`
+	AccountWrittenBytes      map[uint8]uint64 `json:"account_written_bytes"`
+	AccountDeletedNodes      map[uint8]uint64 `json:"account_deleted_nodes"`
+	AccountDeletedBytes      map[uint8]uint64 `json:"account_deleted_bytes"`
+	StorageWrittenNodes      map[uint8]uint64 `json:"storage_written_nodes"`
+	StorageWrittenBytes      map[uint8]uint64 `json:"storage_written_bytes"`
+	StorageDeletedNodes      map[uint8]uint64 `json:"storage_deleted_nodes"`
+	StorageDeletedBytes      map[uint8]uint64 `json:"storage_deleted_bytes"`
+}
+
+type stateSizeTracer struct{}
 
 func newStateSizeTracer(cfg json.RawMessage) (*tracing.Hooks, error) {
-	var config stateSizeTracerConfig
-	if err := json.Unmarshal(cfg, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config: %w", err)
-	}
+	t := &stateSizeTracer{}
 
-	if config.Address == "" {
-		return nil, errors.New("statesize tracer: xatu server address is required")
-	}
-
-	// Apply defaults
-	if config.MaxQueueSize == 0 {
-		config.MaxQueueSize = defaultMaxQueueSize
-	}
-	if config.MaxExportBatchSize == 0 {
-		config.MaxExportBatchSize = defaultMaxExportBatchSize
-	}
-	if config.Workers == 0 {
-		config.Workers = defaultWorkers
-	}
-
-	// Parse durations
-	var err error
-	if config.BatchTimeout != "" {
-		config.batchTimeout, err = time.ParseDuration(config.BatchTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse batchTimeout: %w", err)
-		}
-	} else {
-		config.batchTimeout = defaultBatchTimeout
-	}
-
-	if config.ExportTimeout != "" {
-		config.exportTimeout, err = time.ParseDuration(config.ExportTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse exportTimeout: %w", err)
-		}
-	} else {
-		config.exportTimeout = defaultExportTimeout
-	}
-
-	// Set default client name
-	if config.ClientName == "" {
-		config.ClientName = "geth"
-	}
-
-	// Create gRPC connection
-	var opts []grpc.DialOption
-	if config.TLS {
-		host, _, err := net.SplitHostPort(config.Address)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse address for TLS: %w", err)
-		}
-		opts = append(opts, grpc.WithTransportCredentials(credentials.NewClientTLSFromCert(nil, host)))
-	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	conn, err := grpc.NewClient(config.Address, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gRPC connection: %w", err)
-	}
-
-	t := &stateSizeTracer{
-		config:   config,
-		conn:     conn,
-		client:   xatu.NewEventIngesterClient(conn),
-		eventCh:  make(chan *xatu.DecoratedEvent, config.MaxQueueSize),
-		done:     make(chan struct{}),
-		clientID: uuid.New().String(),
-	}
-
-	// Start batch processor workers
-	for i := 0; i < config.Workers; i++ {
-		t.wg.Add(1)
-		go t.runBatchProcessor()
-	}
-
-	log.Info("State size tracer initialized",
-		"address", config.Address,
-		"tls", config.TLS,
-		"workers", config.Workers,
-		"maxQueueSize", config.MaxQueueSize,
-		"batchTimeout", config.batchTimeout,
-	)
+	log.Info("State size tracer initialized (sentry-logs mode)")
 
 	return &tracing.Hooks{
 		OnStateUpdate: t.onStateUpdate,
-		OnClose:       t.onClose,
 	}, nil
 }
 
@@ -226,173 +127,91 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 	// Calculate state size delta and depth stats
 	delta, accountDepthCreated, storageDepthCreated, accountDepthDeleted, storageDepthDeleted := calculateStateSizeDelta(update)
 
-	// Create decorated event
-	event := s.createDecoratedEvent(update, delta, accountDepthCreated, storageDepthCreated, accountDepthDeleted, storageDepthDeleted)
+	// Build depth maps (only non-zero entries)
+	depth := buildDepthMetrics(accountDepthCreated, storageDepthCreated, accountDepthDeleted, storageDepthDeleted)
 
-	// Queue for sending (non-blocking)
-	select {
-	case s.eventCh <- event:
-	default:
-		log.Warn("State size tracer event queue full, dropping event", "block", update.BlockNumber)
+	// Build and emit JSON log (same pattern as logSlow in blockchain_stats.go)
+	entry := stateMetricsLog{
+		Level:           "info",
+		Msg:             "State metrics",
+		BlockNumber:     update.BlockNumber,
+		StateRoot:       update.Root.Hex(),
+		ParentStateRoot: update.OriginRoot.Hex(),
+		Delta: stateMetricsDelta{
+			Account:              delta.AccountDelta,
+			AccountBytes:         delta.AccountBytesDelta,
+			AccountTrienode:      delta.AccountTrienodeDelta,
+			AccountTrienodeBytes: delta.AccountTrienodeBytesDelta,
+			ContractCode:         delta.ContractCodeDelta,
+			ContractCodeBytes:    delta.ContractCodeBytesDelta,
+			Storage:              delta.StorageDelta,
+			StorageBytes:         delta.StorageBytesDelta,
+			StorageTrienode:      delta.StorageTrienodeDelta,
+			StorageTrienodeBytes: delta.StorageTrienodeBytesDelta,
+		},
+		Depth: depth,
 	}
+
+	jsonBytes, err := json.Marshal(entry)
+	if err != nil {
+		log.Error("Failed to marshal state metrics log", "error", err)
+		return
+	}
+	log.Info(string(jsonBytes))
 }
 
-func (s *stateSizeTracer) createDecoratedEvent(
-	update *tracing.StateUpdate,
-	delta stateSizeDelta,
-	accountDepthCreated, storageDepthCreated, accountDepthDeleted, storageDepthDeleted [65]depthStats,
-) *xatu.DecoratedEvent {
-	now := time.Now()
-
-	// Build the state metrics message
-	metrics := &xatu.ExecutionBlockStateMetrics{
-		BlockNumber: strconv.FormatUint(update.BlockNumber, 10),
-		StateRoot:   update.Root.Hex(),
-		OriginRoot:  update.OriginRoot.Hex(),
-
-		AccountDelta:              strconv.FormatInt(delta.AccountDelta, 10),
-		AccountBytesDelta:         strconv.FormatInt(delta.AccountBytesDelta, 10),
-		AccountTrienodeDelta:      strconv.FormatInt(delta.AccountTrienodeDelta, 10),
-		AccountTrienodeBytesDelta: strconv.FormatInt(delta.AccountTrienodeBytesDelta, 10),
-		ContractCodeDelta:         strconv.FormatInt(delta.ContractCodeDelta, 10),
-		ContractCodeBytesDelta:    strconv.FormatInt(delta.ContractCodeBytesDelta, 10),
-		StorageDelta:              strconv.FormatInt(delta.StorageDelta, 10),
-		StorageBytesDelta:         strconv.FormatInt(delta.StorageBytesDelta, 10),
-		StorageTrienodeDelta:      strconv.FormatInt(delta.StorageTrienodeDelta, 10),
-		StorageTrienodeBytesDelta: strconv.FormatInt(delta.StorageTrienodeBytesDelta, 10),
-
-		AccountTrieDepthCreated: convertDepthStats(accountDepthCreated),
-		StorageTrieDepthCreated: convertDepthStats(storageDepthCreated),
-		AccountTrieDepthDeleted: convertDepthStats(accountDepthDeleted),
-		StorageTrieDepthDeleted: convertDepthStats(storageDepthDeleted),
+// buildDepthMetrics converts [65]depthStats arrays into map-based metrics with totals.
+func buildDepthMetrics(
+	accountCreated, storageCreated, accountDeleted, storageDeleted [65]depthStats,
+) stateMetricsDepth {
+	d := stateMetricsDepth{
+		AccountWrittenNodes: make(map[uint8]uint64, 10),
+		AccountWrittenBytes: make(map[uint8]uint64, 10),
+		AccountDeletedNodes: make(map[uint8]uint64, 10),
+		AccountDeletedBytes: make(map[uint8]uint64, 10),
+		StorageWrittenNodes: make(map[uint8]uint64, 10),
+		StorageWrittenBytes: make(map[uint8]uint64, 10),
+		StorageDeletedNodes: make(map[uint8]uint64, 10),
+		StorageDeletedBytes: make(map[uint8]uint64, 10),
 	}
 
-	// Build client metadata
-	clientMeta := &xatu.ClientMeta{
-		Name:       s.config.ClientName,
-		Version:    s.config.ClientVersion,
-		Id:         s.clientID,
-		ModuleName: xatu.ModuleName_EL_TRACER,
-		Ethereum: &xatu.ClientMeta_Ethereum{
-			Network: &xatu.ClientMeta_Ethereum_Network{
-				Name: s.config.NetworkName,
-				Id:   s.config.NetworkID,
-			},
-			Execution: &xatu.ClientMeta_Ethereum_Execution{
-				Implementation: s.config.ClientName,
-				Version:        s.config.ClientVersion,
-			},
-		},
-	}
+	for i := range 65 {
+		depth := uint8(i)
 
-	return &xatu.DecoratedEvent{
-		Event: &xatu.Event{
-			Name:     xatu.Event_EXECUTION_BLOCK_STATE_METRICS,
-			DateTime: timestamppb.New(now),
-			Id:       uuid.New().String(),
-		},
-		Meta: &xatu.Meta{
-			Client: clientMeta,
-		},
-		Data: &xatu.DecoratedEvent_ExecutionBlockStateMetrics{
-			ExecutionBlockStateMetrics: metrics,
-		},
-	}
-}
-
-// convertDepthStats converts [65]depthStats to []*xatu.DepthStats, including only non-zero entries.
-func convertDepthStats(stats [65]depthStats) []*xatu.DepthStats {
-	result := make([]*xatu.DepthStats, 0, 10) // pre-allocate for typical case
-	for i, s := range stats {
-		if s.Count > 0 || s.Bytes > 0 {
-			result = append(result, &xatu.DepthStats{
-				Depth: wrapperspb.UInt32(uint32(i)),
-				Count: strconv.FormatInt(s.Count, 10),
-				Bytes: strconv.FormatInt(s.Bytes, 10),
-			})
+		if accountCreated[i].Count > 0 {
+			d.AccountWrittenNodes[depth] = uint64(accountCreated[i].Count)
+			d.TotalAccountWrittenNodes += uint64(accountCreated[i].Count)
+		}
+		if accountCreated[i].Bytes > 0 {
+			d.AccountWrittenBytes[depth] = uint64(accountCreated[i].Bytes)
+			d.TotalAccountWrittenBytes += uint64(accountCreated[i].Bytes)
+		}
+		if accountDeleted[i].Count > 0 {
+			d.AccountDeletedNodes[depth] = uint64(accountDeleted[i].Count)
+			d.TotalAccountDeletedNodes += uint64(accountDeleted[i].Count)
+		}
+		if accountDeleted[i].Bytes > 0 {
+			d.AccountDeletedBytes[depth] = uint64(accountDeleted[i].Bytes)
+			d.TotalAccountDeletedBytes += uint64(accountDeleted[i].Bytes)
+		}
+		if storageCreated[i].Count > 0 {
+			d.StorageWrittenNodes[depth] = uint64(storageCreated[i].Count)
+			d.TotalStorageWrittenNodes += uint64(storageCreated[i].Count)
+		}
+		if storageCreated[i].Bytes > 0 {
+			d.StorageWrittenBytes[depth] = uint64(storageCreated[i].Bytes)
+			d.TotalStorageWrittenBytes += uint64(storageCreated[i].Bytes)
+		}
+		if storageDeleted[i].Count > 0 {
+			d.StorageDeletedNodes[depth] = uint64(storageDeleted[i].Count)
+			d.TotalStorageDeletedNodes += uint64(storageDeleted[i].Count)
+		}
+		if storageDeleted[i].Bytes > 0 {
+			d.StorageDeletedBytes[depth] = uint64(storageDeleted[i].Bytes)
+			d.TotalStorageDeletedBytes += uint64(storageDeleted[i].Bytes)
 		}
 	}
-	return result
-}
-
-func (s *stateSizeTracer) runBatchProcessor() {
-	defer s.wg.Done()
-
-	batch := make([]*xatu.DecoratedEvent, 0, s.config.MaxExportBatchSize)
-	timer := time.NewTimer(s.config.batchTimeout)
-	defer timer.Stop()
-
-	sendBatch := func() {
-		if len(batch) == 0 {
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), s.config.exportTimeout)
-		defer cancel()
-
-		// Add headers to context
-		if len(s.config.Headers) > 0 {
-			md := metadata.New(s.config.Headers)
-			ctx = metadata.NewOutgoingContext(ctx, md)
-		}
-
-		req := &xatu.CreateEventsRequest{
-			Events: batch,
-		}
-
-		resp, err := s.client.CreateEvents(ctx, req, grpc.UseCompressor(gzip.Name))
-		if err != nil {
-			log.Warn("Failed to send state size events to Xatu", "error", err, "count", len(batch))
-		} else {
-			log.Debug("Sent state size events to Xatu",
-				"sent", len(batch),
-				"ingested", resp.GetEventsIngested().GetValue(),
-			)
-		}
-
-		// Reset batch
-		batch = batch[:0]
-	}
-
-	for {
-		select {
-		case <-s.done:
-			// Final flush
-			sendBatch()
-			return
-
-		case event := <-s.eventCh:
-			batch = append(batch, event)
-			if len(batch) >= s.config.MaxExportBatchSize {
-				sendBatch()
-				timer.Reset(s.config.batchTimeout)
-			}
-
-		case <-timer.C:
-			sendBatch()
-			timer.Reset(s.config.batchTimeout)
-		}
-	}
-}
-
-func (s *stateSizeTracer) onClose() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Signal workers to stop
-	close(s.done)
-
-	// Wait for workers to finish
-	s.wg.Wait()
-
-	// Close gRPC connection
-	if s.conn != nil {
-		if err := s.conn.Close(); err != nil {
-			log.Warn("Failed to close gRPC connection", "error", err)
-		}
-	}
-
-	log.Info("State size tracer closed")
+	return d
 }
 
 // calculateStateSizeDelta computes the state size delta from a state update.
