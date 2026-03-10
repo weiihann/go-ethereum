@@ -127,16 +127,18 @@ func (bt *InternalNode) Hash() common.Hash {
 
 	h := sha256.New()
 	if bt.left != nil {
-		h.Write(bt.left.Hash().Bytes())
+		leftHash := bt.left.Hash()
+		h.Write(leftHash[:])
 	} else {
 		h.Write(zero[:])
 	}
 	if bt.right != nil {
-		h.Write(bt.right.Hash().Bytes())
+		rightHash := bt.right.Hash()
+		h.Write(rightHash[:])
 	} else {
 		h.Write(zero[:])
 	}
-	bt.hash = common.BytesToHash(h.Sum(nil))
+	h.Sum(bt.hash[:0])
 	bt.mustRecompute = false
 	return bt.hash
 }
@@ -200,22 +202,36 @@ func (bt *InternalNode) InsertValuesAtStem(stem []byte, values [][]byte, resolve
 // CollectNodes collects all child nodes at a given path, and flushes it
 // into the provided node collector.
 func (bt *InternalNode) CollectNodes(path []byte, flushfn NodeFlushFn) error {
+	var buf [256]byte
+	copy(buf[:], path)
+	return bt.collectNodes(buf[:len(path)], flushfn)
+}
+
+func (bt *InternalNode) collectNodes(path []byte, flushfn NodeFlushFn) error {
+	childpath := append(path, 0) // reuses buf capacity
 	if bt.left != nil {
-		var p [256]byte
-		copy(p[:], path)
-		childpath := p[:len(path)]
-		childpath = append(childpath, 0)
-		if err := bt.left.CollectNodes(childpath, flushfn); err != nil {
-			return err
+		switch n := bt.left.(type) {
+		case *InternalNode:
+			if err := n.collectNodes(childpath, flushfn); err != nil {
+				return err
+			}
+		default:
+			if err := n.CollectNodes(childpath, flushfn); err != nil {
+				return err
+			}
 		}
 	}
 	if bt.right != nil {
-		var p [256]byte
-		copy(p[:], path)
-		childpath := p[:len(path)]
-		childpath = append(childpath, 1)
-		if err := bt.right.CollectNodes(childpath, flushfn); err != nil {
-			return err
+		childpath[len(path)] = 1
+		switch n := bt.right.(type) {
+		case *InternalNode:
+			if err := n.collectNodes(childpath, flushfn); err != nil {
+				return err
+			}
+		default:
+			if err := n.CollectNodes(childpath, flushfn); err != nil {
+				return err
+			}
 		}
 	}
 	flushfn(path, bt)
