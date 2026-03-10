@@ -116,24 +116,22 @@ func (bt *StemNode) Hash() common.Hash {
 	var data [StemNodeWidth]common.Hash
 	for i, v := range bt.Values {
 		if v != nil {
-			h := sha256.Sum256(v)
-			data[i] = common.BytesToHash(h[:])
+			data[i] = sha256.Sum256(v)
 		}
 	}
 
 	h := sha256.New()
 	for level := 1; level <= 8; level++ {
 		for i := range StemNodeWidth / (1 << level) {
-			h.Reset()
-
 			if data[i*2] == (common.Hash{}) && data[i*2+1] == (common.Hash{}) {
 				data[i] = common.Hash{}
 				continue
 			}
 
+			h.Reset()
 			h.Write(data[i*2][:])
 			h.Write(data[i*2+1][:])
-			data[i] = common.Hash(h.Sum(nil))
+			h.Sum(data[i][:0])
 		}
 	}
 
@@ -141,7 +139,7 @@ func (bt *StemNode) Hash() common.Hash {
 	h.Write(bt.Stem)
 	h.Write([]byte{0})
 	h.Write(data[0][:])
-	bt.hash = common.BytesToHash(h.Sum(nil))
+	h.Sum(bt.hash[:0])
 	bt.mustRecompute = false
 	return bt.hash
 }
