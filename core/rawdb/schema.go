@@ -125,6 +125,10 @@ var (
 	TrieNodeStoragePrefix = []byte("O") // TrieNodeStoragePrefix + accountHash + hexPath -> trie node
 	stateIDPrefix         = []byte("L") // stateIDPrefix + state root -> state id
 
+	// Page-packed storage for binary trie internal nodes.
+	TriePageAccountPrefix = []byte("P") // TriePageAccountPrefix + packedBitPath -> trie page
+	TriePageStoragePrefix = []byte("Q") // TriePageStoragePrefix + accountHash + packedBitPath -> trie page
+
 	// State history indexing within path-based storage scheme
 	StateHistoryIndexPrefix           = []byte("m")   // The global prefix of state history index data
 	StateHistoryAccountMetadataPrefix = []byte("ma")  // StateHistoryAccountMetadataPrefix + account address hash => account metadata
@@ -286,6 +290,20 @@ func accountTrieNodeKey(path []byte) []byte {
 func storageTrieNodeKey(accountHash common.Hash, path []byte) []byte {
 	buf := make([]byte, len(TrieNodeStoragePrefix)+common.HashLength+len(path))
 	n := copy(buf, TrieNodeStoragePrefix)
+	n += copy(buf[n:], accountHash.Bytes())
+	copy(buf[n:], path)
+	return buf
+}
+
+// accountTriePageKey = TriePageAccountPrefix + packedBitPath.
+func accountTriePageKey(path []byte) []byte {
+	return append(TriePageAccountPrefix, path...)
+}
+
+// storageTriePageKey = TriePageStoragePrefix + accountHash + packedBitPath.
+func storageTriePageKey(accountHash common.Hash, path []byte) []byte {
+	buf := make([]byte, len(TriePageStoragePrefix)+common.HashLength+len(path))
+	n := copy(buf, TriePageStoragePrefix)
 	n += copy(buf[n:], accountHash.Bytes())
 	copy(buf[n:], path)
 	return buf

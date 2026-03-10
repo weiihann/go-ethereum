@@ -169,7 +169,7 @@ func (b *buffer) flush(root common.Hash, db ethdb.KeyValueStore, freezers []ethd
 			b.flushErr = err
 			return
 		}
-		nodes := b.nodes.write(batch, nodesCache)
+		nodes := b.nodes.write(db, batch, nodesCache)
 		accounts, slots := b.states.write(batch, progress, statesCache)
 		rawdb.WritePersistentStateID(batch, id)
 		rawdb.WriteSnapshotRoot(batch, root)

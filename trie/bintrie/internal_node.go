@@ -125,20 +125,16 @@ func (bt *InternalNode) Hash() common.Hash {
 		return bt.hash
 	}
 
-	h := sha256.New()
+	var buf [64]byte
 	if bt.left != nil {
 		leftHash := bt.left.Hash()
-		h.Write(leftHash[:])
-	} else {
-		h.Write(zero[:])
+		copy(buf[:32], leftHash[:])
 	}
 	if bt.right != nil {
 		rightHash := bt.right.Hash()
-		h.Write(rightHash[:])
-	} else {
-		h.Write(zero[:])
+		copy(buf[32:], rightHash[:])
 	}
-	h.Sum(bt.hash[:0])
+	bt.hash = sha256.Sum256(buf[:])
 	bt.mustRecompute = false
 	return bt.hash
 }
@@ -251,6 +247,24 @@ func (bt *InternalNode) GetHeight() int {
 		rightHeight = bt.right.GetHeight()
 	}
 	return 1 + max(leftHeight, rightHeight)
+}
+
+// collectDirtyStemNodes recursively collects all StemNodes with
+// mustRecompute == true.
+func collectDirtyStemNodes(node BinaryNode, result *[]*StemNode) {
+	switch n := node.(type) {
+	case *InternalNode:
+		if n.left != nil {
+			collectDirtyStemNodes(n.left, result)
+		}
+		if n.right != nil {
+			collectDirtyStemNodes(n.right, result)
+		}
+	case *StemNode:
+		if n.mustRecompute {
+			*result = append(*result, n)
+		}
+	}
 }
 
 func (bt *InternalNode) toDot(parent, path string) string {
