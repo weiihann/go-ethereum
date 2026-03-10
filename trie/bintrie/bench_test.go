@@ -20,6 +20,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -70,6 +72,7 @@ func buildBinaryTrie(n int) *BinaryTrie {
 	t := &BinaryTrie{
 		root:   NewBinaryNode(),
 		tracer: trie.NewPrevalueTracer(),
+		cache:  newNodeCache(),
 	}
 	rng := rand.New(rand.NewSource(42))
 	for range n {
@@ -204,6 +207,7 @@ func BenchmarkBinaryTrieCommit(b *testing.B) {
 				t := &BinaryTrie{
 					root:   NewBinaryNode(),
 					tracer: trie.NewPrevalueTracer(),
+					cache:  newNodeCache(),
 				}
 				for i := range size {
 					t.root, _ = t.root.Insert(keys[i], vals[i], nil, 0)
@@ -217,7 +221,35 @@ func BenchmarkBinaryTrieCommit(b *testing.B) {
 
 // commitBench mirrors Commit but avoids requiring a real trie.Reader.
 func (t *BinaryTrie) commitBench() common.Hash {
+	// Phase 1: Collect dirty StemNodes.
+	dirtyStems := make([]*StemNode, 0, 256)
+	collectDirtyStemNodes(t.root, &dirtyStems)
+
+	// Phase 2: Hash StemNodes in parallel when worthwhile.
+	const parallelThreshold = 64
+	if len(dirtyStems) >= parallelThreshold {
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, runtime.NumCPU())
+		for _, stem := range dirtyStems {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				stem.Hash()
+			}()
+		}
+		wg.Wait()
+	} else {
+		for _, stem := range dirtyStems {
+			stem.Hash()
+		}
+	}
+
+	// Phase 3: Hash InternalNodes.
 	rootHash := t.root.Hash()
+
+	// Phase 4: CollectNodes.
 	t.root.CollectNodes(nil, func(path []byte, node BinaryNode) {
 		SerializeNode(node)
 	})
@@ -338,6 +370,52 @@ func BenchmarkGetBinaryTreeKeyStorageSlot(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		GetBinaryTreeKeyStorageSlot(addr, slot[:])
+	}
+}
+
+// --- Prefetch benchmarks ---
+
+func BenchmarkPrefetchAccount(b *testing.B) {
+	for _, size := range []int{100, 1_000} {
+		b.Run(sizeLabel(size), func(b *testing.B) {
+			t := buildBinaryTrie(size)
+			rng := rand.New(rand.NewSource(42))
+			addrs := make([]common.Address, size)
+			for i := range addrs {
+				rng.Read(addrs[i][:])
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				t.PrefetchAccount(addrs)
+			}
+		})
+	}
+}
+
+// --- Parallel commit benchmarks ---
+
+func BenchmarkCommitParallelHash(b *testing.B) {
+	for _, size := range []int{100, 1_000, 10_000} {
+		b.Run(sizeLabel(size), func(b *testing.B) {
+			keys := generateKeys(size, 42)
+			vals := generateValues(size, 99)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				b.StopTimer()
+				t := &BinaryTrie{
+					root:   NewBinaryNode(),
+					tracer: trie.NewPrevalueTracer(),
+					cache:  newNodeCache(),
+				}
+				for i := range size {
+					t.root, _ = t.root.Insert(keys[i], vals[i], nil, 0)
+				}
+				b.StartTimer()
+				t.commitBench()
+			}
+		})
 	}
 }
 

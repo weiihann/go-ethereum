@@ -36,34 +36,89 @@ func nodeCacheKey(owner common.Hash, path []byte) []byte {
 }
 
 // writeNodes writes the trie nodes into the provided database batch.
+// InternalNodes (binary trie type byte == 2) are grouped into pages
+// for packed storage; all other nodes are written individually.
 // Note this function will also inject all the newly written nodes
 // into clean cache.
-func writeNodes(batch ethdb.Batch, nodes map[common.Hash]map[string]*trienode.Node, clean *fastcache.Cache) (total int) {
+func writeNodes(db ethdb.KeyValueReader, batch ethdb.Batch, nodes map[common.Hash]map[string]*trienode.Node, clean *fastcache.Cache) (total int) {
 	for owner, subset := range nodes {
+		// Separate InternalNodes (packed into pages) from others.
+		pages := make(map[string]*Page)
+		pageLoaded := make(map[string]bool)
+
 		for path, n := range subset {
-			if n.IsDeleted() {
-				if owner == (common.Hash{}) {
-					rawdb.DeleteAccountTrieNode(batch, []byte(path))
-				} else {
-					rawdb.DeleteStorageTrieNode(batch, owner, []byte(path))
+			pathBytes := []byte(path)
+			if !n.IsDeleted() && isInternalNode(n.Blob) {
+				pk := string(PathToPageKey(owner, pathBytes))
+				if !pageLoaded[pk] {
+					pageLoaded[pk] = true
+					pages[pk] = readOrCreatePage(db, owner, pathBytes)
 				}
-				if clean != nil {
-					clean.Del(nodeCacheKey(owner, []byte(path)))
+				slot := PathToSlot(pathBytes)
+				pages[pk].SetNode(slot, n.Blob)
+			} else if n.IsDeleted() && shouldDeleteFromPage(db, owner, pathBytes) {
+				pk := string(PathToPageKey(owner, pathBytes))
+				if !pageLoaded[pk] {
+					pageLoaded[pk] = true
+					pages[pk] = readOrCreatePage(db, owner, pathBytes)
 				}
+				slot := PathToSlot(pathBytes)
+				pages[pk].DeleteNode(slot)
 			} else {
-				if owner == (common.Hash{}) {
-					rawdb.WriteAccountTrieNode(batch, []byte(path), n.Blob)
+				// Non-internal node: write individually.
+				if n.IsDeleted() {
+					if owner == (common.Hash{}) {
+						rawdb.DeleteAccountTrieNode(batch, pathBytes)
+					} else {
+						rawdb.DeleteStorageTrieNode(batch, owner, pathBytes)
+					}
+					if clean != nil {
+						clean.Del(nodeCacheKey(owner, pathBytes))
+					}
 				} else {
-					rawdb.WriteStorageTrieNode(batch, owner, []byte(path), n.Blob)
+					if owner == (common.Hash{}) {
+						rawdb.WriteAccountTrieNode(batch, pathBytes, n.Blob)
+					} else {
+						rawdb.WriteStorageTrieNode(batch, owner, pathBytes, n.Blob)
+					}
+					if clean != nil {
+						clean.Set(nodeCacheKey(owner, pathBytes), n.Blob)
+					}
 				}
-				if clean != nil {
-					clean.Set(nodeCacheKey(owner, []byte(path)), n.Blob)
-				}
+			}
+		}
+
+		// Flush accumulated pages.
+		for pk, page := range pages {
+			if page.IsEmpty() {
+				deleteTriePage(batch, owner, pk)
+			} else {
+				writeTriePage(batch, owner, pk, page.Serialize())
+			}
+			if clean != nil {
+				prefix := pageKeyPrefix(owner, pk)
+				populateCleanCacheFromPage(page, owner, prefix, clean)
 			}
 		}
 		total += len(subset)
 	}
 	return total
+}
+
+// shouldDeleteFromPage checks whether a node being deleted was
+// previously stored as an InternalNode in a page. If a page exists
+// for the node's location, the deletion targets the page slot.
+func shouldDeleteFromPage(db ethdb.KeyValueReader, owner common.Hash, path []byte) bool {
+	pageKey := PathToPageKey(owner, path)
+	var pageBlob []byte
+	if owner == (common.Hash{}) {
+		pageBlob = rawdb.ReadAccountTriePage(db, pageKey[1:])
+	} else {
+		pageBlob = rawdb.ReadStorageTriePage(
+			db, owner, pageKey[1+common.HashLength:],
+		)
+	}
+	return pageBlob != nil
 }
 
 // writeStates flushes state mutations into the provided database batch as a whole.
