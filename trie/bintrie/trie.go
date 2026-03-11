@@ -21,6 +21,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"runtime"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -118,6 +120,7 @@ type BinaryTrie struct {
 	root   BinaryNode
 	reader *trie.Reader
 	tracer *trie.PrevalueTracer
+	cache  *nodeCache
 }
 
 // ToDot converts the binary trie to a DOT language representation. Useful for debugging.
@@ -136,6 +139,7 @@ func NewBinaryTrie(root common.Hash, db database.NodeDatabase) (*BinaryTrie, err
 		root:   NewBinaryNode(),
 		reader: reader,
 		tracer: trie.NewPrevalueTracer(),
+		cache:  newNodeCache(),
 	}
 	// Parse the root node if it's not empty
 	if root != types.EmptyBinaryHash && root != types.EmptyRootHash {
@@ -159,9 +163,20 @@ func (t *BinaryTrie) nodeResolver(path []byte, hash common.Hash) ([]byte, error)
 	if hash == (common.Hash{}) {
 		return nil, nil // empty node
 	}
+	// Check prefetch cache first.
+	if t.cache != nil {
+		if blob, ok := t.cache.get(hash); ok {
+			t.tracer.Put(path, blob)
+			return blob, nil
+		}
+	}
 	blob, err := t.reader.Node(path, hash)
 	if err != nil {
 		return nil, err
+	}
+	// Populate cache for future reads.
+	if t.cache != nil {
+		t.cache.put(hash, blob)
 	}
 	t.tracer.Put(path, blob)
 	return blob, nil
@@ -321,9 +336,38 @@ func (t *BinaryTrie) Hash() common.Hash {
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
 func (t *BinaryTrie) Commit(_ bool) (common.Hash, *trienode.NodeSet) {
-	nodeset := trienode.NewNodeSet(common.Hash{})
+	// Phase 1: Collect dirty StemNodes.
+	dirtyStems := make([]*StemNode, 0, 256)
+	collectDirtyStemNodes(t.root, &dirtyStems)
 
-	// The root can be any type of BinaryNode (InternalNode, StemNode, etc.)
+	// Phase 2: Hash StemNodes in parallel when worthwhile.
+	// Goroutine overhead dominates below ~64 stems, so hash sequentially
+	// for small tries to avoid regression.
+	const parallelThreshold = 64
+	if len(dirtyStems) >= parallelThreshold {
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, runtime.NumCPU())
+		for _, stem := range dirtyStems {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				stem.Hash()
+			}()
+		}
+		wg.Wait()
+	} else {
+		for _, stem := range dirtyStems {
+			stem.Hash()
+		}
+	}
+
+	// Phase 3: Hash InternalNodes (sequential -- all leaf hashes are cached).
+	rootHash := t.root.Hash()
+
+	// Phase 4: CollectNodes (hashes are cached, no recomputation).
+	nodeset := trienode.NewNodeSet(common.Hash{})
 	err := t.root.CollectNodes(nil, func(path []byte, node BinaryNode) {
 		serialized := SerializeNode(node)
 		nodeset.AddNode(path, trienode.NewNodeWithPrev(node.Hash(), serialized, t.tracer.Get(path)))
@@ -331,8 +375,7 @@ func (t *BinaryTrie) Commit(_ bool) (common.Hash, *trienode.NodeSet) {
 	if err != nil {
 		panic(fmt.Errorf("CollectNodes failed: %v", err))
 	}
-	// Serialize root commitment form
-	return t.Hash(), nodeset
+	return rootHash, nodeset
 }
 
 // NodeIterator returns an iterator that returns nodes of the trie. Iteration
@@ -358,6 +401,7 @@ func (t *BinaryTrie) Copy() *BinaryTrie {
 		root:   t.root.Copy(),
 		reader: t.reader,
 		tracer: t.tracer.Copy(),
+		cache:  newNodeCache(),
 	}
 }
 
@@ -403,20 +447,93 @@ func (t *BinaryTrie) UpdateContractCode(addr common.Address, codeHash common.Has
 // PrefetchAccount attempts to resolve specific accounts from the database
 // to accelerate subsequent trie operations.
 func (t *BinaryTrie) PrefetchAccount(addresses []common.Address) error {
+	stems := make([][]byte, 0, len(addresses))
 	for _, addr := range addresses {
-		if _, err := t.GetAccount(addr); err != nil {
-			return err
-		}
+		stems = append(stems, GetBinaryTreeKey(addr, zero[:])[:StemSize])
 	}
-	return nil
+	return t.prefetchPaths(stems)
 }
 
 // PrefetchStorage attempts to resolve specific storage slots from the database
 // to accelerate subsequent trie operations.
 func (t *BinaryTrie) PrefetchStorage(addr common.Address, keys [][]byte) error {
+	stems := make([][]byte, 0, len(keys))
 	for _, key := range keys {
-		if _, err := t.GetStorage(addr, key); err != nil {
-			return err
+		k := GetBinaryTreeKeyStorageSlot(addr, key)
+		stems = append(stems, k[:StemSize])
+	}
+	return t.prefetchPaths(stems)
+}
+
+// prefetchPaths resolves HashedNodes along each stem path in parallel,
+// populating the node cache for subsequent reads.
+func (t *BinaryTrie) prefetchPaths(stems [][]byte) error {
+	if t.reader == nil || len(stems) == 0 {
+		return nil
+	}
+	var (
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, runtime.NumCPU())
+		errOnce sync.Once
+		retErr  error
+	)
+	for _, stem := range stems {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if err := t.prefetchSinglePath(stem); err != nil {
+				errOnce.Do(func() { retErr = err })
+			}
+		}()
+	}
+	wg.Wait()
+	return retErr
+}
+
+// prefetchSinglePath walks the trie read-only from the root, resolving
+// HashedNodes into the cache. It does not mutate the trie structure.
+func (t *BinaryTrie) prefetchSinglePath(stem []byte) error {
+	var node BinaryNode = t.root
+	for depth := 0; depth < len(stem)*8; depth++ {
+		switch n := node.(type) {
+		case *InternalNode:
+			bit := stem[depth/8] >> (7 - (depth % 8)) & 1
+			var child BinaryNode
+			if bit == 0 {
+				child = n.left
+			} else {
+				child = n.right
+			}
+			if child == nil {
+				return nil
+			}
+			if hn, ok := child.(HashedNode); ok {
+				path, err := keyToPath(depth, stem)
+				if err != nil {
+					return nil // best-effort
+				}
+				_, err = t.nodeResolver(path, common.Hash(hn))
+				if err != nil {
+					return nil // best-effort
+				}
+				// Cannot follow further without mutating the trie,
+				// but the blob is now cached for the main goroutine.
+				return nil
+			}
+			node = child
+		case *StemNode:
+			return nil
+		case HashedNode:
+			_, err := t.nodeResolver(nil, common.Hash(n))
+			if err != nil {
+				return nil
+			}
+			return nil
+		default:
+			return nil
 		}
 	}
 	return nil

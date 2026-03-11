@@ -145,12 +145,15 @@ func (dl *diskLayer) node(owner common.Hash, path []byte, depth int) ([]byte, co
 		}
 		cleanNodeMissMeter.Mark(1)
 	}
-	// Try to retrieve the trie node from the disk.
-	var blob []byte
-	if owner == (common.Hash{}) {
-		blob = rawdb.ReadAccountTrieNode(dl.db.diskdb, path)
-	} else {
-		blob = rawdb.ReadStorageTrieNode(dl.db.diskdb, owner, path)
+	// Try to retrieve the trie node from a page first (for binary trie
+	// InternalNodes), then fall back to individual node read.
+	blob, err := ReadNodeFromPage(dl.db.diskdb, owner, path, dl.nodes)
+	if err != nil {
+		return nil, common.Hash{}, nodeLoc{}, err
+	}
+	if blob == nil {
+		// ReadNodeFromPage already fell back to individual read
+		// when no page exists, so blob==nil means not found at all.
 	}
 	// Store the resolved data in the clean cache. The background buffer flusher
 	// may also write to the clean cache concurrently, but two writers cannot
@@ -591,7 +594,7 @@ func (dl *diskLayer) revert(h *stateHistory) (*diskLayer, error) {
 		progress = dl.generator.progressMarker()
 	}
 	batch := dl.db.diskdb.NewBatch()
-	writeNodes(batch, nodes, dl.nodes)
+	writeNodes(dl.db.diskdb, batch, nodes, dl.nodes)
 
 	// Provide the original values of modified accounts and storages for revert
 	writeStates(batch, progress, accounts, storages, dl.states)

@@ -278,7 +278,7 @@ func (s *nodeSet) decode(r *rlp.Stream) error {
 }
 
 // write flushes nodes into the provided database batch as a whole.
-func (s *nodeSet) write(batch ethdb.Batch, clean *fastcache.Cache) int {
+func (s *nodeSet) write(db ethdb.KeyValueReader, batch ethdb.Batch, clean *fastcache.Cache) int {
 	nodes := make(map[common.Hash]map[string]*trienode.Node)
 	if len(s.accountNodes) > 0 {
 		nodes[common.Hash{}] = s.accountNodes
@@ -286,7 +286,7 @@ func (s *nodeSet) write(batch ethdb.Batch, clean *fastcache.Cache) int {
 	for owner, subset := range s.storageNodes {
 		nodes[owner] = subset
 	}
-	return writeNodes(batch, nodes, clean)
+	return writeNodes(db, batch, nodes, clean)
 }
 
 // reset clears all cached trie node data.

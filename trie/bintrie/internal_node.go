@@ -125,18 +125,16 @@ func (bt *InternalNode) Hash() common.Hash {
 		return bt.hash
 	}
 
-	h := sha256.New()
+	var buf [64]byte
 	if bt.left != nil {
-		h.Write(bt.left.Hash().Bytes())
-	} else {
-		h.Write(zero[:])
+		leftHash := bt.left.Hash()
+		copy(buf[:32], leftHash[:])
 	}
 	if bt.right != nil {
-		h.Write(bt.right.Hash().Bytes())
-	} else {
-		h.Write(zero[:])
+		rightHash := bt.right.Hash()
+		copy(buf[32:], rightHash[:])
 	}
-	bt.hash = common.BytesToHash(h.Sum(nil))
+	bt.hash = sha256.Sum256(buf[:])
 	bt.mustRecompute = false
 	return bt.hash
 }
@@ -200,22 +198,36 @@ func (bt *InternalNode) InsertValuesAtStem(stem []byte, values [][]byte, resolve
 // CollectNodes collects all child nodes at a given path, and flushes it
 // into the provided node collector.
 func (bt *InternalNode) CollectNodes(path []byte, flushfn NodeFlushFn) error {
+	var buf [256]byte
+	copy(buf[:], path)
+	return bt.collectNodes(buf[:len(path)], flushfn)
+}
+
+func (bt *InternalNode) collectNodes(path []byte, flushfn NodeFlushFn) error {
+	childpath := append(path, 0) // reuses buf capacity
 	if bt.left != nil {
-		var p [256]byte
-		copy(p[:], path)
-		childpath := p[:len(path)]
-		childpath = append(childpath, 0)
-		if err := bt.left.CollectNodes(childpath, flushfn); err != nil {
-			return err
+		switch n := bt.left.(type) {
+		case *InternalNode:
+			if err := n.collectNodes(childpath, flushfn); err != nil {
+				return err
+			}
+		default:
+			if err := n.CollectNodes(childpath, flushfn); err != nil {
+				return err
+			}
 		}
 	}
 	if bt.right != nil {
-		var p [256]byte
-		copy(p[:], path)
-		childpath := p[:len(path)]
-		childpath = append(childpath, 1)
-		if err := bt.right.CollectNodes(childpath, flushfn); err != nil {
-			return err
+		childpath[len(path)] = 1
+		switch n := bt.right.(type) {
+		case *InternalNode:
+			if err := n.collectNodes(childpath, flushfn); err != nil {
+				return err
+			}
+		default:
+			if err := n.CollectNodes(childpath, flushfn); err != nil {
+				return err
+			}
 		}
 	}
 	flushfn(path, bt)
@@ -235,6 +247,24 @@ func (bt *InternalNode) GetHeight() int {
 		rightHeight = bt.right.GetHeight()
 	}
 	return 1 + max(leftHeight, rightHeight)
+}
+
+// collectDirtyStemNodes recursively collects all StemNodes with
+// mustRecompute == true.
+func collectDirtyStemNodes(node BinaryNode, result *[]*StemNode) {
+	switch n := node.(type) {
+	case *InternalNode:
+		if n.left != nil {
+			collectDirtyStemNodes(n.left, result)
+		}
+		if n.right != nil {
+			collectDirtyStemNodes(n.right, result)
+		}
+	case *StemNode:
+		if n.mustRecompute {
+			*result = append(*result, n)
+		}
+	}
 }
 
 func (bt *InternalNode) toDot(parent, path string) string {
