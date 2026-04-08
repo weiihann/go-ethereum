@@ -636,20 +636,15 @@ func BinaryCodeChunkKey(ctx *cli.Context) error {
 		return errors.New("invalid number of arguments: expecting an address and an code-chunk number")
 	}
 
-	addr, err := hexutil.Decode(ctx.Args().Get(0))
+	_, err := hexutil.Decode(ctx.Args().Get(0))
 	if err != nil {
 		return fmt.Errorf("error decoding address: %w", err)
 	}
-	chunkNumberBytes, err := hexutil.Decode(ctx.Args().Get(1))
-	if err != nil {
-		return fmt.Errorf("error decoding chunk number: %w", err)
-	}
-	var chunkNumber uint256.Int
-	chunkNumber.SetBytes(chunkNumberBytes)
 
-	fmt.Printf("%#x\n", bintrie.GetBinaryTreeKeyCodeChunk(common.BytesToAddress(addr), &chunkNumber))
-
-	return nil
+	// Codes are now deduplicated in the trie, so we have to first pull the code associated with the address
+	// and then get the chunk key.
+	// Deal with this later.
+	panic("TODO(weiihann): deal with this later")
 }
 
 // BinaryCodeChunkCode returns the code chunkification for a given code.
