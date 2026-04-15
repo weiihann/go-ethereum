@@ -61,18 +61,32 @@ func (acct *StateAccount) Copy() *StateAccount {
 // SlimAccount is a modified version of an Account, where the root is replaced
 // with a byte slice. This format can be used to represent full-consensus format
 // or slim format which replaces the empty root and code hash as nil byte slice.
+//
+// LastWrittenPeriod is an EIP-8188 addition tracking the most recent period in
+// which the account was mutated. The field is declared "optional" so legacy
+// 4-element snapshot records decode as period=0 and period-zero records encode
+// back to 4 elements (byte-identical to legacy).
 type SlimAccount struct {
-	Nonce    uint64
-	Balance  *uint256.Int
-	Root     []byte // Nil if root equals to types.EmptyRootHash
-	CodeHash []byte // Nil if hash equals to types.EmptyCodeHash
+	Nonce             uint64
+	Balance           *uint256.Int
+	Root              []byte // Nil if root equals to types.EmptyRootHash
+	CodeHash          []byte // Nil if hash equals to types.EmptyCodeHash
+	LastWrittenPeriod uint32 `rlp:"optional"`
 }
 
 // SlimAccountRLP encodes the state account in 'slim RLP' format.
 func SlimAccountRLP(account StateAccount) []byte {
+	return SlimAccountRLPWithPeriod(account, 0)
+}
+
+// SlimAccountRLPWithPeriod encodes the state account in 'slim RLP' format with
+// an EIP-8188 last-written-period. A zero period produces byte-identical output
+// to SlimAccountRLP (the optional trailing field is omitted).
+func SlimAccountRLPWithPeriod(account StateAccount, period uint32) []byte {
 	slim := SlimAccount{
-		Nonce:   account.Nonce,
-		Balance: account.Balance,
+		Nonce:             account.Nonce,
+		Balance:           account.Balance,
+		LastWrittenPeriod: period,
 	}
 	if account.Root != EmptyRootHash {
 		slim.Root = account.Root[:]

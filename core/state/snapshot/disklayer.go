@@ -18,6 +18,7 @@ package snapshot
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -94,7 +95,7 @@ func (dl *diskLayer) Account(hash common.Hash) (*types.SlimAccount, error) {
 	}
 	account := new(types.SlimAccount)
 	if err := rlp.DecodeBytes(data, account); err != nil {
-		panic(err)
+		return nil, fmt.Errorf("corrupt account snapshot for %x: %w", hash, err)
 	}
 	return account, nil
 }
