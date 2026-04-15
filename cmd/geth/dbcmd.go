@@ -1057,10 +1057,11 @@ func verifySnapshot(ctx *cli.Context) error {
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
 
-	triedb := utils.MakeTrieDatabase(ctx, stack, db, false, true, false)
-	defer triedb.Close()
-
-	// Use the snapshot root as the state root for consistency.
+	// Verify the state scheme is path-based.
+	scheme := rawdb.ReadStateScheme(db)
+	if scheme != rawdb.PathScheme {
+		return fmt.Errorf("this command only supports path-based scheme, got %q", scheme)
+	}
 	root := rawdb.ReadSnapshotRoot(db)
 	if root == (common.Hash{}) {
 		return fmt.Errorf("no snapshot root found in database")
@@ -1072,14 +1073,13 @@ func verifySnapshot(ctx *cli.Context) error {
 	fmt.Printf("Account hash: %#x\n", accountHash)
 	fmt.Println()
 
-	// Verify account snapshot against the account trie leaf.
-	accountTrie, err := trie.New(trie.StateTrieID(root), triedb)
-	if err != nil {
-		return fmt.Errorf("failed to open account trie: %w", err)
+	// Walk the account trie via raw DB reads to find the leaf.
+	accountReader := func(path []byte) []byte {
+		return rawdb.ReadAccountTrieNode(db, path)
 	}
-	trieData, err := accountTrie.Get(accountHash.Bytes())
+	trieData, err := resolveTrieLeaf(accountReader, accountHash.Bytes())
 	if err != nil {
-		return fmt.Errorf("failed to get account from trie: %w", err)
+		return fmt.Errorf("failed to resolve account trie leaf: %w", err)
 	}
 	snapData := rawdb.ReadAccountSnapshot(db, accountHash)
 
@@ -1087,7 +1087,6 @@ func verifySnapshot(ctx *cli.Context) error {
 		fmt.Println("Account not found in both trie and snapshot")
 		return nil
 	}
-	// Print trie leaf data.
 	fmt.Println("--- Account Trie Leaf ---")
 	if trieData == nil {
 		fmt.Println("  (not found)")
@@ -1101,7 +1100,6 @@ func verifySnapshot(ctx *cli.Context) error {
 	}
 	fmt.Println()
 
-	// Print snapshot data.
 	fmt.Println("--- Account Snapshot ---")
 	if snapData == nil {
 		fmt.Println("  (not found)")
@@ -1115,7 +1113,6 @@ func verifySnapshot(ctx *cli.Context) error {
 	}
 	fmt.Println()
 
-	// Compare: convert snapshot slim RLP to full RLP.
 	fmt.Println("--- Verification ---")
 	if trieData == nil && snapData != nil {
 		fmt.Println("MISMATCH: account exists in snapshot but not in trie")
@@ -1152,7 +1149,6 @@ func verifySnapshot(ctx *cli.Context) error {
 	fmt.Printf("Storage hash: %#x\n", storageHash)
 	fmt.Println()
 
-	// Need the account's storage root to open the storage trie.
 	if trieData == nil {
 		return fmt.Errorf("cannot verify storage: account not in trie")
 	}
@@ -1164,19 +1160,15 @@ func verifySnapshot(ctx *cli.Context) error {
 		fmt.Println("Account has empty storage root, no storage trie")
 		return nil
 	}
-	storageTrie, err := trie.New(
-		trie.StorageTrieID(root, accountHash, acc.Root), triedb,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to open storage trie: %w", err)
+	// Walk the storage trie via raw DB reads.
+	storageReader := func(path []byte) []byte {
+		return rawdb.ReadStorageTrieNode(db, accountHash, path)
 	}
-	storageTrieData, err := storageTrie.Get(storageHash.Bytes())
+	storageTrieData, err := resolveTrieLeaf(storageReader, storageHash.Bytes())
 	if err != nil {
-		return fmt.Errorf("failed to get storage from trie: %w", err)
+		return fmt.Errorf("failed to resolve storage trie leaf: %w", err)
 	}
-	storageSnapData := rawdb.ReadStorageSnapshot(
-		db, accountHash, storageHash,
-	)
+	storageSnapData := rawdb.ReadStorageSnapshot(db, accountHash, storageHash)
 
 	fmt.Println("--- Storage Trie Leaf ---")
 	if storageTrieData == nil {
@@ -1220,6 +1212,160 @@ func verifySnapshot(ctx *cli.Context) error {
 		fmt.Printf("  Snapshot value: %#x\n", storageSnapData)
 	}
 	return nil
+}
+
+// resolveTrieLeaf walks a path-based trie by reading raw node blobs from the
+// database and returns the leaf value for the given 32-byte key. The readNode
+// function fetches a trie node blob by its nibble path.
+func resolveTrieLeaf(readNode func(path []byte) []byte, key []byte) ([]byte, error) {
+	target := keyToNibbles(key)
+	pos := 0
+
+	blob := readNode(target[:0])
+	if blob == nil {
+		return nil, fmt.Errorf("root trie node not found")
+	}
+	for {
+		elems, _, err := rlp.SplitList(blob)
+		if err != nil {
+			return nil, fmt.Errorf("invalid node at path %x: %w", target[:pos], err)
+		}
+		c, err := rlp.CountValues(elems)
+		if err != nil {
+			return nil, fmt.Errorf("invalid node at path %x: %w", target[:pos], err)
+		}
+		switch c {
+		case 17: // branch node
+			if pos >= len(target) {
+				return nil, fmt.Errorf("key exhausted at branch node, path %x", target[:pos])
+			}
+			child, err := getChildRef(elems, int(target[pos]))
+			if err != nil {
+				return nil, fmt.Errorf("failed to read child at path %x: %w", target[:pos], err)
+			}
+			pos++
+			blob, err = resolveRef(child, readNode, target[:pos])
+			if err != nil {
+				return nil, err
+			}
+			if blob == nil {
+				return nil, nil
+			}
+
+		case 2: // short node (extension or leaf)
+			kbuf, rest, err := rlp.SplitString(elems)
+			if err != nil {
+				return nil, fmt.Errorf("invalid short node at path %x: %w", target[:pos], err)
+			}
+			nodeKey := hpToNibbles(kbuf)
+
+			if nodeKey[len(nodeKey)-1] == 16 {
+				// Leaf node: verify remaining nibbles match, extract value.
+				leafKey := nodeKey[:len(nodeKey)-1]
+				if !bytes.Equal(leafKey, target[pos:]) {
+					return nil, nil
+				}
+				val, _, err := rlp.SplitString(rest)
+				if err != nil {
+					return nil, fmt.Errorf("invalid leaf value at path %x: %w", target[:pos], err)
+				}
+				return val, nil
+			}
+			// Extension node: verify prefix, follow child.
+			remaining := target[pos:]
+			if len(nodeKey) > len(remaining) || !bytes.Equal(nodeKey, remaining[:len(nodeKey)]) {
+				return nil, nil
+			}
+			pos += len(nodeKey)
+
+			blob, err = resolveRef(rest, readNode, target[:pos])
+			if err != nil {
+				return nil, err
+			}
+			if blob == nil {
+				return nil, nil
+			}
+
+		default:
+			return nil, fmt.Errorf("invalid node element count %d at path %x", c, target[:pos])
+		}
+	}
+}
+
+// getChildRef extracts the raw RLP bytes of the nth child reference from a
+// branch node's list content. The caller can then pass the result to resolveRef.
+func getChildRef(listContent []byte, n int) ([]byte, error) {
+	data := listContent
+	for i := 0; i < n; i++ {
+		_, _, rest, err := rlp.Split(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to skip element %d: %w", i, err)
+		}
+		data = rest
+	}
+	return data, nil
+}
+
+// resolveRef interprets a raw RLP child reference. It returns the node blob:
+//   - empty string (0x80): nil (child absent)
+//   - 32-byte string: hash reference, looked up via readNode at the given path
+//   - RLP list: embedded node, returned as-is
+func resolveRef(ref []byte, readNode func([]byte) []byte, path []byte) ([]byte, error) {
+	kind, val, rest, err := rlp.Split(ref)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ref at path %x: %w", path, err)
+	}
+	switch {
+	case kind == rlp.String && len(val) == 0:
+		return nil, nil
+	case kind == rlp.String && len(val) == 32:
+		blob := readNode(path)
+		if blob == nil {
+			return nil, fmt.Errorf("missing trie node at path %x", path)
+		}
+		return blob, nil
+	case kind == rlp.List:
+		return ref[:len(ref)-len(rest)], nil
+	default:
+		return nil, fmt.Errorf("unexpected ref encoding at path %x (kind=%d, len=%d)", path, kind, len(val))
+	}
+}
+
+// keyToNibbles converts a byte slice to its nibble representation.
+// Each byte produces two nibbles (high nibble first).
+func keyToNibbles(key []byte) []byte {
+	nibbles := make([]byte, len(key)*2)
+	for i, b := range key {
+		nibbles[i*2] = b >> 4
+		nibbles[i*2+1] = b & 0x0f
+	}
+	return nibbles
+}
+
+// hpToNibbles converts a hex-prefix (compact) encoded byte slice to nibbles.
+// Leaf keys end with a terminator nibble (0x10).
+func hpToNibbles(compact []byte) []byte {
+	if len(compact) == 0 {
+		return nil
+	}
+	// Convert all bytes to nibbles and append terminator.
+	base := make([]byte, len(compact)*2+1)
+	for i, b := range compact {
+		base[i*2] = b >> 4
+		base[i*2+1] = b & 0x0f
+	}
+	base[len(base)-1] = 16 // terminator
+
+	// First nibble encodes flags:
+	//   bit 0: odd-length key
+	//   bit 1: leaf (terminator present)
+	if base[0] < 2 {
+		// Extension node: strip the terminator we just added.
+		base = base[:len(base)-1]
+	}
+	// Chop the flag nibble(s): 2 nibbles if even-length, 1 if odd-length.
+	chop := 2 - base[0]&1
+	return base[chop:]
 }
 
 func printAccount(acc *types.StateAccount) {
