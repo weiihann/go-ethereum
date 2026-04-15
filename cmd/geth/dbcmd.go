@@ -102,6 +102,7 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbVerifySnapshotCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
@@ -241,6 +242,23 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 			},
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: "This command queries the history of the account or storage slot within the specified block range",
+	}
+	dbVerifySnapshotCmd = &cli.Command{
+		Action:    verifySnapshot,
+		Name:      "verify-snapshot",
+		Usage:     "Verify that snapshot data matches the corresponding trie leaf",
+		ArgsUsage: "<address> [OPTIONAL <storage-key>]",
+		Flags:     slices.Concat(utils.NetworkFlags, utils.DatabaseFlags),
+		Description: `This command verifies that the snapshot entry for a given account (or storage slot)
+matches the corresponding leaf value in the state trie (or storage trie).
+
+Account snapshots store a "slim" RLP encoding, while the trie stores the full
+RLP-encoded StateAccount. For storage, both snapshot and trie store the same
+RLP-encoded value.
+
+Examples:
+  geth db verify-snapshot 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+  geth db verify-snapshot 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 0x0000000000000000000000000000000000000000000000000000000000000001`,
 	}
 )
 
@@ -1023,4 +1041,190 @@ func inspectHistory(ctx *cli.Context) error {
 		return inspectAccount(triedb, start, end, address, ctx.Bool("raw"))
 	}
 	return inspectStorage(triedb, start, end, address, slot, ctx.Bool("raw"))
+}
+
+func verifySnapshot(ctx *cli.Context) error {
+	if ctx.NArg() == 0 || ctx.NArg() > 2 {
+		return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
+	}
+	var address common.Address
+	if err := address.UnmarshalText([]byte(ctx.Args().Get(0))); err != nil {
+		return fmt.Errorf("invalid address: %w", err)
+	}
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true)
+	defer db.Close()
+
+	triedb := utils.MakeTrieDatabase(ctx, stack, db, false, true, false)
+	defer triedb.Close()
+
+	// Use the snapshot root as the state root for consistency.
+	root := rawdb.ReadSnapshotRoot(db)
+	if root == (common.Hash{}) {
+		return fmt.Errorf("no snapshot root found in database")
+	}
+	accountHash := crypto.Keccak256Hash(address.Bytes())
+
+	fmt.Printf("State root:   %#x\n", root)
+	fmt.Printf("Address:      %s\n", address)
+	fmt.Printf("Account hash: %#x\n", accountHash)
+	fmt.Println()
+
+	// Verify account snapshot against the account trie leaf.
+	accountTrie, err := trie.New(trie.StateTrieID(root), triedb)
+	if err != nil {
+		return fmt.Errorf("failed to open account trie: %w", err)
+	}
+	trieData, err := accountTrie.Get(accountHash.Bytes())
+	if err != nil {
+		return fmt.Errorf("failed to get account from trie: %w", err)
+	}
+	snapData := rawdb.ReadAccountSnapshot(db, accountHash)
+
+	if trieData == nil && snapData == nil {
+		fmt.Println("Account not found in both trie and snapshot")
+		return nil
+	}
+	// Print trie leaf data.
+	fmt.Println("--- Account Trie Leaf ---")
+	if trieData == nil {
+		fmt.Println("  (not found)")
+	} else {
+		fmt.Printf("  RLP: %#x\n", trieData)
+		var acc types.StateAccount
+		if err := rlp.DecodeBytes(trieData, &acc); err != nil {
+			return fmt.Errorf("failed to decode trie account: %w", err)
+		}
+		printAccount(&acc)
+	}
+	fmt.Println()
+
+	// Print snapshot data.
+	fmt.Println("--- Account Snapshot ---")
+	if snapData == nil {
+		fmt.Println("  (not found)")
+	} else {
+		fmt.Printf("  Slim RLP: %#x\n", snapData)
+		acc, err := types.FullAccount(snapData)
+		if err != nil {
+			return fmt.Errorf("failed to decode snapshot account: %w", err)
+		}
+		printAccount(acc)
+	}
+	fmt.Println()
+
+	// Compare: convert snapshot slim RLP to full RLP.
+	fmt.Println("--- Verification ---")
+	if trieData == nil && snapData != nil {
+		fmt.Println("MISMATCH: account exists in snapshot but not in trie")
+		return nil
+	}
+	if trieData != nil && snapData == nil {
+		fmt.Println("MISMATCH: account exists in trie but not in snapshot")
+		return nil
+	}
+	snapFull, err := types.FullAccountRLP(snapData)
+	if err != nil {
+		return fmt.Errorf("failed to convert snapshot to full RLP: %w", err)
+	}
+	if bytes.Equal(trieData, snapFull) {
+		fmt.Println("MATCH: snapshot data matches trie leaf")
+	} else {
+		fmt.Println("MISMATCH: snapshot data does not match trie leaf")
+		fmt.Printf("  Trie full RLP:     %#x\n", trieData)
+		fmt.Printf("  Snapshot full RLP: %#x\n", snapFull)
+	}
+
+	// If storage key is provided, also verify the storage slot.
+	if ctx.NArg() < 2 {
+		return nil
+	}
+	var storageKey common.Hash
+	if err := storageKey.UnmarshalText([]byte(ctx.Args().Get(1))); err != nil {
+		return fmt.Errorf("invalid storage key: %w", err)
+	}
+	storageHash := crypto.Keccak256Hash(storageKey.Bytes())
+
+	fmt.Println()
+	fmt.Printf("Storage key:  %#x\n", storageKey)
+	fmt.Printf("Storage hash: %#x\n", storageHash)
+	fmt.Println()
+
+	// Need the account's storage root to open the storage trie.
+	if trieData == nil {
+		return fmt.Errorf("cannot verify storage: account not in trie")
+	}
+	var acc types.StateAccount
+	if err := rlp.DecodeBytes(trieData, &acc); err != nil {
+		return fmt.Errorf("failed to decode trie account: %w", err)
+	}
+	if acc.Root == types.EmptyRootHash {
+		fmt.Println("Account has empty storage root, no storage trie")
+		return nil
+	}
+	storageTrie, err := trie.New(
+		trie.StorageTrieID(root, accountHash, acc.Root), triedb,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to open storage trie: %w", err)
+	}
+	storageTrieData, err := storageTrie.Get(storageHash.Bytes())
+	if err != nil {
+		return fmt.Errorf("failed to get storage from trie: %w", err)
+	}
+	storageSnapData := rawdb.ReadStorageSnapshot(
+		db, accountHash, storageHash,
+	)
+
+	fmt.Println("--- Storage Trie Leaf ---")
+	if storageTrieData == nil {
+		fmt.Println("  (not found)")
+	} else {
+		fmt.Printf("  RLP: %#x\n", storageTrieData)
+		_, content, _, err := rlp.Split(storageTrieData)
+		if err != nil {
+			return fmt.Errorf("failed to decode trie storage: %w", err)
+		}
+		fmt.Printf("  Value: %#x\n", content)
+	}
+	fmt.Println()
+
+	fmt.Println("--- Storage Snapshot ---")
+	if storageSnapData == nil {
+		fmt.Println("  (not found)")
+	} else {
+		fmt.Printf("  Raw: %#x\n", storageSnapData)
+	}
+	fmt.Println()
+
+	fmt.Println("--- Verification ---")
+	if storageTrieData == nil && storageSnapData == nil {
+		fmt.Println("Storage slot not found in both trie and snapshot")
+		return nil
+	}
+	if storageTrieData == nil && storageSnapData != nil {
+		fmt.Println("MISMATCH: storage exists in snapshot but not in trie")
+		return nil
+	}
+	if storageTrieData != nil && storageSnapData == nil {
+		fmt.Println("MISMATCH: storage exists in trie but not in snapshot")
+		return nil
+	}
+	if bytes.Equal(storageTrieData, storageSnapData) {
+		fmt.Println("MATCH: snapshot data matches trie leaf")
+	} else {
+		fmt.Println("MISMATCH: snapshot data does not match trie leaf")
+		fmt.Printf("  Trie value:     %#x\n", storageTrieData)
+		fmt.Printf("  Snapshot value: %#x\n", storageSnapData)
+	}
+	return nil
+}
+
+func printAccount(acc *types.StateAccount) {
+	fmt.Printf("  Nonce:    %d\n", acc.Nonce)
+	fmt.Printf("  Balance:  %s\n", acc.Balance)
+	fmt.Printf("  Root:     %#x\n", acc.Root)
+	fmt.Printf("  CodeHash: %#x\n", acc.CodeHash)
 }
