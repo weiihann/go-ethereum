@@ -24,7 +24,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/database"
@@ -88,7 +87,7 @@ func (r *historicStateReader) Storage(addr common.Address, key common.Hash) (com
 	if len(blob) == 0 {
 		return common.Hash{}, nil
 	}
-	_, content, _, err := rlp.Split(blob)
+	content, _, err := types.DecodeStorageSnapshotValue(blob)
 	if err != nil {
 		return common.Hash{}, err
 	}

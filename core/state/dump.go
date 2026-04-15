@@ -181,7 +181,7 @@ func (s *StateDB) DumpToCollector(c DumpCollector, conf *DumpConfig) (nextKey []
 				continue
 			}
 			for storageIt.Next() {
-				_, content, _, err := rlp.Split(storageIt.Slot())
+				content, _, err := types.DecodeStorageSnapshotValue(storageIt.Slot())
 				if err != nil {
 					log.Error("Failed to decode the value returned by iterator", "error", err)
 					continue

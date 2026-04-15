@@ -25,7 +25,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/overlay"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/bintrie"
 	"github.com/ethereum/go-ethereum/trie/transitiontrie"
@@ -137,9 +136,10 @@ func (r *flatReader) Storage(addr common.Address, key common.Hash) (common.Hash,
 	if len(ret) == 0 {
 		return common.Hash{}, nil
 	}
-	// Perform the rlp-decode as the slot value is RLP-encoded in the state
-	// snapshot.
-	_, content, _, err := rlp.Split(ret)
+	// Snapshot storage values are either the legacy RLP-byte-string form or
+	// the EIP-8188 RLP-list form [value, period]. The helper disambiguates
+	// and returns the canonical value bytes.
+	content, _, err := types.DecodeStorageSnapshotValue(ret)
 	if err != nil {
 		return common.Hash{}, err
 	}

@@ -226,7 +226,7 @@ func (dl *diffLayer) Account(hash common.Hash) (*types.SlimAccount, error) {
 	}
 	account := new(types.SlimAccount)
 	if err := rlp.DecodeBytes(data, account); err != nil {
-		panic(err)
+		return nil, fmt.Errorf("corrupt account snapshot for %x: %w", hash, err)
 	}
 	return account, nil
 }

@@ -102,6 +102,8 @@ Remove blockchain and state databases`,
 			dbMetadataCmd,
 			dbCheckStateContentCmd,
 			dbInspectHistoryCmd,
+			dbInjectPeriodsCmd,
+			dbInspectPeriodsCmd,
 		},
 	}
 	dbInspectCmd = &cli.Command{
