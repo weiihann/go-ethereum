@@ -49,6 +49,13 @@ func (c *committer) Commit(n node, parallel bool) hashNode {
 
 // commit collapses a node down into a hash node and returns it.
 func (c *committer) commit(path []byte, n node, parallel bool) node {
+	// EIP-8188: preserve *expiredNode children in place. They must remain
+	// recognisable to the parent's storage encoder so it can emit hybrid
+	// bytes (0x01 marker) carrying the inline metadata. Replacing them
+	// with hashNode here would lose that information.
+	if _, ok := n.(*expiredNode); ok {
+		return n
+	}
 	// if this path is clean, use available cached data
 	hash, dirty := n.cache()
 	if hash != nil && !dirty {
@@ -148,9 +155,12 @@ func (c *committer) store(path []byte, n node) node {
 		}
 		return n
 	}
-	// Collect the dirty node to nodeset for return.
+	// Collect the dirty node to nodeset for return. When n has any
+	// *expiredNode children (created by EIP-8188 lazy materialisation), the
+	// chaindb storage form is the hybrid layout (0x01 marker + standard RLP
+	// + inline metadata for remaining sub-stubs); otherwise standard RLP.
 	nhash := common.BytesToHash(hash)
-	c.nodes.AddNode(path, trienode.NewNodeWithPrev(nhash, nodeToBytes(n), c.tracer.Get(path)))
+	c.nodes.AddNode(path, trienode.NewNodeWithPrev(nhash, nodeStorageBytes(n), c.tracer.Get(path)))
 
 	// Collect the corresponding leaf node if it's required. We don't check
 	// full node since it's impossible to store value in fullNode. The key

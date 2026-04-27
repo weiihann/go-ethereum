@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/triedb/database"
+	"github.com/ethereum/go-ethereum/triedb/inactive"
 )
 
 // The types of locations where the node is found.
@@ -68,6 +69,19 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 	if err != nil {
 		return nil, err
 	}
+	// EIP-8188 prototype: skip hash check on either flavour of inactive-
+	// boundary blob.
+	//   - Primary stubs (0x00): full subtree replacement; keccak does not
+	//     match the parent's hashNode reference because the stub bytes are
+	//     not RLP.
+	//   - Hybrid nodes (0x01): partially-materialised parent; keccak of the
+	//     full hybrid bytes (marker + standard RLP + metadata) differs from
+	//     keccak of just the standard RLP. The trie's in-memory hash uses
+	//     the standard-RLP component, which DOES match the parent's
+	//     hashNode reference.
+	if inactive.IsStubOrHybrid(blob) {
+		return blob, nil
+	}
 	// Error out if the local one is inconsistent with the target.
 	if !r.noHashCheck && got != hash {
 		// Location is always available even if the node
@@ -90,6 +104,20 @@ func (r *reader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte,
 		return nil, fmt.Errorf("unexpected node: (%x %v), %x!=%x, %s, blob: %s", owner, path, hash, got, loc.string(), blobHex)
 	}
 	return blob, nil
+}
+
+// ArchiveResolver implements database.ArchiveResolverProvider. Returns nil
+// when no inactive file is attached to the database; otherwise returns a
+// closure that pread()'s the requested range from the file. The closure is
+// safe to call concurrently with other reads.
+func (r *reader) ArchiveResolver() database.ArchiveResolverFn {
+	if r.db.inactiveFile == nil {
+		return nil
+	}
+	file := r.db.inactiveFile
+	return func(offset, size uint64) ([]byte, error) {
+		return file.Read(offset, size)
+	}
 }
 
 // AccountRLP directly retrieves the account associated with a particular hash.

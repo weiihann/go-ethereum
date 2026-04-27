@@ -104,6 +104,13 @@ type Config struct {
 	EnableStateIndexing bool   // Whether to enable state history indexing for external state access
 	FullValueCheckpoint uint32 // The rate at which trie nodes are encoded in full-value format
 
+	// EIP-8188 prototype: absolute path of the inactive trie file. When set
+	// and the file exists, pathdb opens it on startup and exposes an archive
+	// resolver to every NodeReader so tries can transparently follow stubs
+	// into the file. When empty or the file is missing, no inactive backend
+	// is attached and the database behaves as vanilla pathdb.
+	InactiveFilePath string
+
 	// Testing configurations
 	SnapshotNoBuild     bool // Flag Whether the state generation is disabled
 	NoAsyncFlush        bool // Flag whether the background buffer flushing is disabled

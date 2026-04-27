@@ -33,6 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/bintrie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
+	"github.com/ethereum/go-ethereum/triedb/inactive"
 )
 
 // layer is the interface implemented by all state layers which includes some
@@ -140,6 +141,11 @@ type Database struct {
 	trienodeFreezer ethdb.ResettableAncientStore // Freezer for storing trienode histories, nil possible in tests
 	trienodeIndexer *historyIndexer              // History indexer for historical trienode data
 
+	// EIP-8188 prototype: optional handle to the inactive trie file. When
+	// non-nil, every NodeReader exposes an ArchiveResolver that reads from
+	// this file, allowing the trie to follow stubs into the inactive store.
+	inactiveFile *inactive.File
+
 	lock sync.RWMutex // Lock to prevent mutations from happening at the same time
 }
 
@@ -194,6 +200,20 @@ func New(diskdb ethdb.Database, config *Config, isVerkle bool) *Database {
 		log.Crit("Failed to setup the generator", "err", err)
 	}
 	db.setHistoryIndexer()
+
+	// EIP-8188 prototype: open the inactive trie file if configured. The
+	// file is created (in `geth db convert-inactive`) before this code path
+	// is reached, so opening with create=false is correct: a missing file
+	// means "nothing to attach, behave as vanilla pathdb".
+	if path := config.InactiveFilePath; path != "" {
+		f, err := inactive.Open(path, false)
+		if err == nil {
+			db.inactiveFile = f
+			log.Info("EIP-8188 inactive file attached", "path", path, "size", f.Size())
+		} else {
+			log.Debug("EIP-8188 inactive file not present; running without it", "path", path, "err", err)
+		}
+	}
 
 	fields := config.fields()
 	if db.isVerkle {
@@ -548,6 +568,11 @@ func (db *Database) Close() error {
 	}
 	if db.trienodeFreezer != nil {
 		if err := db.trienodeFreezer.Close(); err != nil {
+			return err
+		}
+	}
+	if db.inactiveFile != nil {
+		if err := db.inactiveFile.Close(); err != nil {
 			return err
 		}
 	}
