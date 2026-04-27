@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/triedb/inactive"
 	"github.com/urfave/cli/v2"
 )
 
@@ -171,6 +173,65 @@ The output stream is one JSON object per line:
 Run after 'inject-periods' (or after a node sync that records periods at
 commit time). The triedb diff layers are flushed to disk at startup so the
 walk reads a consistent on-disk view.`,
+	}
+
+	eip8188InactiveFileFlag = &cli.StringFlag{
+		Name:  "inactive-file",
+		Usage: "Path to the inactive trie file (default: <chaindata>/inactive.bin)",
+	}
+	eip8188ConvertBatchSizeFlag = &cli.IntFlag{
+		Name:  "convert-batch-size",
+		Usage: "Chaindb pebble batch size (bytes) for stub writes and original-node deletes",
+		Value: eip8188.DefaultConvertBatchSize,
+	}
+	eip8188ConvertDryRunFlag = &cli.BoolFlag{
+		Name:  "dry-run",
+		Usage: "Identify and count inactive subtrees without mutating the chaindb or inactive file",
+	}
+
+	dbCountTrieNodeKindsCmd = &cli.Command{
+		Action: dbCountTrieNodeKinds,
+		Name:   "count-trienode-kinds",
+		Usage:  "Count chaindb trie-node entries by kind (RLP / EIP-8188 stub / EIP-8188 hybrid)",
+		Flags:  slices.Concat([]cli.Flag{eip8188JSONFlag}, utils.NetworkFlags, utils.DatabaseFlags),
+		Description: `Iterates the chaindb's trie-node keyspace ('A'-prefix and 'O'-prefix entries)
+and classifies each value by its first byte:
+  - 0x00:    EIP-8188 primary stub (full subtree replacement)
+  - 0x01:    EIP-8188 hybrid node (partially-materialised parent)
+  - 0xc0+:   standard MPT RLP node
+  - other:   anomaly (counted under 'other')
+
+Useful for verifying the on-disk effect of EIP-8188 conversion and lazy
+materialisation: a fresh conversion produces only stubs (no hybrids); a
+post-modification chaindb produces hybrids along the modified path.`,
+	}
+
+	dbConvertInactiveCmd = &cli.Command{
+		Action: dbConvertInactive,
+		Name:   "convert-inactive",
+		Usage:  "Move inactive trie subtrees out of chaindb into a separate file",
+		Flags: slices.Concat([]cli.Flag{
+			eip8188ForkBlockFlag,
+			eip8188PeriodLengthFlag,
+			eip8188InactiveMinAgeFlag,
+			eip8188CurrentPeriodFlag,
+			eip8188ScopeFlag,
+			eip8188InactiveFileFlag,
+			eip8188ConvertBatchSizeFlag,
+			eip8188ConvertDryRunFlag,
+		}, utils.NetworkFlags, utils.DatabaseFlags),
+		Description: `Walks the account trie (and per-contract storage tries) at the chaindb head,
+identifies maximal inactive subtree roots (same algorithm as identify-inactive),
+serialises each as a frozen-trie blob into the inactive file, writes a 17-byte
+stub at the original chaindb key, and deletes the interior trie nodes that
+made up the original subtree.
+
+The state root is preserved — readers transparently follow stubs into the
+inactive file via an archive resolver attached at pathdb open time. The
+node must be stopped during this command.
+
+Subsequent 'geth' invocations auto-attach the inactive file when present at
+<chaindata>/inactive.bin (or whatever --inactive-file points at).`,
 	}
 )
 
@@ -342,6 +403,176 @@ func dbIdentifyInactive(ctx *cli.Context) error {
 		"snapshot-mismatches", stats.SnapshotMismatches,
 	)
 	return err
+}
+
+// dbConvertInactive runs the offline inactive-subtree conversion: identify +
+// serialise + append + write stubs + delete originals. After it completes,
+// subsequent geth invocations transparently follow stubs into the inactive
+// file via the auto-attached archive resolver.
+func dbConvertInactive(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	chaindb := utils.MakeChainDatabase(ctx, stack, false)
+	defer chaindb.Close()
+
+	head := rawdb.ReadHeadBlock(chaindb)
+	if head == nil {
+		return fmt.Errorf("chaindb has no head block; is this a fresh datadir?")
+	}
+	stateRoot := head.Root()
+	headBlock := head.NumberU64()
+
+	// Flush any pathdb diff layers loaded from the on-shutdown journal so
+	// the converter sees a fully-merged disk view of the trie.
+	if err := flushDiffLayers(ctx, stack, chaindb, stateRoot); err != nil {
+		log.Warn("convert-inactive: failed to flush diff layers", "err", err)
+	}
+
+	tdb := utils.MakeTrieDatabase(ctx, stack, chaindb, false, false, false)
+	defer tdb.Close()
+
+	// Resolve current period.
+	currentPeriod := uint32(0)
+	if ctx.IsSet(eip8188CurrentPeriodFlag.Name) {
+		currentPeriod = clampPeriod(ctx.Uint64(eip8188CurrentPeriodFlag.Name))
+	} else {
+		forkBlock := ctx.Uint64(eip8188ForkBlockFlag.Name)
+		if headBlock < forkBlock {
+			return fmt.Errorf("head block %d is before fork block %d", headBlock, forkBlock)
+		}
+		currentPeriod = eip8188.ComputePeriod(headBlock, forkBlock,
+			ctx.Uint64(eip8188PeriodLengthFlag.Name))
+	}
+	threshold := clampPeriod(ctx.Uint64(eip8188InactiveMinAgeFlag.Name))
+	scope := ctx.String(eip8188ScopeFlag.Name)
+	dryRun := ctx.Bool(eip8188ConvertDryRunFlag.Name)
+
+	// Resolve inactive file path. Default to <chaindata>/inactive.bin.
+	inactivePath := ctx.String(eip8188InactiveFileFlag.Name)
+	if inactivePath == "" {
+		inactivePath = filepath.Join(stack.ResolvePath("chaindata"), "inactive.bin")
+	}
+
+	var file *inactive.File
+	if !dryRun {
+		f, err := inactive.Open(inactivePath, true) // create=true; appends if exists
+		if err != nil {
+			return fmt.Errorf("open inactive file %q: %w", inactivePath, err)
+		}
+		file = f
+		defer f.Close()
+	}
+
+	log.Info("EIP-8188 convert-inactive starting",
+		"state-root", stateRoot,
+		"head-block", headBlock,
+		"current-period", currentPeriod,
+		"inactive-min-age", threshold,
+		"scope", scope,
+		"inactive-file", inactivePath,
+		"dry-run", dryRun,
+	)
+
+	stats, err := eip8188.Convert(ctx.Context, chaindb, tdb, eip8188.ConvertConfig{
+		IdentifyConfig: eip8188.IdentifyConfig{
+			CurrentPeriod:  currentPeriod,
+			InactiveMinAge: threshold,
+			Scope:          scope,
+		},
+		StateRoot:    stateRoot,
+		InactiveFile: file,
+		BatchSize:    ctx.Int(eip8188ConvertBatchSizeFlag.Name),
+		DryRun:       dryRun,
+	})
+	log.Info("EIP-8188 convert-inactive finished",
+		"subtrees-converted", stats.SubtreesConverted,
+		"account-subtrees", stats.AccountSubtrees,
+		"storage-subtrees", stats.StorageSubtrees,
+		"nodes-deleted", stats.NodesDeleted,
+		"bytes-appended", stats.BytesAppended,
+		"errors", stats.ConversionErrors,
+		"snapshot-mismatches", stats.IdentifyStats.SnapshotMismatches,
+	)
+	return err
+}
+
+// dbCountTrieNodeKinds iterates the chaindb's trie-node keyspace and counts
+// entries by their first-byte classification. Flushes pathdb diff layers
+// first so the count reflects all committed state, including modifications
+// still buffered in the journal at last shutdown.
+func dbCountTrieNodeKinds(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, false)
+	defer db.Close()
+
+	headBlock := rawdb.ReadHeadBlock(db)
+	if headBlock != nil {
+		if err := flushDiffLayers(ctx, stack, db, headBlock.Root()); err != nil {
+			log.Warn("count-trienode-kinds: failed to flush diff layers", "err", err)
+		}
+	}
+
+	type counts struct {
+		Stubs    uint64 `json:"stubs"`
+		Hybrids  uint64 `json:"hybrids"`
+		RLP      uint64 `json:"standard_rlp"`
+		Other    uint64 `json:"other"`
+		Empty    uint64 `json:"empty"`
+		TotalKey uint64 `json:"total_keys"`
+	}
+	type report struct {
+		AccountTrie counts `json:"account_trie"`
+		StorageTrie counts `json:"storage_trie"`
+	}
+	classify := func(prefix []byte) counts {
+		var c counts
+		it := db.NewIterator(prefix, nil)
+		defer it.Release()
+		for it.Next() {
+			c.TotalKey++
+			val := it.Value()
+			switch {
+			case len(val) == 0:
+				c.Empty++
+			case val[0] == 0x00:
+				c.Stubs++
+			case val[0] == 0x01:
+				c.Hybrids++
+			case val[0] >= 0xc0:
+				c.RLP++
+			default:
+				c.Other++
+			}
+		}
+		if err := it.Error(); err != nil {
+			log.Warn("count-trienode-kinds: iterator error", "prefix", string(prefix), "err", err)
+		}
+		return c
+	}
+
+	rep := report{
+		AccountTrie: classify(rawdb.TrieNodeAccountPrefix),
+		StorageTrie: classify(rawdb.TrieNodeStoragePrefix),
+	}
+
+	if ctx.Bool(eip8188JSONFlag.Name) {
+		out, err := json.Marshal(rep)
+		if err != nil {
+			return fmt.Errorf("marshal: %w", err)
+		}
+		fmt.Println(string(out))
+		return nil
+	}
+	fmt.Printf("Account trie:  rlp=%d stubs=%d hybrids=%d other=%d empty=%d (total=%d)\n",
+		rep.AccountTrie.RLP, rep.AccountTrie.Stubs, rep.AccountTrie.Hybrids,
+		rep.AccountTrie.Other, rep.AccountTrie.Empty, rep.AccountTrie.TotalKey)
+	fmt.Printf("Storage trie:  rlp=%d stubs=%d hybrids=%d other=%d empty=%d (total=%d)\n",
+		rep.StorageTrie.RLP, rep.StorageTrie.Stubs, rep.StorageTrie.Hybrids,
+		rep.StorageTrie.Other, rep.StorageTrie.Empty, rep.StorageTrie.TotalKey)
+	return nil
 }
 
 // clampPeriod clamps a uint64 period value to uint32 (the EIP-8188 prototype's

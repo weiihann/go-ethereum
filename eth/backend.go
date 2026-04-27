@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -248,8 +249,12 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			// - DATADIR/triedb/merkle.journal
 			// - DATADIR/triedb/verkle.journal
 			TrieJournalDirectory: stack.ResolvePath("triedb"),
-			StateSizeTracking:    config.EnableStateSizeTracking,
-			SlowBlockThreshold:   config.SlowBlockThreshold,
+			// EIP-8188 prototype: point pathdb at the inactive trie file. Pathdb
+			// opens it lazily; missing-file is a no-op (same path that
+			// `geth db convert-inactive` writes to by default).
+			TrieInactiveFile:   filepath.Join(stack.ResolvePath("chaindata"), "inactive.bin"),
+			StateSizeTracking:  config.EnableStateSizeTracking,
+			SlowBlockThreshold: config.SlowBlockThreshold,
 
 			StatelessSelfValidation: config.StatelessSelfValidation,
 			EnableWitnessStats:      config.EnableWitnessStats,

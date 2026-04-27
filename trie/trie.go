@@ -57,6 +57,12 @@ type Trie struct {
 	// reader is the handler trie can retrieve nodes from.
 	reader *Reader
 
+	// archiveResolver fetches the bytes of an EIP-8188 inactive-subtree blob
+	// when traversal hits an *expiredNode. Set automatically in New() if the
+	// underlying NodeReader implements database.ArchiveResolverProvider; nil
+	// for tries with no inactive file attached. EIP-8188 prototype.
+	archiveResolver ArchiveResolverFn
+
 	// Various tracers for capturing the modifications to trie
 	opTracer       *opTracer
 	prevalueTracer *PrevalueTracer
@@ -70,15 +76,29 @@ func (t *Trie) newFlag() nodeFlag {
 // Copy returns a copy of Trie.
 func (t *Trie) Copy() *Trie {
 	return &Trie{
-		root:           copyNode(t.root),
-		owner:          t.owner,
-		committed:      t.committed,
-		unhashed:       t.unhashed,
-		uncommitted:    t.uncommitted,
-		reader:         t.reader,
-		opTracer:       t.opTracer.copy(),
-		prevalueTracer: t.prevalueTracer.Copy(),
+		root:            copyNode(t.root),
+		owner:           t.owner,
+		committed:       t.committed,
+		unhashed:        t.unhashed,
+		uncommitted:     t.uncommitted,
+		reader:          t.reader,
+		archiveResolver: t.archiveResolver,
+		opTracer:        t.opTracer.copy(),
+		prevalueTracer:  t.prevalueTracer.Copy(),
 	}
+}
+
+// SetArchiveResolver attaches a resolver for EIP-8188 inactive-subtree stubs
+// to this trie. The trie consults the resolver whenever traversal encounters
+// an *expiredNode. Passing nil clears the resolver — subsequent traversals
+// over expired nodes will return an error.
+//
+// Most callers don't need this: the trie auto-attaches a resolver in New()
+// if the underlying NodeReader implements ArchiveResolverProvider. Manual
+// override is useful for tests and for redirecting reads to a different
+// inactive file at runtime.
+func (t *Trie) SetArchiveResolver(fn ArchiveResolverFn) {
+	t.archiveResolver = fn
 }
 
 // New creates the trie instance with provided trie id and the read-only
@@ -97,6 +117,13 @@ func New(id *ID, db database.NodeDatabase) (*Trie, error) {
 		reader:         reader,
 		opTracer:       newOpTracer(),
 		prevalueTracer: NewPrevalueTracer(),
+	}
+	// If the underlying reader implements ArchiveResolverProvider, attach the
+	// resolver so traversal can transparently follow EIP-8188 stubs into the
+	// inactive file. Tries against backends without an inactive file get a
+	// nil resolver and will error if they encounter a stub.
+	if provider, ok := reader.reader.(database.ArchiveResolverProvider); ok {
+		trie.archiveResolver = provider.ArchiveResolver()
 	}
 	if id.Root != (common.Hash{}) && id.Root != types.EmptyRootHash {
 		rootnode, err := trie.resolveAndTrack(id.Root[:], nil)
@@ -218,6 +245,12 @@ func (t *Trie) get(origNode node, key []byte, pos int) (value []byte, newnode no
 		}
 		value, newnode, _, err := t.get(child, key, pos)
 		return value, newnode, true, err
+	case *expiredNode:
+		// Inactive subtree — resolve via the archive resolver and navigate
+		// the frozen-trie blob without materialising it. Returns just the
+		// leaf value bytes; the trie state is unchanged.
+		value, err := t.navigateInactive(n, key, pos)
+		return value, n, false, err
 	default:
 		panic(fmt.Sprintf("%T: invalid node: %v", origNode, origNode))
 	}
@@ -352,6 +385,13 @@ func (t *Trie) getNode(origNode node, path []byte, pos int) (item []byte, newnod
 		item, newnode, resolved, err := t.getNode(child, path, pos)
 		return item, newnode, resolved + 1, err
 
+	case *expiredNode:
+		// getNode is used by proof generation and by the trie iterator's
+		// blob inspection. We don't currently support either across an
+		// inactive boundary — the proof would lack the materialised
+		// internals. Surface this clearly instead of returning garbage.
+		return nil, n, 0, fmt.Errorf("getNode crosses an inactive boundary at path %x", path[:pos])
+
 	default:
 		panic(fmt.Sprintf("%T: invalid node: %v", origNode, origNode))
 	}
@@ -472,6 +512,22 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		dirty, nn, err := t.insert(rn, prefix, key, value)
 		if !dirty || err != nil {
 			return false, rn, err
+		}
+		return true, nn, nil
+
+	case *expiredNode:
+		// EIP-8188 inactive boundary. Walk only the path being modified
+		// (lazy materialisation) so the cost of touching an inactive
+		// subtree is O(depth) rather than O(subtree). Off-path siblings
+		// remain as *expiredNode references and become hybrid-node
+		// metadata in chaindb when this parent commits.
+		root, err := t.materialiseLazyPath(n, key)
+		if err != nil {
+			return false, nil, err
+		}
+		dirty, nn, err := t.insert(root, prefix, key, value)
+		if !dirty || err != nil {
+			return false, root, err
 		}
 		return true, nn, nil
 
@@ -636,6 +692,20 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		}
 		return true, nn, nil
 
+	case *expiredNode:
+		// EIP-8188 inactive boundary. Lazy-materialise just the path being
+		// deleted; off-path siblings stay as *expiredNode and fold into the
+		// parent's hybrid chaindb entry at commit time.
+		root, err := t.materialiseLazyPath(n, key)
+		if err != nil {
+			return false, nil, err
+		}
+		dirty, nn, err := t.delete(root, prefix, key)
+		if !dirty || err != nil {
+			return false, root, err
+		}
+		return true, nn, nil
+
 	default:
 		panic(fmt.Sprintf("%T: invalid node: %v (%v)", n, n, key))
 	}
@@ -665,6 +735,12 @@ func copyNode(n node) node {
 			Children: children,
 		}
 	case hashNode:
+		return n
+	case *expiredNode:
+		// expiredNodes are immutable view-only handles into the inactive file.
+		// Sharing the pointer is safe — neither the offset/size nor the hash
+		// will change without going through materialise+commit, which
+		// produces fresh nodes anyway.
 		return n
 	default:
 		panic(fmt.Sprintf("%T: unknown node type", n))

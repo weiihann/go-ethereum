@@ -169,6 +169,7 @@ type BlockChainConfig struct {
 	TrieTimeLimit        time.Duration // Time limit after which to flush the current in-memory trie to disk
 	TrieNoAsyncFlush     bool          // Whether the asynchronous buffer flushing is disallowed
 	TrieJournalDirectory string        // Directory path to the journal used for persisting trie data across node restarts
+	TrieInactiveFile     string        // EIP-8188: absolute path to the inactive trie file (empty disables)
 
 	Preimages   bool   // Whether to store preimage of trie key to the disk
 	StateScheme string // Scheme used to store ethereum states and merkle tree nodes on top
@@ -277,6 +278,7 @@ func (cfg *BlockChainConfig) triedbConfig(isVerkle bool) *triedb.Config {
 			// should be updated to eliminate the confusion.
 			WriteBufferSize:  cfg.TrieDirtyLimit * 1024 * 1024,
 			JournalDirectory: cfg.TrieJournalDirectory,
+			InactiveFilePath: cfg.TrieInactiveFile,
 
 			// Historical state configurations
 			StateHistory:        cfg.StateHistory,

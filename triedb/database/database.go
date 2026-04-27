@@ -41,6 +41,24 @@ type NodeDatabase interface {
 	NodeReader(stateRoot common.Hash) (NodeReader, error)
 }
 
+// ArchiveResolverFn returns the bytes of an EIP-8188 frozen-trie blob residing
+// at the given (offset, size) in the inactive database file. The returned
+// bytes are passed by the trie to the inactive package for navigation or
+// materialisation. EIP-8188 prototype.
+type ArchiveResolverFn func(offset, size uint64) ([]byte, error)
+
+// ArchiveResolverProvider is an optional interface implemented by NodeReader
+// implementations that can resolve EIP-8188 inactive-subtree stubs. When a
+// trie is constructed against a NodeReader implementing this interface, the
+// resolver is attached to the trie automatically and consulted on every
+// traversal that hits an *expiredNode.
+//
+// Returning nil indicates "no inactive file attached" — the trie will error
+// out cleanly if it encounters a stub it cannot resolve.
+type ArchiveResolverProvider interface {
+	ArchiveResolver() ArchiveResolverFn
+}
+
 // StateReader wraps the Account and Storage method of a backing state reader.
 type StateReader interface {
 	// Account directly retrieves the account associated with a particular hash in

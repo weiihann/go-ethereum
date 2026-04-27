@@ -2539,6 +2539,9 @@ func MakeTrieDatabase(ctx *cli.Context, stack *node.Node, disk ethdb.Database, p
 		pathConfig = *pathdb.Defaults
 	}
 	pathConfig.JournalDirectory = stack.ResolvePath("triedb")
+	// EIP-8188 prototype: point pathdb at the inactive trie file. Pathdb
+	// opens the file lazily and only if it exists; missing-file is a no-op.
+	pathConfig.InactiveFilePath = filepath.Join(stack.ResolvePath("chaindata"), "inactive.bin")
 	config.PathDB = &pathConfig
 	return triedb.NewDatabase(disk, config)
 }

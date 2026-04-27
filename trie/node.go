@@ -24,6 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/triedb/inactive"
 )
 
 var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "[17]"}
@@ -153,9 +154,25 @@ func decodeNode(hash, buf []byte) (node, error) {
 // decodeNodeUnsafe parses the RLP encoding of a trie node. The passed byte slice
 // will be directly referenced by node without bytes deep copy, so the input MUST
 // not be changed after.
+//
+// In addition to the standard MPT shapes (2-element shortNode list, 17-element
+// fullNode list), this function recognises two EIP-8188 prototype variants:
+//
+//   - Primary stub (`expiredNodeMarker` / 0x00): a fixed-length blob that
+//     decodes to a single *expiredNode referencing the inactive file.
+//   - Hybrid node (0x01): a partially-materialised parent whose standard
+//     RLP is followed by inline metadata pointing at *expiredNode children
+//     that remain in the inactive file. Decodes to a *fullNode/*shortNode
+//     with the named children patched as *expiredNode.
 func decodeNodeUnsafe(hash, buf []byte) (node, error) {
 	if len(buf) == 0 {
 		return nil, io.ErrUnexpectedEOF
+	}
+	if buf[0] == expiredNodeMarker {
+		return decodeStub(hash, buf)
+	}
+	if buf[0] == inactive.HybridMarker {
+		return decodeHybrid(hash, buf)
 	}
 	elems, _, err := rlp.SplitList(buf)
 	if err != nil {
