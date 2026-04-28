@@ -20,7 +20,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/ethereum/go-ethereum/triedb/database"
@@ -218,14 +217,6 @@ func (t *StateTrie) UpdateAccount(address common.Address, acc *types.StateAccoun
 	if err != nil {
 		return err
 	}
-	log.Info("eip8188 trie: UpdateAccount",
-		"addr", address,
-		"addr-hash", common.BytesToHash(hk),
-		"data-hash", common.Hash(crypto.Keccak256Hash(data)),
-		"nonce", acc.Nonce,
-		"balance", acc.Balance,
-		"root", acc.Root,
-		"code-hash", common.BytesToHash(acc.CodeHash))
 	if err := t.trie.Update(hk, data); err != nil {
 		return err
 	}
@@ -263,9 +254,6 @@ func (t *StateTrie) DeleteStorage(_ common.Address, key []byte) error {
 // DeleteAccount abstracts an account deletion from the trie.
 func (t *StateTrie) DeleteAccount(address common.Address) error {
 	hk := crypto.Keccak256(address.Bytes())
-	log.Info("eip8188 trie: DeleteAccount",
-		"addr", address,
-		"addr-hash", common.BytesToHash(hk))
 	if t.preimages != nil {
 		delete(t.secKeyCache, common.Hash(hk))
 	}
