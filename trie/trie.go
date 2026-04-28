@@ -748,17 +748,27 @@ func copyNode(n node) node {
 }
 
 func (t *Trie) resolve(n node, prefix []byte) (node, error) {
-	if n, ok := n.(hashNode); ok {
-		return t.resolveAndTrack(n, prefix)
+	// First, resolve hashNode references via the database.
+	if hn, ok := n.(hashNode); ok {
+		resolved, err := t.resolveAndTrack(hn, prefix)
+		if err != nil {
+			return nil, err
+		}
+		n = resolved
 	}
 	// EIP-8188: when delete() collapses a *fullNode down to its single
 	// surviving child, it calls resolve to peek at that child and decide
 	// whether it's a *shortNode (whose key must be merged with the surviving
-	// nibble) or anything else (one-nibble wrap is correct). For *expiredNode
-	// surviving children we MUST fully materialise the subtree so the
-	// shortNode-detection branch can fire. Without this, the wrap branch
-	// runs unconditionally and produces shortNode{[pos], *expiredNode},
-	// which hashes differently from canonical's merged shortNode{[pos]+K, V}.
+	// nibble) or anything else (one-nibble wrap is correct). The surviving
+	// child can arrive here as *expiredNode in two ways: (1) it was already
+	// *expiredNode in memory (e.g., off-path sibling created by an earlier
+	// lazy mat in this same Insert/Delete), or (2) it was a hashNode that
+	// resolveAndTrack loaded from chaindb where the value was a stub
+	// (0x00 marker), decoding directly into *expiredNode. Either way we
+	// MUST fully materialise the subtree here so the shortNode-detection
+	// branch in delete-collapse can fire. Otherwise the wrap branch runs
+	// unconditionally and produces shortNode{[pos], *expiredNode}, which
+	// hashes differently from canonical's merged shortNode{[pos]+K, V}.
 	if en, ok := n.(*expiredNode); ok && t.archiveResolver != nil {
 		reader := readerFromResolver(t.archiveResolver)
 		return fullyMaterialiseByReader(reader, en.blobOffset, en.nodeFileOffset, en.size, t.newFlag())
