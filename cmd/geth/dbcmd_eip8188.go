@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/cmd/geth/eip8188"
 	"github.com/ethereum/go-ethereum/cmd/utils"
@@ -546,11 +547,30 @@ func dbCountTrieNodeKinds(ctx *cli.Context) error {
 		StorageTrie counts `json:"storage_trie"`
 	}
 	classify := func(prefix []byte) counts {
+		log.Info("count-trienode-kinds: phase starting", "prefix", string(prefix))
 		var c counts
 		it := db.NewIterator(prefix, nil)
 		defer it.Release()
+		phaseStart := time.Now()
+		nextLog := phaseStart.Add(30 * time.Second)
 		for it.Next() {
 			c.TotalKey++
+			if now := time.Now(); !now.Before(nextLog) {
+				elapsed := now.Sub(phaseStart)
+				rate := float64(c.TotalKey) / elapsed.Seconds()
+				log.Info("count-trienode-kinds: progress",
+					"prefix", string(prefix),
+					"scanned", c.TotalKey,
+					"stubs", c.Stubs,
+					"hybrids", c.Hybrids,
+					"rlp", c.RLP,
+					"other", c.Other,
+					"empty", c.Empty,
+					"keys-per-sec", uint64(rate),
+					"elapsed", common.PrettyDuration(elapsed),
+				)
+				nextLog = now.Add(30 * time.Second)
+			}
 			val := it.Value()
 			switch {
 			case len(val) == 0:
@@ -568,6 +588,15 @@ func dbCountTrieNodeKinds(ctx *cli.Context) error {
 		if err := it.Error(); err != nil {
 			log.Warn("count-trienode-kinds: iterator error", "prefix", string(prefix), "err", err)
 		}
+		log.Info("count-trienode-kinds: phase finished",
+			"prefix", string(prefix),
+			"scanned", c.TotalKey,
+			"stubs", c.Stubs,
+			"hybrids", c.Hybrids,
+			"rlp", c.RLP,
+			"other", c.Other,
+			"empty", c.Empty,
+			"elapsed", common.PrettyDuration(time.Since(phaseStart)))
 		return c
 	}
 
