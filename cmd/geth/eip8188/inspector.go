@@ -20,10 +20,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -63,12 +65,28 @@ func Inspect(ctx context.Context, db ethdb.Iteratee) (PeriodReport, error) {
 }
 
 func inspectAccounts(ctx context.Context, db ethdb.Iteratee, report *PeriodReport) error {
+	log.Info("inspect-periods: account phase starting")
 	it := db.NewIterator(snapshotAccountPrefix, nil)
 	defer it.Release()
 
+	phaseStart := time.Now()
+	nextLog := phaseStart.Add(progressInterval)
 	for it.Next() {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if now := time.Now(); !now.Before(nextLog) {
+			elapsed := now.Sub(phaseStart).Seconds()
+			rate := float64(report.TotalAccounts) / elapsed
+			log.Info("inspect-periods: account progress",
+				"scanned", report.TotalAccounts,
+				"with-period", report.AccountsWithPeriod,
+				"max-period", report.MaxAccountPeriod,
+				"decode-errors", report.AccountDecodeErrors,
+				"records-per-sec", uint64(rate),
+				"elapsed", common.PrettyDuration(now.Sub(phaseStart)),
+			)
+			nextLog = now.Add(progressInterval)
 		}
 		key := it.Key()
 		// The snapshot account key is prefix+hash (33 bytes). Other keys that
@@ -98,12 +116,28 @@ func inspectAccounts(ctx context.Context, db ethdb.Iteratee, report *PeriodRepor
 }
 
 func inspectStorage(ctx context.Context, db ethdb.Iteratee, report *PeriodReport) error {
+	log.Info("inspect-periods: storage phase starting")
 	it := db.NewIterator(snapshotStoragePrefix, nil)
 	defer it.Release()
 
+	phaseStart := time.Now()
+	nextLog := phaseStart.Add(progressInterval)
 	for it.Next() {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if now := time.Now(); !now.Before(nextLog) {
+			elapsed := now.Sub(phaseStart).Seconds()
+			rate := float64(report.TotalStorageSlots) / elapsed
+			log.Info("inspect-periods: storage progress",
+				"scanned", report.TotalStorageSlots,
+				"with-period", report.StorageWithPeriod,
+				"max-period", report.MaxStoragePeriod,
+				"decode-errors", report.StorageDecodeErrors,
+				"records-per-sec", uint64(rate),
+				"elapsed", common.PrettyDuration(now.Sub(phaseStart)),
+			)
+			nextLog = now.Add(progressInterval)
 		}
 		key := it.Key()
 		if len(key) != len(snapshotStoragePrefix)+2*common.HashLength {
