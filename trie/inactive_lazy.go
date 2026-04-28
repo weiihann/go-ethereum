@@ -26,6 +26,7 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/triedb/inactive"
 )
 
@@ -38,6 +39,12 @@ func (t *Trie) materialiseLazyPath(n *expiredNode, hexKey []byte) (node, error) 
 	if t.archiveResolver == nil {
 		return nil, fmt.Errorf("trie: hit *expiredNode at file_offset=%d but no archive resolver attached", n.nodeFileOffset)
 	}
+	log.Debug("eip8188 lazy mat: descending into stub",
+		"hash", n.hash,
+		"blob-offset", n.blobOffset,
+		"node-offset", n.nodeFileOffset,
+		"size", n.size,
+		"hex-key-suffix", common.Bytes2Hex(hexKey))
 	reader := readerFromResolver(t.archiveResolver)
 	return materialiseLazyByReader(reader, n.blobOffset, n.nodeFileOffset, n.size, hexKey, t.newFlag())
 }

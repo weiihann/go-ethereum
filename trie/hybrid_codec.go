@@ -56,6 +56,8 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/triedb/inactive"
 )
@@ -138,6 +140,30 @@ func assembleHybridBytes(n node) []byte {
 		binary.BigEndian.PutUint32(buf[1:5], uint32(s.nodeFileOffset-blobOffset))
 		binary.BigEndian.PutUint32(buf[5:9], s.nodeSize)
 		out = append(out, buf[:]...)
+	}
+	stdRLPHash := common.Hash(crypto.Keccak256Hash(stdRLP))
+	cachedHash, _ := n.cache()
+	if cachedHash != nil && common.BytesToHash(cachedHash) != stdRLPHash {
+		// SMOKING GUN: the trie's standard hasher (fullnodeEncoder, used to
+		// compute n.cache()) and the hybrid commit path (fullNode.encode +
+		// nodeToBytes via assembleHybridBytes) disagree on this node's RLP.
+		// They are supposed to produce byte-identical output. A mismatch
+		// here is the most likely root cause of import-time merkle-root
+		// drift on a converted chaindata.
+		log.Warn("eip8188 hybrid commit: stdRLP/cached hash mismatch",
+			"node-type", fmt.Sprintf("%T", n),
+			"cached-hash", common.BytesToHash(cachedHash),
+			"std-rlp-hash", stdRLPHash,
+			"std-rlp-len", len(stdRLP),
+			"blob-offset", blobOffset,
+			"stub-count", len(stubs))
+	} else {
+		log.Debug("eip8188 hybrid commit",
+			"node-type", fmt.Sprintf("%T", n),
+			"std-rlp-hash", stdRLPHash,
+			"std-rlp-len", len(stdRLP),
+			"blob-offset", blobOffset,
+			"stub-count", len(stubs))
 	}
 	return out
 }
@@ -242,6 +268,26 @@ func decodeHybrid(hash, buf []byte) (node, error) {
 		if err := patchExpiredChild(n, childIndex, blobOffset, blobOffset+uint64(nodeOffsetInBlob), nodeSize); err != nil {
 			return nil, fmt.Errorf("trie: hybrid: patch child %d: %w", childIndex, err)
 		}
+	}
+	stdRLPHash := common.Hash(crypto.Keccak256Hash(buf[stdStart:stdEnd]))
+	claimedHash := common.BytesToHash(hash)
+	if claimedHash != (common.Hash{}) && stdRLPHash != claimedHash {
+		// SMOKING GUN: the parent's hashNode reference says one thing,
+		// but the standard RLP we just decoded hashes to something else.
+		// This means the hybrid was written with corrupt stdRLP, OR the
+		// chaindb retrieval associated the wrong hash with this entry.
+		log.Warn("eip8188 hybrid decode: hash mismatch",
+			"claimed-hash", claimedHash,
+			"std-rlp-hash", stdRLPHash,
+			"std-rlp-len", stdEnd-stdStart,
+			"blob-offset", blobOffset,
+			"stub-count", stubCount)
+	} else {
+		log.Debug("eip8188 hybrid decode",
+			"claimed-hash", claimedHash,
+			"std-rlp-len", stdEnd-stdStart,
+			"blob-offset", blobOffset,
+			"stub-count", stubCount)
 	}
 	return n, nil
 }
