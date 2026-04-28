@@ -263,6 +263,9 @@ func (t *StateTrie) DeleteStorage(_ common.Address, key []byte) error {
 // DeleteAccount abstracts an account deletion from the trie.
 func (t *StateTrie) DeleteAccount(address common.Address) error {
 	hk := crypto.Keccak256(address.Bytes())
+	log.Info("eip8188 trie: DeleteAccount",
+		"addr", address,
+		"addr-hash", common.BytesToHash(hk))
 	if t.preimages != nil {
 		delete(t.secKeyCache, common.Hash(hk))
 	}
