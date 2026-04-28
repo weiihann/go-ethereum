@@ -338,9 +338,19 @@ func convertOne(reader database.NodeReader, file *inactive.File, batch ethdb.Bat
 	}
 
 	// 2. Encode as a frozen-trie blob.
-	blob, err := trie.EncodeInactiveBlob(root)
+	blob, rootHashFromBlob, err := trie.EncodeInactiveBlob(root)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
+	}
+	// Hash invariance check: the root's standard MPT RLP — derived during
+	// encoding — must hash to the same value the trie iterator gave us when
+	// it identified this subtree. A mismatch here means the v2 encoder is
+	// producing different RLP bytes than the original parent's RLP, which
+	// would silently break consensus on the first write that crosses this
+	// stub. Bail loudly so we catch the bug at convert time, not import time.
+	if rootHashFromBlob != s.Hash {
+		return fmt.Errorf("hash invariance violated: encoded blob root hashes to %x but subtree was identified as %x",
+			rootHashFromBlob, s.Hash)
 	}
 
 	if dryRun {

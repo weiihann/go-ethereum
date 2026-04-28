@@ -63,7 +63,7 @@ func TestLazyMaterialiseProducesHybrid(t *testing.T) {
 	_ = tr.Hash()
 
 	// Encode as v2 blob.
-	blob, err := EncodeInactiveBlob(tr.root)
+	blob, _, err := EncodeInactiveBlob(tr.root)
 	if err != nil {
 		t.Fatalf("EncodeInactiveBlob: %v", err)
 	}

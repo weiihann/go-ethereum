@@ -157,20 +157,25 @@ func hasHexPrefix(hexKey, prefix []byte) bool {
 // rejects unresolved hashNode children — the caller must materialise the
 // entire subtree before passing it in.
 //
+// Returns the encoded blob plus the keccak hash of the root's standard MPT
+// RLP — i.e. the hash a parent's RLP would reference. Callers running
+// against trusted live data can compare this to the subtree root's expected
+// hash to catch encoder bugs without doing a full round-trip.
+//
 // Used by the offline converter (`geth db convert-inactive`).
-func EncodeInactiveBlob(root node) ([]byte, error) {
+func EncodeInactiveBlob(root node) ([]byte, common.Hash, error) {
 	if root == nil {
-		return nil, errors.New("trie: cannot encode nil root for inactive blob")
+		return nil, common.Hash{}, errors.New("trie: cannot encode nil root for inactive blob")
 	}
 	var body bytes.Buffer
-	rootOff, rootSize, _, err := encodeInactiveNode(&body, root)
+	rootOff, rootSize, rootRLP, err := encodeInactiveNode(&body, root)
 	if err != nil {
-		return nil, err
+		return nil, common.Hash{}, err
 	}
 	out := make([]byte, inactive.HeaderSize+body.Len())
 	inactive.EncodeHeader(out, rootOff, rootSize)
 	copy(out[inactive.HeaderSize:], body.Bytes())
-	return out, nil
+	return out, crypto.Keccak256Hash(rootRLP), nil
 }
 
 // encodeInactiveNode writes node n to body in post-order DFS. Returns the

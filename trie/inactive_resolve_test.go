@@ -67,7 +67,7 @@ func blobReaderFor(blob []byte) ArchiveResolverFn {
 // known key, expect the original values back.
 func TestEncodeNavigateRoundTrip(t *testing.T) {
 	root, kv := buildSubtree(t)
-	blob, err := EncodeInactiveBlob(root)
+	blob, _, err := EncodeInactiveBlob(root)
 	if err != nil {
 		t.Fatalf("EncodeInactiveBlob: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestEncodeNavigateRoundTrip(t *testing.T) {
 // *expiredNode in a trie. Get queries traverse via the per-step reader.
 func TestEncodeNavigateViaTrie(t *testing.T) {
 	root, kv := buildSubtree(t)
-	blob, err := EncodeInactiveBlob(root)
+	blob, _, err := EncodeInactiveBlob(root)
 	if err != nil {
 		t.Fatalf("EncodeInactiveBlob: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestEncodeNavigateViaTrie(t *testing.T) {
 // is observable via Get on the resulting partial subtree.
 func TestInsertOverExpiredNode(t *testing.T) {
 	root, kv := buildSubtree(t)
-	blob, err := EncodeInactiveBlob(root)
+	blob, _, err := EncodeInactiveBlob(root)
 	if err != nil {
 		t.Fatalf("EncodeInactiveBlob: %v", err)
 	}
@@ -199,7 +199,7 @@ func contains(haystack, needle string) bool {
 func TestEncodeRejectsHashNode(t *testing.T) {
 	root := &fullNode{}
 	root.Children[1] = hashNode(make([]byte, 32))
-	if _, err := EncodeInactiveBlob(root); err == nil {
+	if _, _, err := EncodeInactiveBlob(root); err == nil {
 		t.Errorf("expected error for hashNode in subtree, got nil")
 	} else if !contains(err.Error(), "unresolved hashNode") {
 		t.Errorf("error message %q lacks 'unresolved hashNode'", err.Error())
