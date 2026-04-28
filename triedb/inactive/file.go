@@ -106,6 +106,27 @@ func (f *File) Read(offset, size uint64) ([]byte, error) {
 //
 // Concurrency: Append is serialised. Reads can run concurrently with Append.
 func (f *File) Append(blob []byte) (uint64, error) {
+	offset, err := f.AppendNoSync(blob)
+	if err != nil {
+		return 0, err
+	}
+	if err := f.Sync(); err != nil {
+		return 0, err
+	}
+	return offset, nil
+}
+
+// AppendNoSync writes `blob` to the end of the file and returns the offset
+// at which it now lives, WITHOUT fsync'ing. The caller is responsible for
+// calling Sync() before recording the offset in any persistent reference
+// (e.g. a chaindb stub) — otherwise a crash could leave a dangling pointer.
+//
+// This is the high-throughput path used when many small blobs are written
+// in succession and the corresponding stub batch will be committed atomically
+// only after a single fsync covers all of them.
+//
+// Concurrency: serialised behind the same mutex as Append.
+func (f *File) AppendNoSync(blob []byte) (uint64, error) {
 	if len(blob) == 0 {
 		return 0, errors.New("inactive: refuse to append empty blob")
 	}
@@ -120,11 +141,21 @@ func (f *File) Append(blob []byte) (uint64, error) {
 	if n != len(blob) {
 		return 0, fmt.Errorf("inactive append short write: wrote %d of %d", n, len(blob))
 	}
-	if err := f.f.Sync(); err != nil {
-		return 0, fmt.Errorf("inactive fsync: %w", err)
-	}
 	f.size.Store(offset + uint64(len(blob)))
 	return offset, nil
+}
+
+// Sync flushes any buffered AppendNoSync writes to disk. Cheap if no dirty
+// pages are outstanding. Callers using the AppendNoSync + Sync pattern must
+// call Sync before persisting any reference to the appended offsets.
+func (f *File) Sync() error {
+	if f == nil || f.f == nil {
+		return errors.New("inactive: sync on nil/closed file")
+	}
+	if err := f.f.Sync(); err != nil {
+		return fmt.Errorf("inactive fsync: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying file. Subsequent Read/Append calls fail.

@@ -23,8 +23,10 @@ package eip8188
 // blob (with the original interior trie nodes deleted).
 //
 // Crash safety:
-//   1. inactive.File.Append() fsyncs the blob bytes BEFORE returning the
-//      offset. Any stub later written to chaindb references durable bytes.
+//   1. Each pebble batch flush is preceded by inactive.File.Sync() (see
+//      flushBatch below). The chaindb stubs in the batch only reference
+//      blob bytes that are already fsync'd, so no batch can ever commit
+//      a stub pointing at unsynced bytes.
 //   2. Pebble batches are atomic. A crash mid-conversion either rolls back
 //      the entire batch or commits it whole; the chaindb never references
 //      a partially-deleted subtree.
@@ -127,6 +129,24 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 	batch := chainDB.NewBatch()
 	defer batch.Reset()
 
+	// flushBatch enforces the crash-safety ordering: fsync the inactive
+	// file (durable-ising every blob since the last sync) BEFORE writing
+	// the chaindb batch (which contains stubs that reference those blobs).
+	flushBatch := func() {
+		if cfg.DryRun {
+			return
+		}
+		if cfg.InactiveFile != nil {
+			if err := cfg.InactiveFile.Sync(); err != nil {
+				log.Crit("eip8188 convert: inactive file sync failed", "err", err)
+			}
+		}
+		if err := batch.Write(); err != nil {
+			log.Crit("eip8188 convert: batch flush failed", "err", err)
+		}
+		batch.Reset()
+	}
+
 	log.Info("eip8188 convert: identify+convert phase starting",
 		"state-root", cfg.StateRoot,
 		"current-period", cfg.IdentifyConfig.CurrentPeriod,
@@ -155,12 +175,10 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 			stats.StorageSubtrees++
 		}
 		// Periodic batch flush. Pebble batches buffer in memory; flushing
-		// keeps memory bounded and persists progress incrementally.
+		// keeps memory bounded, persists progress incrementally, and
+		// amortises the inactive-file fsync over many appends.
 		if !cfg.DryRun && batch.ValueSize() >= cfg.BatchSize {
-			if err := batch.Write(); err != nil {
-				log.Crit("eip8188 convert: batch flush failed", "err", err)
-			}
-			batch.Reset()
+			flushBatch()
 		}
 		// Heartbeat. Identifier-side counters live on stats.IdentifyStats and
 		// are mutated synchronously inside Identify(); reading them here is
@@ -192,8 +210,13 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 		return stats, fmt.Errorf("eip8188 convert: identify: %w", err)
 	}
 
-	// Final batch flush.
+	// Final batch flush — same ordering as periodic flushes.
 	if !cfg.DryRun {
+		if cfg.InactiveFile != nil {
+			if err := cfg.InactiveFile.Sync(); err != nil {
+				return stats, fmt.Errorf("eip8188 convert: final inactive file sync: %w", err)
+			}
+		}
 		if err := batch.Write(); err != nil {
 			return stats, fmt.Errorf("eip8188 convert: final batch write: %w", err)
 		}
@@ -313,8 +336,11 @@ func convertOne(reader database.NodeReader, file *inactive.File, batch ethdb.Bat
 		return nil
 	}
 
-	// 3. Append the blob to the inactive file. fsync happens inside Append.
-	offset, err := file.Append(blob)
+	// 3. Append the blob to the inactive file. The fsync is deferred until
+	// the next pebble batch flush in Convert(); see flushBatch for the
+	// crash-safety invariant. The stub we stage below in this same batch
+	// will only be committed AFTER the corresponding Sync().
+	offset, err := file.AppendNoSync(blob)
 	if err != nil {
 		return fmt.Errorf("append: %w", err)
 	}
