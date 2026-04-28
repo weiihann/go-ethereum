@@ -39,6 +39,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -58,6 +59,44 @@ type InactiveSubtree struct {
 	LeafCount uint64      `json:"leaf_count"` // Number of leaves under this subtree.
 }
 
+// Scope selects which tries the identifier walks.
+type Scope uint8
+
+const (
+	ScopeBoth    Scope = iota // both account and per-contract storage tries (default)
+	ScopeAccount              // only the account trie; storage tries are skipped
+	ScopeStorage              // walk account leaves to discover storage roots, but only emit storage subtrees
+)
+
+// String returns the canonical CLI form for a Scope value.
+func (s Scope) String() string {
+	switch s {
+	case ScopeBoth:
+		return "both"
+	case ScopeAccount:
+		return "account"
+	case ScopeStorage:
+		return "storage"
+	default:
+		return fmt.Sprintf("scope(%d)", uint8(s))
+	}
+}
+
+// ParseScope converts a CLI string into a Scope value. Empty defaults to
+// ScopeBoth. Unknown values return an error.
+func ParseScope(s string) (Scope, error) {
+	switch s {
+	case "", "both":
+		return ScopeBoth, nil
+	case "account":
+		return ScopeAccount, nil
+	case "storage":
+		return ScopeStorage, nil
+	default:
+		return 0, fmt.Errorf("eip8188: invalid scope %q (want account|storage|both)", s)
+	}
+}
+
 // IdentifyConfig parameterizes a single identification run.
 type IdentifyConfig struct {
 	// CurrentPeriod is the period at the head block.
@@ -67,8 +106,8 @@ type IdentifyConfig struct {
 	// CurrentPeriod - leafPeriod >= InactiveMinAge.
 	InactiveMinAge uint32
 
-	// Scope selects which tries to walk: "account", "storage", or "both".
-	Scope string
+	// Scope selects which tries to walk.
+	Scope Scope
 }
 
 // IdentifyStats summarises an identification run.
@@ -95,18 +134,19 @@ func Identify(ctx context.Context, tdb *triedb.Database, stateRoot common.Hash, 
 	if emit == nil {
 		return IdentifyStats{}, fmt.Errorf("eip8188: emit callback is required")
 	}
-	if cfg.Scope == "" {
-		cfg.Scope = "both"
-	}
-	if cfg.Scope != "account" && cfg.Scope != "storage" && cfg.Scope != "both" {
-		return IdentifyStats{}, fmt.Errorf("eip8188: invalid scope %q (want account|storage|both)", cfg.Scope)
-	}
 	id := &identifier{
-		ctx:  ctx,
-		tdb:  tdb,
-		cfg:  cfg,
-		emit: emit,
+		ctx:        ctx,
+		tdb:        tdb,
+		cfg:        cfg,
+		emit:       emit,
+		phaseStart: time.Now(),
 	}
+	id.nextLog = id.phaseStart.Add(progressInterval)
+	log.Info("eip8188 identify: starting",
+		"state-root", stateRoot,
+		"current-period", cfg.CurrentPeriod,
+		"inactive-min-age", cfg.InactiveMinAge,
+		"scope", cfg.Scope)
 	if err := id.walkAccountTrie(stateRoot); err != nil {
 		return id.stats, err
 	}
@@ -120,6 +160,13 @@ type identifier struct {
 	cfg   IdentifyConfig
 	emit  EmitFunc
 	stats IdentifyStats
+
+	// Shared heartbeat clock — runCoreLoop is called once for the account
+	// trie and once per discovered storage trie; all share this timer so
+	// we get one log line every ~progressInterval regardless of which
+	// inner walk triggered it.
+	phaseStart time.Time
+	nextLog    time.Time
 }
 
 // isInactive returns true iff a leaf with the given period is inactive given
@@ -216,7 +263,7 @@ func (id *identifier) walkAccountTrie(stateRoot common.Hash) error {
 			advanced = false // consume this entry; advance on next call
 
 			// Walk this account's storage trie if it has one and scope permits.
-			if id.cfg.Scope != "account" && len(slim.Root) != 0 {
+			if id.cfg.Scope != ScopeAccount && len(slim.Root) != 0 {
 				addrHash := common.BytesToHash(leafKey)
 				storageRoot := common.BytesToHash(slim.Root)
 				if err := id.walkStorageTrie(stateRoot, addrHash, storageRoot); err != nil {
@@ -229,10 +276,10 @@ func (id *identifier) walkAccountTrie(stateRoot common.Hash) error {
 		}
 	}
 
-	if id.cfg.Scope == "storage" {
+	if id.cfg.Scope == ScopeStorage {
 		// Storage-only mode: still need the trie iterator to advance through
 		// account leaves to discover storage roots, but we don't emit account
-		// subtrees. We achieve this by passing a sentinel trieLabel.
+		// subtrees.
 		return id.runCoreLoop(trieIt, lookup, "account", common.Hash{}, false)
 	}
 	return id.runCoreLoop(trieIt, lookup, "account", common.Hash{}, true)
@@ -304,6 +351,21 @@ func (id *identifier) runCoreLoop(trieIt trie.NodeIterator, lookup leafLookup, t
 	for trieIt.Next(true) {
 		if id.ctx != nil && id.ctx.Err() != nil {
 			return id.ctx.Err()
+		}
+		if now := time.Now(); !now.Before(id.nextLog) {
+			elapsed := now.Sub(id.phaseStart)
+			rate := float64(id.stats.AccountsScanned+id.stats.StorageSlotsScanned) / elapsed.Seconds()
+			log.Info("eip8188 identify: progress",
+				"accounts-scanned", id.stats.AccountsScanned,
+				"storage-tries", id.stats.StorageTriesWalked,
+				"storage-slots", id.stats.StorageSlotsScanned,
+				"inactive-account-trees", id.stats.InactiveAccountTrees,
+				"inactive-storage-trees", id.stats.InactiveStorageTrees,
+				"snapshot-mismatches", id.stats.SnapshotMismatches,
+				"leaves-per-sec", uint64(rate),
+				"elapsed", common.PrettyDuration(elapsed),
+			)
+			id.nextLog = now.Add(progressInterval)
 		}
 		curPath := trieIt.Path()
 

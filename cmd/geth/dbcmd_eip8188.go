@@ -367,7 +367,10 @@ func dbIdentifyInactive(ctx *cli.Context) error {
 	}
 
 	threshold := clampPeriod(ctx.Uint64(eip8188InactiveMinAgeFlag.Name))
-	scope := ctx.String(eip8188ScopeFlag.Name)
+	scope, err := eip8188.ParseScope(ctx.String(eip8188ScopeFlag.Name))
+	if err != nil {
+		return err
+	}
 
 	// Output sink.
 	out := os.Stdout
@@ -451,7 +454,10 @@ func dbConvertInactive(ctx *cli.Context) error {
 			ctx.Uint64(eip8188PeriodLengthFlag.Name))
 	}
 	threshold := clampPeriod(ctx.Uint64(eip8188InactiveMinAgeFlag.Name))
-	scope := ctx.String(eip8188ScopeFlag.Name)
+	scope, err := eip8188.ParseScope(ctx.String(eip8188ScopeFlag.Name))
+	if err != nil {
+		return err
+	}
 	dryRun := ctx.Bool(eip8188ConvertDryRunFlag.Name)
 
 	// Resolve inactive file path. Default to <chaindata>/inactive.bin.

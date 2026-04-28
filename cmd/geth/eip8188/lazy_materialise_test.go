@@ -127,7 +127,7 @@ func TestLazyMaterialiseAfterConvert(t *testing.T) {
 		IdentifyConfig: IdentifyConfig{
 			CurrentPeriod:  10,
 			InactiveMinAge: 3,
-			Scope:          "account",
+			Scope:          ScopeAccount,
 		},
 		StateRoot:    root,
 		InactiveFile: file,

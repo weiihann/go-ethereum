@@ -459,7 +459,7 @@ func TestIdentifyEndToEnd(t *testing.T) {
 	stats, err := Identify(context.Background(), tdb, root, IdentifyConfig{
 		CurrentPeriod:  10,
 		InactiveMinAge: 2,
-		Scope:          "account",
+		Scope:          ScopeAccount,
 	}, func(s InactiveSubtree) { emitted = append(emitted, s) })
 	if err != nil {
 		t.Fatalf("Identify: %v", err)
