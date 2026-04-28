@@ -21,6 +21,8 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 )
 
@@ -160,7 +162,24 @@ func (c *committer) store(path []byte, n node) node {
 	// chaindb storage form is the hybrid layout (0x01 marker + standard RLP
 	// + inline metadata for remaining sub-stubs); otherwise standard RLP.
 	nhash := common.BytesToHash(hash)
-	c.nodes.AddNode(path, trienode.NewNodeWithPrev(nhash, nodeStorageBytes(n), c.tracer.Get(path)))
+	storage := nodeStorageBytes(n)
+	// EIP-8188 commit-time invariant: the node's cached hash must equal the
+	// keccak of the standard MPT RLP we're about to write to chaindb. For
+	// non-hybrid commits, storage == standard RLP, so keccak(storage) ==
+	// nhash. For hybrid commits (0x01 marker + standard RLP + metadata),
+	// the standard RLP portion is storage[1 : 1+len(stdRLP)] — already
+	// validated inside assembleHybridBytes.
+	if !hasExpiredNodeChildren(n) {
+		if got := common.Hash(crypto.Keccak256Hash(storage)); got != nhash {
+			log.Warn("eip8188 commit: keccak(storage) != cached hash",
+				"path", common.Bytes2Hex(path),
+				"node-type", fmt.Sprintf("%T", n),
+				"cached", nhash,
+				"got", got,
+				"storage-len", len(storage))
+		}
+	}
+	c.nodes.AddNode(path, trienode.NewNodeWithPrev(nhash, storage, c.tracer.Get(path)))
 
 	// Collect the corresponding leaf node if it's required. We don't check
 	// full node since it's impossible to store value in fullNode. The key
