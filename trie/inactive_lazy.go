@@ -23,6 +23,7 @@ package trie
 // is inlined into the parent's hash and cannot be substituted.
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -46,7 +47,53 @@ func (t *Trie) materialiseLazyPath(n *expiredNode, hexKey []byte) (node, error) 
 		"size", n.size,
 		"hex-key-suffix", common.Bytes2Hex(hexKey))
 	reader := readerFromResolver(t.archiveResolver)
-	return materialiseLazyByReader(reader, n.blobOffset, n.nodeFileOffset, n.size, hexKey, t.newFlag())
+	root, err := materialiseLazyByReader(reader, n.blobOffset, n.nodeFileOffset, n.size, hexKey, t.newFlag())
+	if err != nil {
+		return nil, err
+	}
+	// SMOKING-GUN CHECK: the materialised tree (pre-modification) should
+	// hash to the same value as the original *expiredNode. If it doesn't,
+	// the lazy materialiser produced bytes that differ from canonical, and
+	// any subsequent commit will store a hash that doesn't match what the
+	// rest of the network would compute.
+	verifyHasher := newHasher(false)
+	defer returnHasherToPool(verifyHasher)
+	gotHash := verifyHasher.hash(root, true)
+	if !bytes.Equal(gotHash, n.hash[:]) {
+		log.Warn("eip8188 lazy mat: materialised tree hash != *expiredNode.hash",
+			"want", n.hash,
+			"got", common.BytesToHash(gotHash),
+			"blob-offset", n.blobOffset,
+			"node-offset", n.nodeFileOffset,
+			"size", n.size,
+			"hex-key-suffix", common.Bytes2Hex(hexKey))
+	} else {
+		log.Debug("eip8188 lazy mat: round-trip OK",
+			"hash", n.hash,
+			"size", n.size,
+			"hex-key-suffix-len", len(hexKey))
+	}
+	// Re-stamp the dirty flag on root so the subsequent insert/delete sees
+	// it as new (verifyHasher.hash cached the hash on flags, marking it
+	// effectively clean).
+	resetFlagsRecursively(root, t.newFlag())
+	return root, nil
+}
+
+// resetFlagsRecursively walks the partial tree and re-applies flag to every
+// fullNode/shortNode (the hash check above set their flags.hash cache). This
+// is a debug-only helper paired with the materialise round-trip check.
+func resetFlagsRecursively(n node, flag nodeFlag) {
+	switch n := n.(type) {
+	case *fullNode:
+		n.flags = flag
+		for _, c := range &n.Children {
+			resetFlagsRecursively(c, flag)
+		}
+	case *shortNode:
+		n.flags = flag
+		resetFlagsRecursively(n.Val, flag)
+	}
 }
 
 // materialiseLazyByReader walks one node entry along the on-path child;
