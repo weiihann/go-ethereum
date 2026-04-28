@@ -74,6 +74,14 @@ type ConvertConfig struct {
 	// without appending to the inactive file or mutating chaindb. Useful
 	// for sizing experiments.
 	DryRun bool
+
+	// SkipCleanSlate skips the pre-run sweep that deletes existing stubs
+	// and hybrid entries from chaindb. The sweep iterates the entire
+	// trie-node keyspace (~1.5 B keys on mainnet) and is unnecessary when
+	// the caller knows the chaindata is already free of stubs/hybrids
+	// (e.g. fresh post-inject snapshot). The inactive file is also NOT
+	// truncated when this is set — assumes it's already empty/absent.
+	SkipCleanSlate bool
 }
 
 // ConvertStats summarises the outcome of a Convert run.
@@ -115,7 +123,12 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 	// leak orphan stubs (no referenced blob) and orphan hybrid entries
 	// (referencing stale offsets) — both of which would decode-fail at
 	// read time.
-	if !cfg.DryRun {
+	switch {
+	case cfg.DryRun:
+		// no-op
+	case cfg.SkipCleanSlate:
+		log.Info("eip8188 convert: skipping clean-slate sweep (caller asserts chaindb has no stubs/hybrids and inactive file is empty)")
+	default:
 		if err := prepareCleanSlate(ctx, chainDB, cfg.InactiveFile, &stats); err != nil {
 			return stats, fmt.Errorf("eip8188 convert: clean-slate prep: %w", err)
 		}

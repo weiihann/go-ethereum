@@ -194,6 +194,10 @@ walk reads a consistent on-disk view.`,
 		Name:  "dry-run",
 		Usage: "Identify and count inactive subtrees without mutating the chaindb or inactive file",
 	}
+	eip8188SkipCleanSlateFlag = &cli.BoolFlag{
+		Name:  "skip-clean-slate",
+		Usage: "Skip the pre-run sweep that removes existing stubs/hybrids from chaindb. Use only when chaindata is known clean (e.g. fresh post-inject snapshot).",
+	}
 
 	dbCountTrieNodeKindsCmd = &cli.Command{
 		Action: dbCountTrieNodeKinds,
@@ -225,6 +229,7 @@ post-modification chaindb produces hybrids along the modified path.`,
 			eip8188InactiveFileFlag,
 			eip8188ConvertBatchSizeFlag,
 			eip8188ConvertDryRunFlag,
+			eip8188SkipCleanSlateFlag,
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: `Walks the account trie (and per-contract storage tries) at the chaindb head,
 identifies maximal inactive subtree roots (same algorithm as identify-inactive),
@@ -492,10 +497,11 @@ func dbConvertInactive(ctx *cli.Context) error {
 			InactiveMinAge: threshold,
 			Scope:          scope,
 		},
-		StateRoot:    stateRoot,
-		InactiveFile: file,
-		BatchSize:    ctx.Int(eip8188ConvertBatchSizeFlag.Name),
-		DryRun:       dryRun,
+		StateRoot:      stateRoot,
+		InactiveFile:   file,
+		BatchSize:      ctx.Int(eip8188ConvertBatchSizeFlag.Name),
+		DryRun:         dryRun,
+		SkipCleanSlate: ctx.Bool(eip8188SkipCleanSlateFlag.Name),
 	})
 	log.Info("EIP-8188 convert-inactive finished",
 		"subtrees-converted", stats.SubtreesConverted,
