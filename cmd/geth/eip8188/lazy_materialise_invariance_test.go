@@ -133,7 +133,7 @@ type op struct {
 func genOps(rng *rand.Rand, addrs []common.Address, n int) []op {
 	out := make([]op, 0, n)
 	for i := 0; i < n; i++ {
-		switch rng.Intn(4) {
+		switch rng.Intn(5) {
 		case 0:
 			out = append(out, op{kind: "balance", addr: addrs[rng.Intn(len(addrs))], balance: uint64(rng.Intn(1_000_000_000))})
 		case 1:
@@ -151,6 +151,13 @@ func genOps(rng *rand.Rand, addrs []common.Address, n int) []op {
 				slot:  common.BigToHash(big.NewInt(int64(rng.Intn(8)))),
 				value: common.BigToHash(big.NewInt(int64(rng.Intn(1000)))),
 			})
+		case 4:
+			// Zero out the account (balance=0, nonce=0). State.SetBalance
+			// to zero on an empty/unused account effectively deletes it from
+			// the trie at commit time (post-EIP-161). This exercises the
+			// deletion-collapse path through stubbed subtrees, which the
+			// other op kinds don't reach.
+			out = append(out, op{kind: "delete-via-zero", addr: addrs[rng.Intn(len(addrs))]})
 		}
 	}
 	return out
@@ -172,6 +179,9 @@ func applyOps(s *state.StateDB, ops []op) {
 			s.SetBalance(o.addr, uint256.NewInt(o.balance), tracing.BalanceChangeUnspecified)
 		case "destruct":
 			s.SelfDestruct(o.addr)
+		case "delete-via-zero":
+			s.SetBalance(o.addr, uint256.NewInt(0), tracing.BalanceChangeUnspecified)
+			s.SetNonce(o.addr, 0, tracing.NonceChangeUnspecified)
 		}
 	}
 }
