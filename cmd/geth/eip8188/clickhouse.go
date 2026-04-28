@@ -248,7 +248,6 @@ func (s *ClickHouseSource) streamStorageBatch(ctx context.Context, lo, hi uint64
 		SELECT lower(address) AS addr, lower(slot) AS slot_key, max(block_number) AS block
 		FROM canonical_execution_storage_diffs
 		WHERE block_number >= ? AND block_number <= ?
-		  AND to_value != '0x0' AND to_value != '0x00' AND to_value != '0'
 		  AND to_value != '0x0000000000000000000000000000000000000000000000000000000000000000'
 		GROUP BY addr, slot_key
 	`
