@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -41,11 +42,29 @@ type fileDiff struct {
 // already-deduped fixtures).
 type FileSource struct {
 	path string
+
+	mu      sync.Mutex
+	lastErr error
 }
 
 // NewFileSource constructs a FileSource backed by the JSONL file at path.
 func NewFileSource(path string) *FileSource {
 	return &FileSource{path: path}
+}
+
+// Err returns the first fatal stream error and is part of the Source interface.
+func (s *FileSource) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastErr
+}
+
+func (s *FileSource) setErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastErr == nil {
+		s.lastErr = err
+	}
 }
 
 // AccountDiffs streams account-kind rows from the file whose block is in
@@ -54,7 +73,7 @@ func (s *FileSource) AccountDiffs(ctx context.Context, startBlock, endBlock uint
 	out := make(chan AccountDiff)
 	go func() {
 		defer close(out)
-		_ = s.stream(ctx, startBlock, endBlock, "account", func(d fileDiff) bool {
+		err := s.stream(ctx, startBlock, endBlock, "account", func(d fileDiff) bool {
 			select {
 			case out <- AccountDiff{Address: d.Address, Block: d.Block}:
 				return true
@@ -62,6 +81,9 @@ func (s *FileSource) AccountDiffs(ctx context.Context, startBlock, endBlock uint
 				return false
 			}
 		})
+		if err != nil && ctx.Err() == nil {
+			s.setErr(err)
+		}
 	}()
 	return out, nil
 }
@@ -72,7 +94,7 @@ func (s *FileSource) StorageDiffs(ctx context.Context, startBlock, endBlock uint
 	out := make(chan StorageDiff)
 	go func() {
 		defer close(out)
-		_ = s.stream(ctx, startBlock, endBlock, "storage", func(d fileDiff) bool {
+		err := s.stream(ctx, startBlock, endBlock, "storage", func(d fileDiff) bool {
 			select {
 			case out <- StorageDiff{Address: d.Address, Slot: d.Slot, Block: d.Block}:
 				return true
@@ -80,6 +102,9 @@ func (s *FileSource) StorageDiffs(ctx context.Context, startBlock, endBlock uint
 				return false
 			}
 		})
+		if err != nil && ctx.Err() == nil {
+			s.setErr(err)
+		}
 	}()
 	return out, nil
 }

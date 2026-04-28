@@ -78,6 +78,11 @@ var (
 		Usage: "ClickHouse database",
 		Value: eip8188.DefaultClickHouseDatabase,
 	}
+	eip8188ClickHouseQueryBatchFlag = &cli.Uint64Flag{
+		Name:  "clickhouse-query-batch",
+		Usage: "Number of blocks per ClickHouse ARGMAX query (split full range into chunks)",
+		Value: eip8188.DefaultClickHouseQueryBatch,
+	}
 	eip8188BatchSizeFlag = &cli.IntFlag{
 		Name:  "batch-size",
 		Usage: "Snapshot records per pebble batch flush",
@@ -106,6 +111,7 @@ var (
 			eip8188ClickHouseUserFlag,
 			eip8188ClickHousePasswordFlag,
 			eip8188ClickHouseDatabaseFlag,
+			eip8188ClickHouseQueryBatchFlag,
 			eip8188BatchSizeFlag,
 			eip8188DryRunFlag,
 		}, utils.NetworkFlags, utils.DatabaseFlags),
@@ -606,11 +612,12 @@ func openSource(ctx *cli.Context) (eip8188.Source, error) {
 	src := ctx.String(eip8188SourceFlag.Name)
 	if src == "" || src == "clickhouse" {
 		return eip8188.NewClickHouseSource(ctx.Context, eip8188.ClickHouseConfig{
-			Host:     ctx.String(eip8188ClickHouseHostFlag.Name),
-			Port:     ctx.Int(eip8188ClickHousePortFlag.Name),
-			User:     ctx.String(eip8188ClickHouseUserFlag.Name),
-			Password: ctx.String(eip8188ClickHousePasswordFlag.Name),
-			Database: ctx.String(eip8188ClickHouseDatabaseFlag.Name),
+			Host:       ctx.String(eip8188ClickHouseHostFlag.Name),
+			Port:       ctx.Int(eip8188ClickHousePortFlag.Name),
+			User:       ctx.String(eip8188ClickHouseUserFlag.Name),
+			Password:   ctx.String(eip8188ClickHousePasswordFlag.Name),
+			Database:   ctx.String(eip8188ClickHouseDatabaseFlag.Name),
+			QueryBatch: ctx.Uint64(eip8188ClickHouseQueryBatchFlag.Name),
 		})
 	}
 	if path, ok := strings.CutPrefix(src, "file://"); ok {
