@@ -76,6 +76,8 @@ func (f *fakeSource) StorageDiffs(ctx context.Context, startBlock, endBlock uint
 	return out, nil
 }
 
+func (f *fakeSource) Err() error { return nil }
+
 func (f *fakeSource) Close() error { return nil }
 
 // seedSnapshot writes a minimal snapshot layout to db: head header at

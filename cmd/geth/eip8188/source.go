@@ -51,6 +51,12 @@ type Source interface {
 	// most-recent non-zero write fell in [startBlock, endBlock].
 	StorageDiffs(ctx context.Context, startBlock, endBlock uint64) (<-chan StorageDiff, error)
 
+	// Err returns the first fatal error (if any) encountered by a streaming
+	// goroutine after AccountDiffs / StorageDiffs returned. Channels close
+	// silently on error; callers MUST check Err after consuming a stream so
+	// failures aren't reported as clean completions.
+	Err() error
+
 	// Close releases any underlying connections. Safe to call multiple times.
 	Close() error
 }

@@ -19,6 +19,7 @@ package eip8188
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -28,6 +29,11 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
+
+// progressInterval is how often the per-phase loops emit a heartbeat log.
+// The injector is otherwise silent for the duration of a multi-hour mainnet
+// run; without this, an operator can't tell stalled from working.
+const progressInterval = 30 * time.Second
 
 // DefaultBatchSize is the number of snapshot records rewritten per pebble batch.
 // Bounded to keep peak memory small while still amortizing pebble's per-commit
@@ -95,6 +101,7 @@ func Inject(ctx context.Context, db ethdb.KeyValueStore, cfg Config) (Stats, err
 }
 
 func injectAccounts(ctx context.Context, db ethdb.KeyValueStore, cfg Config, batchSize int, stats *Stats) error {
+	log.Info("inject-periods: account phase starting")
 	stream, err := cfg.Source.AccountDiffs(ctx, cfg.ForkBlock, cfg.EndBlock)
 	if err != nil {
 		return err
@@ -102,8 +109,24 @@ func injectAccounts(ctx context.Context, db ethdb.KeyValueStore, cfg Config, bat
 	batch := db.NewBatch()
 	defer batch.Reset()
 
+	phaseStart := time.Now()
+	nextLog := phaseStart.Add(progressInterval)
 	for diff := range stream {
 		stats.AccountDiffsSeen++
+
+		if now := time.Now(); !now.Before(nextLog) {
+			elapsed := now.Sub(phaseStart).Seconds()
+			rate := float64(stats.AccountDiffsSeen) / elapsed
+			log.Info("inject-periods: account progress",
+				"diffs-seen", stats.AccountDiffsSeen,
+				"updated", stats.AccountSnapshotsUpdated,
+				"missing", stats.AccountSnapshotsMissing,
+				"latest-block", diff.Block,
+				"diffs-per-sec", uint64(rate),
+				"elapsed", common.PrettyDuration(now.Sub(phaseStart)),
+			)
+			nextLog = now.Add(progressInterval)
+		}
 
 		period := ComputePeriod(diff.Block, cfg.ForkBlock, cfg.BlocksPerPeriod)
 		addrHash := crypto.Keccak256Hash(diff.Address[:])
@@ -120,8 +143,11 @@ func injectAccounts(ctx context.Context, db ethdb.KeyValueStore, cfg Config, bat
 		if err := rlp.DecodeBytes(blob, &account); err != nil {
 			return fmt.Errorf("decode snapshot for %x: %w", addrHash, err)
 		}
-		if account.LastWrittenPeriod == period {
-			continue // already up to date; idempotent no-op
+		// Monotonic: never lower an existing period. Lets the source emit
+		// diffs in any order (per-batch ARGMAX, multiple batches, retries)
+		// without producing an incorrect final value.
+		if account.LastWrittenPeriod >= period {
+			continue
 		}
 		account.LastWrittenPeriod = period
 
@@ -148,10 +174,14 @@ func injectAccounts(ctx context.Context, db ethdb.KeyValueStore, cfg Config, bat
 			return err
 		}
 	}
+	if err := cfg.Source.Err(); err != nil {
+		return fmt.Errorf("account stream: %w", err)
+	}
 	return nil
 }
 
 func injectStorage(ctx context.Context, db ethdb.KeyValueStore, cfg Config, batchSize int, stats *Stats) error {
+	log.Info("inject-periods: storage phase starting")
 	stream, err := cfg.Source.StorageDiffs(ctx, cfg.ForkBlock, cfg.EndBlock)
 	if err != nil {
 		return err
@@ -160,8 +190,24 @@ func injectStorage(ctx context.Context, db ethdb.KeyValueStore, cfg Config, batc
 	defer batch.Reset()
 
 	var zeroHash common.Hash
+	phaseStart := time.Now()
+	nextLog := phaseStart.Add(progressInterval)
 	for diff := range stream {
 		stats.StorageDiffsSeen++
+
+		if now := time.Now(); !now.Before(nextLog) {
+			elapsed := now.Sub(phaseStart).Seconds()
+			rate := float64(stats.StorageDiffsSeen) / elapsed
+			log.Info("inject-periods: storage progress",
+				"diffs-seen", stats.StorageDiffsSeen,
+				"updated", stats.StorageSnapshotsUpdated,
+				"missing", stats.StorageSnapshotsMissing,
+				"latest-block", diff.Block,
+				"diffs-per-sec", uint64(rate),
+				"elapsed", common.PrettyDuration(now.Sub(phaseStart)),
+			)
+			nextLog = now.Add(progressInterval)
+		}
 
 		period := ComputePeriod(diff.Block, cfg.ForkBlock, cfg.BlocksPerPeriod)
 		addrHash := crypto.Keccak256Hash(diff.Address[:])
@@ -206,6 +252,9 @@ func injectStorage(ctx context.Context, db ethdb.KeyValueStore, cfg Config, batc
 		if err := batch.Write(); err != nil {
 			return err
 		}
+	}
+	if err := cfg.Source.Err(); err != nil {
+		return fmt.Errorf("storage stream: %w", err)
 	}
 	return nil
 }
