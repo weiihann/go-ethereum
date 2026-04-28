@@ -35,6 +35,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -126,6 +127,15 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 	batch := chainDB.NewBatch()
 	defer batch.Reset()
 
+	log.Info("eip8188 convert: identify+convert phase starting",
+		"state-root", cfg.StateRoot,
+		"current-period", cfg.IdentifyConfig.CurrentPeriod,
+		"inactive-min-age", cfg.IdentifyConfig.InactiveMinAge,
+		"scope", cfg.IdentifyConfig.Scope,
+		"dry-run", cfg.DryRun)
+	phaseStart := time.Now()
+	nextLog := phaseStart.Add(progressInterval)
+
 	emit := func(s InactiveSubtree) {
 		select {
 		case <-ctx.Done():
@@ -151,6 +161,28 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 				log.Crit("eip8188 convert: batch flush failed", "err", err)
 			}
 			batch.Reset()
+		}
+		// Heartbeat. Identifier-side counters live on stats.IdentifyStats and
+		// are mutated synchronously inside Identify(); reading them here is
+		// safe because emit and Identify share the same goroutine.
+		if now := time.Now(); !now.Before(nextLog) {
+			elapsed := now.Sub(phaseStart)
+			rate := float64(stats.SubtreesConverted) / elapsed.Seconds()
+			log.Info("eip8188 convert: progress",
+				"accounts-scanned", stats.IdentifyStats.AccountsScanned,
+				"storage-tries", stats.IdentifyStats.StorageTriesWalked,
+				"storage-slots", stats.IdentifyStats.StorageSlotsScanned,
+				"subtrees-converted", stats.SubtreesConverted,
+				"account-subtrees", stats.AccountSubtrees,
+				"storage-subtrees", stats.StorageSubtrees,
+				"nodes-deleted", stats.NodesDeleted,
+				"bytes-appended", stats.BytesAppended,
+				"errors", stats.ConversionErrors,
+				"snapshot-mismatches", stats.IdentifyStats.SnapshotMismatches,
+				"subtrees-per-sec", uint64(rate),
+				"elapsed", common.PrettyDuration(elapsed),
+			)
+			nextLog = now.Add(progressInterval)
 		}
 	}
 
@@ -198,10 +230,16 @@ func prepareCleanSlate(ctx context.Context, chainDB ethdb.Database, file *inacti
 // deletes those whose value is a stub (0x00) or hybrid (0x01). Returns the
 // number of entries removed.
 func sweepStubs(ctx context.Context, chainDB ethdb.Database, prefix []byte) (uint64, error) {
+	log.Info("eip8188 convert: clean-slate sweep starting", "prefix", string(prefix))
 	batch := chainDB.NewBatch()
 	defer batch.Reset()
 
-	var removed uint64
+	var (
+		removed    uint64
+		scanned    uint64
+		phaseStart = time.Now()
+		nextLog    = phaseStart.Add(progressInterval)
+	)
 	it := chainDB.NewIterator(prefix, nil)
 	defer it.Release()
 	for it.Next() {
@@ -209,6 +247,19 @@ func sweepStubs(ctx context.Context, chainDB ethdb.Database, prefix []byte) (uin
 		case <-ctx.Done():
 			return removed, ctx.Err()
 		default:
+		}
+		scanned++
+		if now := time.Now(); !now.Before(nextLog) {
+			elapsed := now.Sub(phaseStart)
+			rate := float64(scanned) / elapsed.Seconds()
+			log.Info("eip8188 convert: clean-slate sweep progress",
+				"prefix", string(prefix),
+				"scanned", scanned,
+				"removed", removed,
+				"keys-per-sec", uint64(rate),
+				"elapsed", common.PrettyDuration(elapsed),
+			)
+			nextLog = now.Add(progressInterval)
 		}
 		val := it.Value()
 		if !inactive.IsStubOrHybrid(val) {
@@ -234,6 +285,9 @@ func sweepStubs(ctx context.Context, chainDB ethdb.Database, prefix []byte) (uin
 	if err := batch.Write(); err != nil {
 		return removed, fmt.Errorf("final batch write: %w", err)
 	}
+	log.Info("eip8188 convert: clean-slate sweep finished",
+		"prefix", string(prefix), "scanned", scanned, "removed", removed,
+		"elapsed", common.PrettyDuration(time.Since(phaseStart)))
 	return removed, nil
 }
 
