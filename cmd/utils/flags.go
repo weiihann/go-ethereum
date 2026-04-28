@@ -2443,6 +2443,12 @@ func MakeChain(ctx *cli.Context, stack *node.Node, readonly bool) (*core.BlockCh
 		// - DATADIR/triedb/verkle.journal
 		TrieJournalDirectory: stack.ResolvePath("triedb"),
 
+		// EIP-8188 prototype: point pathdb at the inactive trie file if it
+		// exists at the conventional location. Mirrors eth/backend.go's
+		// full-node setup so CLI subcommands (import, export, dump, etc.)
+		// see the same inactive-file attachment as the running node.
+		TrieInactiveFile: filepath.Join(stack.ResolvePath("chaindata"), "inactive.bin"),
+
 		// Enable state size tracking if enabled
 		StateSizeTracking: ctx.Bool(StateSizeTrackingFlag.Name),
 
