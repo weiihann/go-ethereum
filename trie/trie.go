@@ -751,6 +751,18 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 	if n, ok := n.(hashNode); ok {
 		return t.resolveAndTrack(n, prefix)
 	}
+	// EIP-8188: when delete() collapses a *fullNode down to its single
+	// surviving child, it calls resolve to peek at that child and decide
+	// whether it's a *shortNode (whose key must be merged with the surviving
+	// nibble) or anything else (one-nibble wrap is correct). For *expiredNode
+	// surviving children we MUST fully materialise the subtree so the
+	// shortNode-detection branch can fire. Without this, the wrap branch
+	// runs unconditionally and produces shortNode{[pos], *expiredNode},
+	// which hashes differently from canonical's merged shortNode{[pos]+K, V}.
+	if en, ok := n.(*expiredNode); ok && t.archiveResolver != nil {
+		reader := readerFromResolver(t.archiveResolver)
+		return fullyMaterialiseByReader(reader, en.blobOffset, en.nodeFileOffset, en.size, t.newFlag())
+	}
 	return n, nil
 }
 
