@@ -469,9 +469,22 @@ func (id *identifier) finalize(popped *nodeFrame, stack []*nodeFrame, trieLabel 
 				Hash:      popped.hash,
 				LeafCount: popped.leafCount,
 			})
+			// popped is itself emittable; its deferred inner candidates are
+			// PROPER SUBSETS of popped's subtree. If we inherited them, the
+			// parent would later emit popped AND all the inner ones — the
+			// double-counting bug. Inner candidates are subsumed by popped.
+			//
+			// On mainnet scale that overcounting led to the converter
+			// processing a parent first (deleting its interior) then trying
+			// to convert each child (now reading deleted nodes), producing
+			// millions of "Unexpected trie node" pathdb errors and
+			// eventually crashing pebble under the log volume.
+			popped.candidates = nil
+		} else {
+			// popped is embedded (no standalone hash); it can't be emitted
+			// as a subtree root itself, so bubble its inner candidates up.
+			parent.candidates = append(parent.candidates, popped.candidates...)
 		}
-		// Inherit popped's deferred candidates.
-		parent.candidates = append(parent.candidates, popped.candidates...)
 		// allInactive unchanged — parent stays "all inactive so far" if it was.
 	} else {
 		// popped has at least one active leaf → parent is mixed.
