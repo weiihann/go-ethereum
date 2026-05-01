@@ -325,10 +325,12 @@ func dbInspectPeriods(ctx *cli.Context) error {
 		return enc.Encode(report)
 	}
 	fmt.Printf("EIP-8188 period report:\n")
-	fmt.Printf("  accounts:       total=%d  with_period=%d  max_period=%d  decode_errors=%d\n",
-		report.TotalAccounts, report.AccountsWithPeriod, report.MaxAccountPeriod, report.AccountDecodeErrors)
-	fmt.Printf("  storage slots:  total=%d  with_period=%d  max_period=%d  decode_errors=%d\n",
-		report.TotalStorageSlots, report.StorageWithPeriod, report.MaxStoragePeriod, report.StorageDecodeErrors)
+	fmt.Printf("  accounts:       total=%d  with_period=%d  max_period=%d  decode_errors=%d  key_bytes=%d  value_bytes=%d\n",
+		report.TotalAccounts, report.AccountsWithPeriod, report.MaxAccountPeriod,
+		report.AccountDecodeErrors, report.AccountSnapshotKeyBytes, report.AccountSnapshotValueBytes)
+	fmt.Printf("  storage slots:  total=%d  with_period=%d  max_period=%d  decode_errors=%d  key_bytes=%d  value_bytes=%d\n",
+		report.TotalStorageSlots, report.StorageWithPeriod, report.MaxStoragePeriod,
+		report.StorageDecodeErrors, report.StorageSnapshotKeyBytes, report.StorageSnapshotValueBytes)
 	return nil
 }
 
@@ -535,12 +537,17 @@ func dbCountTrieNodeKinds(ctx *cli.Context) error {
 	}
 
 	type counts struct {
-		Stubs    uint64 `json:"stubs"`
-		Hybrids  uint64 `json:"hybrids"`
-		RLP      uint64 `json:"standard_rlp"`
-		Other    uint64 `json:"other"`
-		Empty    uint64 `json:"empty"`
-		TotalKey uint64 `json:"total_keys"`
+		Stubs       uint64 `json:"stubs"`
+		Hybrids     uint64 `json:"hybrids"`
+		RLP         uint64 `json:"standard_rlp"`
+		Other       uint64 `json:"other"`
+		Empty       uint64 `json:"empty"`
+		TotalKey    uint64 `json:"total_keys"`
+		StubBytes   uint64 `json:"stub_bytes"`
+		HybridBytes uint64 `json:"hybrid_bytes"`
+		RLPBytes    uint64 `json:"standard_rlp_bytes"`
+		OtherBytes  uint64 `json:"other_bytes"`
+		TotalBytes  uint64 `json:"total_bytes"`
 	}
 	type report struct {
 		AccountTrie counts `json:"account_trie"`
@@ -566,23 +573,30 @@ func dbCountTrieNodeKinds(ctx *cli.Context) error {
 					"rlp", c.RLP,
 					"other", c.Other,
 					"empty", c.Empty,
+					"total-bytes", c.TotalBytes,
 					"keys-per-sec", uint64(rate),
 					"elapsed", common.PrettyDuration(elapsed),
 				)
 				nextLog = now.Add(30 * time.Second)
 			}
 			val := it.Value()
+			n := uint64(len(val))
+			c.TotalBytes += n
 			switch {
-			case len(val) == 0:
+			case n == 0:
 				c.Empty++
 			case val[0] == 0x00:
 				c.Stubs++
+				c.StubBytes += n
 			case val[0] == 0x01:
 				c.Hybrids++
+				c.HybridBytes += n
 			case val[0] >= 0xc0:
 				c.RLP++
+				c.RLPBytes += n
 			default:
 				c.Other++
+				c.OtherBytes += n
 			}
 		}
 		if err := it.Error(); err != nil {
@@ -596,6 +610,7 @@ func dbCountTrieNodeKinds(ctx *cli.Context) error {
 			"rlp", c.RLP,
 			"other", c.Other,
 			"empty", c.Empty,
+			"total-bytes", c.TotalBytes,
 			"elapsed", common.PrettyDuration(time.Since(phaseStart)))
 		return c
 	}
@@ -613,12 +628,18 @@ func dbCountTrieNodeKinds(ctx *cli.Context) error {
 		fmt.Println(string(out))
 		return nil
 	}
-	fmt.Printf("Account trie:  rlp=%d stubs=%d hybrids=%d other=%d empty=%d (total=%d)\n",
+	fmt.Printf("Account trie counts:  rlp=%d stubs=%d hybrids=%d other=%d empty=%d (total=%d)\n",
 		rep.AccountTrie.RLP, rep.AccountTrie.Stubs, rep.AccountTrie.Hybrids,
 		rep.AccountTrie.Other, rep.AccountTrie.Empty, rep.AccountTrie.TotalKey)
-	fmt.Printf("Storage trie:  rlp=%d stubs=%d hybrids=%d other=%d empty=%d (total=%d)\n",
+	fmt.Printf("Account trie bytes:   rlp=%d stubs=%d hybrids=%d other=%d (total_bytes=%d)\n",
+		rep.AccountTrie.RLPBytes, rep.AccountTrie.StubBytes, rep.AccountTrie.HybridBytes,
+		rep.AccountTrie.OtherBytes, rep.AccountTrie.TotalBytes)
+	fmt.Printf("Storage trie counts:  rlp=%d stubs=%d hybrids=%d other=%d empty=%d (total=%d)\n",
 		rep.StorageTrie.RLP, rep.StorageTrie.Stubs, rep.StorageTrie.Hybrids,
 		rep.StorageTrie.Other, rep.StorageTrie.Empty, rep.StorageTrie.TotalKey)
+	fmt.Printf("Storage trie bytes:   rlp=%d stubs=%d hybrids=%d other=%d (total_bytes=%d)\n",
+		rep.StorageTrie.RLPBytes, rep.StorageTrie.StubBytes, rep.StorageTrie.HybridBytes,
+		rep.StorageTrie.OtherBytes, rep.StorageTrie.TotalBytes)
 	return nil
 }
 
