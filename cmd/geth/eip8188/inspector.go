@@ -39,15 +39,23 @@ var (
 // PeriodReport is the JSON document emitted by the inspect-periods CLI.
 // Field names are snake_case so the bintrie-benchmarks shell harness can
 // consume them without translation.
+//
+// The *SnapshotBytes fields are split into key vs value contributions because
+// period markers only change value-encoding bytes — key bytes are unaffected.
+// Sum the two for total on-disk snapshot bytes (excluding pebble overhead).
 type PeriodReport struct {
-	TotalAccounts       uint64 `json:"total_accounts"`
-	AccountsWithPeriod  uint64 `json:"accounts_with_period"`
-	MaxAccountPeriod    uint32 `json:"max_account_period"`
-	TotalStorageSlots   uint64 `json:"total_storage_slots"`
-	StorageWithPeriod   uint64 `json:"storage_with_period"`
-	MaxStoragePeriod    uint32 `json:"max_storage_period"`
-	AccountDecodeErrors uint64 `json:"account_decode_errors"`
-	StorageDecodeErrors uint64 `json:"storage_decode_errors"`
+	TotalAccounts             uint64 `json:"total_accounts"`
+	AccountsWithPeriod        uint64 `json:"accounts_with_period"`
+	MaxAccountPeriod          uint32 `json:"max_account_period"`
+	TotalStorageSlots         uint64 `json:"total_storage_slots"`
+	StorageWithPeriod         uint64 `json:"storage_with_period"`
+	MaxStoragePeriod          uint32 `json:"max_storage_period"`
+	AccountDecodeErrors       uint64 `json:"account_decode_errors"`
+	StorageDecodeErrors       uint64 `json:"storage_decode_errors"`
+	AccountSnapshotKeyBytes   uint64 `json:"account_snapshot_key_bytes"`
+	AccountSnapshotValueBytes uint64 `json:"account_snapshot_value_bytes"`
+	StorageSnapshotKeyBytes   uint64 `json:"storage_snapshot_key_bytes"`
+	StorageSnapshotValueBytes uint64 `json:"storage_snapshot_value_bytes"`
 }
 
 // Inspect scans the snapshot keyspace and tallies per-record periods.
@@ -99,6 +107,8 @@ func inspectAccounts(ctx context.Context, db ethdb.Iteratee, report *PeriodRepor
 			continue
 		}
 		report.TotalAccounts++
+		report.AccountSnapshotKeyBytes += uint64(len(key))
+		report.AccountSnapshotValueBytes += uint64(len(it.Value()))
 
 		var account types.SlimAccount
 		if err := rlp.DecodeBytes(it.Value(), &account); err != nil {
@@ -147,6 +157,8 @@ func inspectStorage(ctx context.Context, db ethdb.Iteratee, report *PeriodReport
 			continue
 		}
 		report.TotalStorageSlots++
+		report.StorageSnapshotKeyBytes += uint64(len(key))
+		report.StorageSnapshotValueBytes += uint64(len(it.Value()))
 
 		_, period, err := types.DecodeStorageSnapshotValue(it.Value())
 		if err != nil {
