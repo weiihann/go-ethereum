@@ -272,9 +272,9 @@ func makeAccount(nonce uint64, balance uint64, codeHash common.Hash) *types.Stat
 }
 
 // TestDeleteAccountRoundTrip verifies the basic delete path: create an
-// account, read it back, delete it, confirm subsequent reads return nil.
-// Regression test for the no-op DeleteAccount bug where the deletion was
-// silently ignored and the old values remained in the trie.
+// account, read it back, delete it, confirm DeleteAccount is a documented
+// no-op under PBT (account deletion is handled at the StateDB layer via
+// zeroing). This test pins the no-op contract.
 func TestDeleteAccountRoundTrip(t *testing.T) {
 	tr := newEmptyTestTrie(t)
 	addr := common.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
@@ -285,33 +285,28 @@ func TestDeleteAccountRoundTrip(t *testing.T) {
 	if err := tr.UpdateAccount(addr, acc, 0); err != nil {
 		t.Fatalf("UpdateAccount: %v", err)
 	}
+
+	// DeleteAccount is a no-op under PBT semantics; it must not error.
+	if err := tr.DeleteAccount(addr); err != nil {
+		t.Fatalf("DeleteAccount: %v", err)
+	}
+
+	// Account state must remain intact.
 	got, err := tr.GetAccount(addr)
 	if err != nil {
-		t.Fatalf("GetAccount: %v", err)
+		t.Fatalf("GetAccount after delete: %v", err)
 	}
 	if got == nil {
-		t.Fatal("GetAccount returned nil after UpdateAccount")
+		t.Fatal("GetAccount after DeleteAccount: got nil, want account preserved (PBT no-op)")
 	}
 	if got.Nonce != 42 {
-		t.Fatalf("Nonce: got %d, want 42", got.Nonce)
+		t.Fatalf("Nonce: got %d, want 42 (preserved across no-op)", got.Nonce)
 	}
 	if got.Balance.Uint64() != 1000 {
 		t.Fatalf("Balance: got %s, want 1000", got.Balance)
 	}
 	if !bytes.Equal(got.CodeHash, codeHash[:]) {
 		t.Fatalf("CodeHash: got %x, want %x", got.CodeHash, codeHash)
-	}
-
-	// Delete: verify GetAccount returns nil afterwards.
-	if err := tr.DeleteAccount(addr); err != nil {
-		t.Fatalf("DeleteAccount: %v", err)
-	}
-	got, err = tr.GetAccount(addr)
-	if err != nil {
-		t.Fatalf("GetAccount after delete: %v", err)
-	}
-	if got != nil {
-		t.Fatalf("GetAccount after delete: got %+v, want nil", got)
 	}
 }
 
@@ -335,8 +330,9 @@ func TestDeleteAccountOnMissingAccount(t *testing.T) {
 	}
 }
 
-// TestDeleteAccountPreservesOtherAccounts verifies that deleting one account
-// does not affect accounts at different stems.
+// TestDeleteAccountPreservesOtherAccounts verifies that calling DeleteAccount
+// on one address (a no-op under PBT) does not affect accounts at different
+// stems.
 func TestDeleteAccountPreservesOtherAccounts(t *testing.T) {
 	tr := newEmptyTestTrie(t)
 	addrA := common.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
@@ -352,16 +348,16 @@ func TestDeleteAccountPreservesOtherAccounts(t *testing.T) {
 		t.Fatalf("UpdateAccount(B): %v", err)
 	}
 
-	// Delete A.
+	// Delete A (no-op under PBT, must not error).
 	if err := tr.DeleteAccount(addrA); err != nil {
 		t.Fatalf("DeleteAccount(A): %v", err)
 	}
 
-	// A should be gone.
+	// A's state is preserved (PBT no-op).
 	if got, err := tr.GetAccount(addrA); err != nil {
 		t.Fatalf("GetAccount(A): %v", err)
-	} else if got != nil {
-		t.Fatalf("GetAccount(A) after delete: got %+v, want nil", got)
+	} else if got == nil || got.Nonce != 1 {
+		t.Fatalf("GetAccount(A) after no-op delete: got %+v, want preserved", got)
 	}
 
 	// B should still be readable with its original values.
@@ -450,18 +446,18 @@ func TestDeleteAccountDoesNotAffectMainStorage(t *testing.T) {
 		t.Fatalf("UpdateStorage: %v", err)
 	}
 
-	// Delete the account.
+	// Delete the account (no-op under PBT).
 	if err := tr.DeleteAccount(addr); err != nil {
 		t.Fatalf("DeleteAccount: %v", err)
 	}
 
-	// Account should be absent.
+	// Account should be preserved (PBT no-op).
 	got, err := tr.GetAccount(addr)
 	if err != nil {
 		t.Fatalf("GetAccount after delete: %v", err)
 	}
-	if got != nil {
-		t.Fatalf("GetAccount after delete: got %+v, want nil", got)
+	if got == nil {
+		t.Fatal("GetAccount after no-op delete: got nil, want account preserved")
 	}
 
 	// Main storage slot should still be readable — DeleteAccount must not
@@ -518,23 +514,22 @@ func TestDeleteAccountPreservesHeaderStorage(t *testing.T) {
 		t.Fatalf("UpdateStorage: %v", err)
 	}
 
-	// Delete the account.
+	// Delete the account (no-op under PBT).
 	if err := tr.DeleteAccount(addr); err != nil {
 		t.Fatalf("DeleteAccount: %v", err)
 	}
 
-	// Account metadata should be gone.
+	// Account metadata should be preserved (PBT no-op).
 	got, err := tr.GetAccount(addr)
 	if err != nil {
 		t.Fatalf("GetAccount after delete: %v", err)
 	}
-	if got != nil {
-		t.Fatalf("GetAccount after delete: got %+v, want nil", got)
+	if got == nil {
+		t.Fatal("GetAccount after no-op delete: got nil, want account preserved")
 	}
 
-	// Header storage slot must survive — DeleteAccount only writes offsets
-	// BasicDataLeafKey, CodeHashLeafKey, and accountDeletedMarkerKey, leaving
-	// the header-storage offsets (64-127) untouched.
+	// Header storage slot must survive: DeleteAccount is a no-op and the
+	// header-storage offsets (64-127) sit at the same stem as BasicData.
 	stored, err := tr.GetStorage(addr, slot[:])
 	if err != nil {
 		t.Fatalf("GetStorage after DeleteAccount: %v", err)

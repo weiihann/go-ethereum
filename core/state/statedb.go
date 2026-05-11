@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/bintrie"
 	"github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/holiman/uint256"
 	"golang.org/x/sync/errgroup"
@@ -578,6 +579,176 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 	}
 }
 
+// applyBinaryTrieUpdates partitions account, code and storage updates by PBT
+// zone and applies them to the left (zone 000) and right (zone 1) sub-tries
+// concurrently. Zone 000 carries account headers, header storage (slots 0-63),
+// and code chunks; zone 1 carries main-storage slots >= 64. The two zones
+// occupy independent sub-trees at depth 0, so SplitRoot / MergeRoot bracket
+// the work without cross-zone interference.
+//
+// Sets op.applied = true for every non-delete mutation it processes; the
+// subsequent updateStateObject loop in IntermediateRoot is therefore a no-op
+// for the binary-trie path.
+func (s *StateDB) applyBinaryTrieUpdates() {
+	bt, ok := s.trie.(*bintrie.BinaryTrie)
+	if !ok {
+		s.applyBinaryTrieUpdatesSequential()
+		return
+	}
+	left, right, err := bt.SplitRoot()
+	if err != nil {
+		// Fallback for empty trie / non-internal root.
+		s.applyBinaryTrieUpdatesSequential()
+		return
+	}
+
+	// Slot >= HeaderStorageSlots routes to zone 1 (right subtree).
+	isMainStorage := func(key common.Hash) bool {
+		var slot uint256.Int
+		slot.SetBytes(key[:])
+		return slot.Cmp(uint256.NewInt(bintrie.HeaderStorageSlots)) >= 0
+	}
+
+	type storageOp struct {
+		addr  common.Address
+		key   common.Hash
+		value []byte // nil == delete
+	}
+	var (
+		leftStorage  []storageOp
+		rightStorage []storageOp
+		accountObjs  []*stateObject
+	)
+	for addr, op := range s.mutations {
+		if op.applied || op.isDelete() {
+			continue
+		}
+		obj := s.stateObjects[addr]
+		for key, origin := range obj.uncommittedStorage {
+			value, exist := obj.pendingStorage[key]
+			if value == origin || !exist {
+				continue
+			}
+			var val []byte
+			if value != (common.Hash{}) {
+				val = common.TrimLeftZeroes(value[:])
+			}
+			sop := storageOp{addr: addr, key: key, value: val}
+			if isMainStorage(key) {
+				rightStorage = append(rightStorage, sop)
+			} else {
+				leftStorage = append(leftStorage, sop)
+			}
+			if val != nil {
+				s.StorageUpdated.Add(1)
+			} else {
+				s.StorageDeleted.Add(1)
+			}
+		}
+		accountObjs = append(accountObjs, obj)
+	}
+
+	var workers errgroup.Group
+	workers.Go(func() error {
+		for _, op := range rightStorage {
+			if op.value != nil {
+				if err := right.UpdateStorage(op.addr, op.key[:], op.value); err != nil {
+					return err
+				}
+			} else {
+				if err := right.DeleteStorage(op.addr, op.key[:]); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	workers.Go(func() error {
+		for _, op := range leftStorage {
+			if op.value != nil {
+				if err := left.UpdateStorage(op.addr, op.key[:], op.value); err != nil {
+					return err
+				}
+			} else {
+				if err := left.DeleteStorage(op.addr, op.key[:]); err != nil {
+					return err
+				}
+			}
+		}
+		for _, obj := range accountObjs {
+			if err := left.UpdateAccount(obj.Address(), &obj.data, len(obj.code)); err != nil {
+				return fmt.Errorf("updateStateObject (%x) error: %v", obj.Address(), err)
+			}
+			if obj.dirtyCode {
+				left.UpdateContractCode(obj.Address(), common.BytesToHash(obj.CodeHash()), obj.code)
+			}
+		}
+		return nil
+	})
+	if err := workers.Wait(); err != nil {
+		s.setError(err)
+	}
+
+	bt.MergeRoot(left, right)
+
+	// Mark applied, bump counters, clear uncommittedStorage, assign trie.
+	for addr, op := range s.mutations {
+		if op.applied || op.isDelete() {
+			continue
+		}
+		op.applied = true
+		obj := s.stateObjects[addr]
+		s.AccountUpdated += 1
+		if obj.dirtyCode {
+			s.CodeUpdated += 1
+			s.CodeUpdateBytes += len(obj.code)
+		}
+		if len(obj.uncommittedStorage) > 0 {
+			obj.uncommittedStorage = make(Storage)
+		}
+		obj.trie = s.trie
+	}
+}
+
+// applyBinaryTrieUpdatesSequential is the fallback when SplitRoot can't be
+// used (empty trie, single-stem root, or non-bintrie). It performs the same
+// work as applyBinaryTrieUpdates but against the unified trie.
+func (s *StateDB) applyBinaryTrieUpdatesSequential() {
+	for addr, op := range s.mutations {
+		if op.applied || op.isDelete() {
+			continue
+		}
+		obj := s.stateObjects[addr]
+		for key, origin := range obj.uncommittedStorage {
+			value, exist := obj.pendingStorage[key]
+			if value == origin || !exist {
+				continue
+			}
+			if value != (common.Hash{}) {
+				if err := s.trie.UpdateStorage(addr, key[:], common.TrimLeftZeroes(value[:])); err != nil {
+					s.setError(err)
+				}
+				s.StorageUpdated.Add(1)
+			} else {
+				if err := s.trie.DeleteStorage(addr, key[:]); err != nil {
+					s.setError(err)
+				}
+				s.StorageDeleted.Add(1)
+			}
+		}
+	}
+	for addr, op := range s.mutations {
+		if op.applied || op.isDelete() {
+			continue
+		}
+		obj := s.stateObjects[addr]
+		if len(obj.uncommittedStorage) > 0 {
+			obj.uncommittedStorage = make(Storage)
+		}
+		obj.trie = s.trie
+	}
+}
+
 // deleteStateObject removes the given object from the state trie.
 func (s *StateDB) deleteStateObject(addr common.Address) {
 	if err := s.trie.DeleteAccount(addr); err != nil {
@@ -880,50 +1051,13 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 		workers errgroup.Group
 	)
 	if s.db.Type().Is(TypeUBT) {
-		// Bypass per-account updateTrie() for binary trie. In binary trie mode
-		// there is only one unified trie (OpenStorageTrie returns self), so the
-		// per-account trie setup in updateTrie() (getPrefetchedTrie, getTrie,
-		// prefetcher.used) is redundant overhead. Apply all storage updates
-		// directly in a single pass.
-		for addr, op := range s.mutations {
-			if op.applied || op.isDelete() {
-				continue
-			}
-			obj := s.stateObjects[addr]
-			if len(obj.uncommittedStorage) == 0 {
-				continue
-			}
-			for key, origin := range obj.uncommittedStorage {
-				value, exist := obj.pendingStorage[key]
-				if value == origin || !exist {
-					continue
-				}
-				if (value != common.Hash{}) {
-					if err := s.trie.UpdateStorage(addr, key[:], common.TrimLeftZeroes(value[:])); err != nil {
-						s.setError(err)
-					}
-					s.StorageUpdated.Add(1)
-				} else {
-					if err := s.trie.DeleteStorage(addr, key[:]); err != nil {
-						s.setError(err)
-					}
-					s.StorageDeleted.Add(1)
-				}
-			}
-		}
-		// Clear uncommittedStorage and assign trie on each touched object.
-		// obj.trie must be set because this path bypasses updateTrie(), which
-		// is where obj.trie normally gets lazily loaded via getTrie().
-		for addr, op := range s.mutations {
-			if op.applied || op.isDelete() {
-				continue
-			}
-			obj := s.stateObjects[addr]
-			if len(obj.uncommittedStorage) > 0 {
-				obj.uncommittedStorage = make(Storage)
-			}
-			obj.trie = s.trie
-		}
+		// Binary trie mode: partition by PBT zone and apply zone 000 (left,
+		// accounts + header storage) and zone 1 (right, main storage) in
+		// parallel. SplitRoot/MergeRoot bracket the per-zone work; the helper
+		// also bypasses the per-account updateTrie() machinery (there is only
+		// one unified trie under TypeUBT, so getPrefetchedTrie/getTrie are
+		// redundant).
+		s.applyBinaryTrieUpdates()
 	} else {
 		for addr, op := range s.mutations {
 			if op.applied || op.isDelete() {
