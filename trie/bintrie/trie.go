@@ -19,6 +19,7 @@ package bintrie
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -111,6 +112,7 @@ type BinaryTrie struct {
 	reader     *trie.Reader
 	tracer     *trie.PrevalueTracer
 	groupDepth int // Number of levels per serialized group (1-8, default 8)
+	baseDepth  int // 0 for full trie, >0 for sub-views created by SplitRoot
 }
 
 func (t *BinaryTrie) GroupDepth() int {
@@ -347,7 +349,58 @@ func (t *BinaryTrie) Copy() *BinaryTrie {
 		reader:     t.reader,
 		tracer:     t.tracer.Copy(),
 		groupDepth: t.groupDepth,
+		baseDepth:  t.baseDepth,
 	}
+}
+
+// SplitRoot returns two sub-trie views wrapping the root's left and right
+// children. Each view owns an independent nodeStore — extracted from the
+// parent — so the caller can update the views concurrently. The caller MUST
+// invoke MergeRoot afterward to fold the updates back into this trie.
+//
+// Hashed children remain hashed in the sub-views; they're resolved lazily on
+// first use via the same disk reader the parent trie uses. The resolver path
+// for a sub-view node is derived from the stem being operated on, so the
+// lazy path is correct without any extra plumbing.
+//
+// Returns an error if the trie root is not an InternalNode.
+func (t *BinaryTrie) SplitRoot() (left, right *BinaryTrie, err error) {
+	if t.store.root.Kind() != kindInternal {
+		return nil, nil, errors.New("SplitRoot: root is not an InternalNode")
+	}
+	rootNode := t.store.getInternal(t.store.root.Index())
+
+	subDepth := uint8(t.baseDepth + 1)
+	leftStore := newSubStore(subDepth)
+	leftStore.root = leftStore.copyFrom(t.store, rootNode.left)
+	rightStore := newSubStore(subDepth)
+	rightStore.root = rightStore.copyFrom(t.store, rootNode.right)
+
+	left = &BinaryTrie{
+		store:      leftStore,
+		reader:     t.reader,
+		tracer:     t.tracer,
+		groupDepth: t.groupDepth,
+		baseDepth:  t.baseDepth + 1,
+	}
+	right = &BinaryTrie{
+		store:      rightStore,
+		reader:     t.reader,
+		tracer:     t.tracer,
+		groupDepth: t.groupDepth,
+		baseDepth:  t.baseDepth + 1,
+	}
+	return left, right, nil
+}
+
+// MergeRoot folds two sub-views (from SplitRoot) back into this trie.
+// Must be called after parallel updates to left and right complete.
+func (t *BinaryTrie) MergeRoot(left, right *BinaryTrie) {
+	rootNode := t.store.getInternal(t.store.root.Index())
+	rootNode.left = t.store.copyFrom(left.store, left.store.root)
+	rootNode.right = t.store.copyFrom(right.store, right.store.root)
+	rootNode.mustRecompute = true
+	rootNode.dirty = true
 }
 
 // IsUBT returns true if the trie is a Verkle tree.

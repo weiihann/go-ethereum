@@ -44,6 +44,7 @@ func (s *nodeStore) GetValue(stem []byte, suffix byte, resolver nodeResolverFn) 
 func (s *nodeStore) GetValuesAtStem(stem []byte, resolver nodeResolverFn) ([][]byte, error) {
 	cur := s.root
 	var parentIdx uint32
+	var hasParent bool
 	var parentIsLeft bool
 
 	for {
@@ -55,6 +56,7 @@ func (s *nodeStore) GetValuesAtStem(stem []byte, resolver nodeResolverFn) ([][]b
 			}
 			bit := stem[node.depth/8] >> (7 - (node.depth % 8)) & 1
 			parentIdx = cur.Index()
+			hasParent = true
 			if bit == 0 {
 				parentIsLeft = true
 				cur = node.left
@@ -71,31 +73,52 @@ func (s *nodeStore) GetValuesAtStem(stem []byte, resolver nodeResolverFn) ([][]b
 			return sn.allValues(), nil
 
 		case kindHashed:
-			// HashedNode at root is impossible: NewBinaryTrie resolves the
-			// root eagerly before any query. Any HashedNode we encounter here
-			// is necessarily a child of a previously-visited internal node.
+			// HashedNode at root is possible in SplitRoot sub-views; otherwise
+			// it's a child of a previously-visited internal node.
 			if resolver == nil {
 				return nil, errors.New("getValuesAtStem: cannot resolve hashed node without resolver")
 			}
 			hn := s.getHashed(cur.Index())
-			parentNode := s.getInternal(parentIdx)
-			path, err := keyToPath(int(parentNode.depth), stem)
-			if err != nil {
-				return nil, fmt.Errorf("getValuesAtStem path error: %w", err)
+			var (
+				nodeDepth int
+				path      []byte
+			)
+			if hasParent {
+				nodeDepth = int(s.getInternal(parentIdx).depth) + 1
+				p, err := keyToPath(nodeDepth-1, stem)
+				if err != nil {
+					return nil, fmt.Errorf("getValuesAtStem path error: %w", err)
+				}
+				path = p
+			} else {
+				// Root is hashed (sub-view). Its depth is the store's baseDepth.
+				nodeDepth = int(s.baseDepth)
+				if nodeDepth > 0 {
+					p, err := keyToPath(nodeDepth-1, stem)
+					if err != nil {
+						return nil, fmt.Errorf("getValuesAtStem path error: %w", err)
+					}
+					path = p
+				}
 			}
 			data, err := resolver(path, hn.Hash())
 			if err != nil {
 				return nil, fmt.Errorf("getValuesAtStem resolve error: %w", err)
 			}
-			resolved, err := s.deserializeNodeWithHash(data, int(parentNode.depth)+1, hn.Hash())
+			resolved, err := s.deserializeNodeWithHash(data, nodeDepth, hn.Hash())
 			if err != nil {
 				return nil, fmt.Errorf("getValuesAtStem deserialization error: %w", err)
 			}
 			s.freeHashedNode(cur.Index())
-			if parentIsLeft {
-				parentNode.left = resolved
+			if hasParent {
+				parentNode := s.getInternal(parentIdx)
+				if parentIsLeft {
+					parentNode.left = resolved
+				} else {
+					parentNode.right = resolved
+				}
 			} else {
-				parentNode.right = resolved
+				s.root = resolved
 			}
 			cur = resolved
 
@@ -130,7 +153,7 @@ func (s *nodeStore) InsertSingle(stem []byte, suffix byte, value []byte, resolve
 // HashedNode resolution, stem merge, and stem split.
 func (s *nodeStore) InsertValuesAtStem(stem []byte, values [][]byte, resolver nodeResolverFn) error {
 	var err error
-	s.root, err = s.insertValuesAtStem(s.root, stem, values, resolver, 0)
+	s.root, err = s.insertValuesAtStem(s.root, stem, values, resolver, int(s.baseDepth))
 	return err
 }
 
@@ -212,12 +235,18 @@ func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte
 
 	case kindHashed:
 		hn := s.getHashed(ref.Index())
-		path, err := keyToPath(depth, stem)
-		if err != nil {
-			return ref, fmt.Errorf("InsertValuesAtStem path error: %w", err)
-		}
 		if resolver == nil {
 			return ref, errors.New("InsertValuesAtStem: resolver is nil")
+		}
+		// Path to *this* node has `depth` bits. keyToPath(d) returns d+1 bits,
+		// so use depth-1; depth==0 (root) is the empty path.
+		var path []byte
+		if depth > 0 {
+			var err error
+			path, err = keyToPath(depth-1, stem)
+			if err != nil {
+				return ref, fmt.Errorf("InsertValuesAtStem path error: %w", err)
+			}
 		}
 		data, err := resolver(path, hn.Hash())
 		if err != nil {

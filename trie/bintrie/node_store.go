@@ -36,6 +36,11 @@ type nodeStore struct {
 
 	root nodeRef
 
+	// baseDepth is the global trie depth at which this store's root sits.
+	// 0 for a full trie; >0 for sub-views produced by BinaryTrie.SplitRoot.
+	// Used to derive disk paths and stem depths during HashedNode resolution.
+	baseDepth uint8
+
 	// Free list for recycling hashed-node slots after resolve. Internal and
 	// stem nodes are never freed under current semantics (no delete path,
 	// stem-split keeps the old stem at a deeper position), so they don't
@@ -55,6 +60,10 @@ type nodeStore struct {
 
 func newNodeStore() *nodeStore {
 	return &nodeStore{root: emptyRef}
+}
+
+func newSubStore(baseDepth uint8) *nodeStore {
+	return &nodeStore{root: emptyRef, baseDepth: baseDepth}
 }
 
 func (s *nodeStore) allocInternal() uint32 {
@@ -152,6 +161,7 @@ func (s *nodeStore) newHashedRef(hash common.Hash) nodeRef {
 func (s *nodeStore) Copy() *nodeStore {
 	ns := &nodeStore{
 		root:          s.root,
+		baseDepth:     s.baseDepth,
 		internalCount: s.internalCount,
 		stemCount:     s.stemCount,
 		hashedCount:   s.hashedCount,
@@ -191,4 +201,50 @@ func (s *nodeStore) Copy() *nodeStore {
 	}
 
 	return ns
+}
+
+// copyFrom recursively copies the subtree rooted at srcRef from src into the
+// receiver and returns the new ref in the receiver. Used by SplitRoot to
+// build sub-view stores from a parent store, and by MergeRoot to fold the
+// sub-views back into the parent. Stem values are deep-copied because the
+// arena's value slices may alias serialized buffers.
+func (dst *nodeStore) copyFrom(src *nodeStore, srcRef nodeRef) nodeRef {
+	switch srcRef.Kind() {
+	case kindEmpty:
+		return emptyRef
+	case kindInternal:
+		srcNode := src.getInternal(srcRef.Index())
+		dstIdx := dst.allocInternal()
+		dstNode := dst.getInternal(dstIdx)
+		dstNode.depth = srcNode.depth
+		dstNode.mustRecompute = srcNode.mustRecompute
+		dstNode.dirty = srcNode.dirty
+		dstNode.hash = srcNode.hash
+		dstNode.left = dst.copyFrom(src, srcNode.left)
+		dstNode.right = dst.copyFrom(src, srcNode.right)
+		return makeRef(kindInternal, dstIdx)
+	case kindStem:
+		srcStem := src.getStem(srcRef.Index())
+		dstIdx := dst.allocStem()
+		dstStem := dst.getStem(dstIdx)
+		dstStem.Stem = srcStem.Stem
+		dstStem.depth = srcStem.depth
+		dstStem.mustRecompute = srcStem.mustRecompute
+		dstStem.dirty = srcStem.dirty
+		dstStem.hash = srcStem.hash
+		for i, v := range srcStem.values {
+			if v == nil {
+				continue
+			}
+			cp := make([]byte, len(v))
+			copy(cp, v)
+			dstStem.values[i] = cp
+		}
+		return makeRef(kindStem, dstIdx)
+	case kindHashed:
+		hn := src.getHashed(srcRef.Index())
+		return dst.newHashedRef(hn.Hash())
+	default:
+		panic("copyFrom: unknown node kind")
+	}
 }
