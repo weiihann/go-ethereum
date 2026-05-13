@@ -48,18 +48,34 @@ type depthStats struct {
 	Bytes int64
 }
 
-// stateSizeDelta represents state size delta for a single block.
-type stateSizeDelta struct {
-	AccountDelta              int64
-	AccountBytesDelta         int64
-	AccountTrienodeDelta      int64
-	AccountTrienodeBytesDelta int64
-	ContractCodeDelta         int64
-	ContractCodeBytesDelta    int64
-	StorageDelta              int64
-	StorageBytesDelta         int64
-	StorageTrienodeDelta      int64
-	StorageTrienodeBytesDelta int64
+// stateSizeChanges represents the gross write/delete activity for a single block.
+// Updates are accounted as BOTH a write (of the new value) AND a delete (of the
+// previous value), so net delta = writes - deletes for all five categories.
+//
+// ContractCodeDeletes / ContractCodeDeleteBytes are present for schema parity
+// but always 0 — see the comment on the contract-code loop in
+// calculateStateSizeChanges.
+type stateSizeChanges struct {
+	AccountWrites              int64
+	AccountWriteBytes          int64
+	AccountDeletes             int64
+	AccountDeleteBytes         int64
+	AccountTrienodeWrites      int64
+	AccountTrienodeWriteBytes  int64
+	AccountTrienodeDeletes     int64
+	AccountTrienodeDeleteBytes int64
+	ContractCodeWrites         int64
+	ContractCodeWriteBytes     int64
+	ContractCodeDeletes        int64
+	ContractCodeDeleteBytes    int64
+	StorageWrites              int64
+	StorageWriteBytes          int64
+	StorageDeletes             int64
+	StorageDeleteBytes         int64
+	StorageTrienodeWrites      int64
+	StorageTrienodeWriteBytes  int64
+	StorageTrienodeDeletes     int64
+	StorageTrienodeDeleteBytes int64
 }
 
 // JSON log output types following the "Slow block" pattern in blockchain_stats.go.
@@ -71,11 +87,14 @@ type stateMetricsLog struct {
 	BlockNumber     uint64            `json:"block_number"`
 	StateRoot       string            `json:"state_root"`
 	ParentStateRoot string            `json:"parent_state_root"`
-	Delta           stateMetricsDelta `json:"delta"`
+	Writes          stateMetricsSizes `json:"writes"`
+	Deletes         stateMetricsSizes `json:"deletes"`
 	Depth           stateMetricsDepth `json:"depth"`
 }
 
-type stateMetricsDelta struct {
+// stateMetricsSizes is the per-category count + bytes payload, used twice in
+// stateMetricsLog: once for writes and once for deletes.
+type stateMetricsSizes struct {
 	Account              int64 `json:"account"`
 	AccountBytes         int64 `json:"account_bytes"`
 	AccountTrienode      int64 `json:"account_trienode"`
@@ -124,30 +143,39 @@ func (s *stateSizeTracer) onStateUpdate(update *tracing.StateUpdate) {
 		return
 	}
 
-	// Calculate state size delta and depth stats
-	delta, accountDepthCreated, storageDepthCreated, accountDepthDeleted, storageDepthDeleted := calculateStateSizeDelta(update)
+	changes, accountDepthCreated, storageDepthCreated, accountDepthDeleted, storageDepthDeleted := calculateStateSizeChanges(update)
 
-	// Build depth maps (only non-zero entries)
 	depth := buildDepthMetrics(accountDepthCreated, storageDepthCreated, accountDepthDeleted, storageDepthDeleted)
 
-	// Build and emit JSON log (same pattern as logSlow in blockchain_stats.go)
 	entry := stateMetricsLog{
 		Level:           "info",
 		Msg:             "State metrics",
 		BlockNumber:     update.BlockNumber,
 		StateRoot:       update.Root.Hex(),
 		ParentStateRoot: update.OriginRoot.Hex(),
-		Delta: stateMetricsDelta{
-			Account:              delta.AccountDelta,
-			AccountBytes:         delta.AccountBytesDelta,
-			AccountTrienode:      delta.AccountTrienodeDelta,
-			AccountTrienodeBytes: delta.AccountTrienodeBytesDelta,
-			ContractCode:         delta.ContractCodeDelta,
-			ContractCodeBytes:    delta.ContractCodeBytesDelta,
-			Storage:              delta.StorageDelta,
-			StorageBytes:         delta.StorageBytesDelta,
-			StorageTrienode:      delta.StorageTrienodeDelta,
-			StorageTrienodeBytes: delta.StorageTrienodeBytesDelta,
+		Writes: stateMetricsSizes{
+			Account:              changes.AccountWrites,
+			AccountBytes:         changes.AccountWriteBytes,
+			AccountTrienode:      changes.AccountTrienodeWrites,
+			AccountTrienodeBytes: changes.AccountTrienodeWriteBytes,
+			ContractCode:         changes.ContractCodeWrites,
+			ContractCodeBytes:    changes.ContractCodeWriteBytes,
+			Storage:              changes.StorageWrites,
+			StorageBytes:         changes.StorageWriteBytes,
+			StorageTrienode:      changes.StorageTrienodeWrites,
+			StorageTrienodeBytes: changes.StorageTrienodeWriteBytes,
+		},
+		Deletes: stateMetricsSizes{
+			Account:              changes.AccountDeletes,
+			AccountBytes:         changes.AccountDeleteBytes,
+			AccountTrienode:      changes.AccountTrienodeDeletes,
+			AccountTrienodeBytes: changes.AccountTrienodeDeleteBytes,
+			ContractCode:         changes.ContractCodeDeletes,
+			ContractCodeBytes:    changes.ContractCodeDeleteBytes,
+			Storage:              changes.StorageDeletes,
+			StorageBytes:         changes.StorageDeleteBytes,
+			StorageTrienode:      changes.StorageTrienodeDeletes,
+			StorageTrienodeBytes: changes.StorageTrienodeDeleteBytes,
 		},
 		Depth: depth,
 	}
@@ -214,30 +242,38 @@ func buildDepthMetrics(
 	return d
 }
 
-// calculateStateSizeDelta computes the state size delta from a state update.
-// It returns the delta and depth stats (count + bytes) for account/storage trie nodes (created and deleted).
-func calculateStateSizeDelta(update *tracing.StateUpdate) (
-	delta stateSizeDelta,
+// calculateStateSizeChanges computes write/delete counts and bytes per category
+// from a state update. An "update" (both prev and new present) is accounted as
+// BOTH a write of the new value and a delete of the previous one — so a query
+// of `writes - deletes` recovers the net delta exactly.
+//
+// Returns the changes plus per-depth stats for account/storage trie nodes.
+func calculateStateSizeChanges(update *tracing.StateUpdate) (
+	changes stateSizeChanges,
 	accountDepthCreated, storageDepthCreated, accountDepthDeleted, storageDepthDeleted [65]depthStats,
 ) {
-	// Calculate account size changes
+	// Account size changes.
 	for _, change := range update.AccountChanges {
 		prevLen := slimAccountSize(change.Prev)
 		newLen := slimAccountSize(change.New)
 
 		switch {
 		case prevLen > 0 && newLen == 0:
-			delta.AccountDelta--
-			delta.AccountBytesDelta -= accountKeySize + int64(prevLen)
+			changes.AccountDeletes++
+			changes.AccountDeleteBytes += accountKeySize + int64(prevLen)
 		case prevLen == 0 && newLen > 0:
-			delta.AccountDelta++
-			delta.AccountBytesDelta += accountKeySize + int64(newLen)
+			changes.AccountWrites++
+			changes.AccountWriteBytes += accountKeySize + int64(newLen)
 		default:
-			delta.AccountBytesDelta += int64(newLen - prevLen)
+			// Update: overwrite semantics — count as both a write and a delete.
+			changes.AccountWrites++
+			changes.AccountWriteBytes += accountKeySize + int64(newLen)
+			changes.AccountDeletes++
+			changes.AccountDeleteBytes += accountKeySize + int64(prevLen)
 		}
 	}
 
-	// Calculate storage size changes
+	// Storage slot changes.
 	for _, slots := range update.StorageChanges {
 		for _, change := range slots {
 			prevLen := len(encodeStorageValue(change.Prev))
@@ -245,18 +281,21 @@ func calculateStateSizeDelta(update *tracing.StateUpdate) (
 
 			switch {
 			case prevLen > 0 && newLen == 0:
-				delta.StorageDelta--
-				delta.StorageBytesDelta -= storageKeySize + int64(prevLen)
+				changes.StorageDeletes++
+				changes.StorageDeleteBytes += storageKeySize + int64(prevLen)
 			case prevLen == 0 && newLen > 0:
-				delta.StorageDelta++
-				delta.StorageBytesDelta += storageKeySize + int64(newLen)
+				changes.StorageWrites++
+				changes.StorageWriteBytes += storageKeySize + int64(newLen)
 			default:
-				delta.StorageBytesDelta += int64(newLen - prevLen)
+				changes.StorageWrites++
+				changes.StorageWriteBytes += storageKeySize + int64(newLen)
+				changes.StorageDeletes++
+				changes.StorageDeleteBytes += storageKeySize + int64(prevLen)
 			}
 		}
 	}
 
-	// Calculate trie node size changes and depth counts
+	// Trie node changes (both account and storage tries) — and depth stats.
 	for owner, nodes := range update.TrieChanges {
 		var (
 			keyPrefix int64
@@ -268,7 +307,6 @@ func calculateStateSizeDelta(update *tracing.StateUpdate) (
 			keyPrefix = storageTrienodePrefixSize
 		}
 
-		// Calculate depth stats for created/modified and deleted nodes
 		createdStats, deletedStats := calculateDepthStatsByType(nodes)
 
 		for path, change := range nodes {
@@ -284,30 +322,35 @@ func calculateStateSizeDelta(update *tracing.StateUpdate) (
 			switch {
 			case prevLen > 0 && newLen == 0:
 				if isAccount {
-					delta.AccountTrienodeDelta--
-					delta.AccountTrienodeBytesDelta -= keySize + int64(prevLen)
+					changes.AccountTrienodeDeletes++
+					changes.AccountTrienodeDeleteBytes += keySize + int64(prevLen)
 				} else {
-					delta.StorageTrienodeDelta--
-					delta.StorageTrienodeBytesDelta -= keySize + int64(prevLen)
+					changes.StorageTrienodeDeletes++
+					changes.StorageTrienodeDeleteBytes += keySize + int64(prevLen)
 				}
 			case prevLen == 0 && newLen > 0:
 				if isAccount {
-					delta.AccountTrienodeDelta++
-					delta.AccountTrienodeBytesDelta += keySize + int64(newLen)
+					changes.AccountTrienodeWrites++
+					changes.AccountTrienodeWriteBytes += keySize + int64(newLen)
 				} else {
-					delta.StorageTrienodeDelta++
-					delta.StorageTrienodeBytesDelta += keySize + int64(newLen)
+					changes.StorageTrienodeWrites++
+					changes.StorageTrienodeWriteBytes += keySize + int64(newLen)
 				}
 			default:
 				if isAccount {
-					delta.AccountTrienodeBytesDelta += int64(newLen - prevLen)
+					changes.AccountTrienodeWrites++
+					changes.AccountTrienodeWriteBytes += keySize + int64(newLen)
+					changes.AccountTrienodeDeletes++
+					changes.AccountTrienodeDeleteBytes += keySize + int64(prevLen)
 				} else {
-					delta.StorageTrienodeBytesDelta += int64(newLen - prevLen)
+					changes.StorageTrienodeWrites++
+					changes.StorageTrienodeWriteBytes += keySize + int64(newLen)
+					changes.StorageTrienodeDeletes++
+					changes.StorageTrienodeDeleteBytes += keySize + int64(prevLen)
 				}
 			}
 		}
 
-		// Accumulate depth stats
 		if isAccount {
 			for i := range 65 {
 				accountDepthCreated[i].Count += createdStats[i].Count
@@ -325,19 +368,21 @@ func calculateStateSizeDelta(update *tracing.StateUpdate) (
 		}
 	}
 
-	// Calculate contract code size changes
-	// Only count new codes that didn't exist before
+	// Contract code: write-only by design. Counts unique new code blobs by hash
+	// (deduped — adding the same bytecode to two accounts only adds it to the DB
+	// once). Deletes are not tracked here because reliably attributing a "last
+	// reference gone" event would require ref-counting that state_sizer.go
+	// deliberately omits. ContractCodeDeletes / ContractCodeDeleteBytes stay 0.
 	codeExists := make(map[common.Hash]struct{})
 	for _, change := range update.CodeChanges {
 		if change.New == nil {
 			continue
 		}
-		// Skip if we've already counted this code hash or if it existed before
 		if _, ok := codeExists[change.New.Hash]; ok || change.New.Exists {
 			continue
 		}
-		delta.ContractCodeDelta++
-		delta.ContractCodeBytesDelta += codeKeySize + int64(len(change.New.Code))
+		changes.ContractCodeWrites++
+		changes.ContractCodeWriteBytes += codeKeySize + int64(len(change.New.Code))
 		codeExists[change.New.Hash] = struct{}{}
 	}
 
@@ -372,21 +417,17 @@ func calculateDepthStatsByType(pathMap map[string]*tracing.TrieNodeChange) (crea
 		return
 	}
 
-	// First, calculate depth for all nodes using the tree structure
 	paths := make([]string, 0, n)
 	for path := range pathMap {
 		paths = append(paths, path)
 	}
 	slices.Sort(paths)
 
-	// Map from path to its depth
 	depthMap := make(map[string]int, n)
 
-	// Stack stores paths of ancestors
 	stack := make([]string, 0, 65)
 
 	for _, path := range paths {
-		// Pop until stack top is a strict prefix of path
 		for len(stack) > 0 {
 			top := stack[len(stack)-1]
 			if len(top) < len(path) && path[:len(top)] == top {
@@ -401,7 +442,6 @@ func calculateDepthStatsByType(pathMap map[string]*tracing.TrieNodeChange) (crea
 		stack = append(stack, path)
 	}
 
-	// Now classify each node based on Prev/New status
 	for path, change := range pathMap {
 		depth := depthMap[path]
 
@@ -413,12 +453,10 @@ func calculateDepthStatsByType(pathMap map[string]*tracing.TrieNodeChange) (crea
 			newLen = len(change.New.Blob)
 		}
 
-		// Created/Modified: New has data (node exists after update)
 		if newLen > 0 {
 			created[depth].Count++
 			created[depth].Bytes += int64(newLen)
 		}
-		// Deleted: Prev has data but New is empty (node removed)
 		if prevLen > 0 && newLen == 0 {
 			deleted[depth].Count++
 			deleted[depth].Bytes += int64(prevLen)
