@@ -267,7 +267,7 @@ type stateSizeQuery struct {
 
 // SizeTracker handles the state size initialization and tracks of state size metrics.
 type SizeTracker struct {
-	db       ethdb.KeyValueStore
+	db       ethdb.Database
 	triedb   *triedb.Database
 	abort    chan struct{}
 	aborted  chan struct{}
@@ -276,8 +276,11 @@ type SizeTracker struct {
 	depth    uint64 // the depth of statistics to be preserved
 }
 
-// NewSizeTracker creates a new state size tracker and starts it automatically
-func NewSizeTracker(db ethdb.KeyValueStore, triedb *triedb.Database, depth uint64) (*SizeTracker, error) {
+// NewSizeTracker creates a new state size tracker, runs the initial state size
+// measurement synchronously, and starts the background update loop. Returns an
+// error if the initial measurement fails — callers that consider tracker
+// initialisation mandatory should propagate the error.
+func NewSizeTracker(db ethdb.Database, triedb *triedb.Database, depth uint64) (*SizeTracker, error) {
 	if triedb.Scheme() != rawdb.PathScheme {
 		return nil, errors.New("state size tracker is not compatible with hash mode")
 	}
@@ -293,7 +296,14 @@ func NewSizeTracker(db ethdb.KeyValueStore, triedb *triedb.Database, depth uint6
 		queryCh:  make(chan *stateSizeQuery),
 		depth:    depth,
 	}
-	go t.run()
+	// Block on the initial state-size measurement. Channels updateCh/queryCh
+	// have no producers yet (run() hasn't started), so init() doesn't need to
+	// drain them.
+	stats, err := t.init()
+	if err != nil {
+		return nil, err
+	}
+	go t.run(stats)
 	return t, nil
 }
 
@@ -322,15 +332,12 @@ func (h *sizeStatsHeap) Pop() any {
 	return x
 }
 
-// run performs the state size initialization and handles updates
-func (t *SizeTracker) run() {
+// run consumes state updates and queries. The initial stats are produced
+// synchronously by init() before this goroutine starts.
+func (t *SizeTracker) run(stats map[common.Hash]SizeStats) {
 	defer close(t.aborted)
 
 	var last common.Hash
-	stats, err := t.init() // launch background thread for state size init
-	if err != nil {
-		return
-	}
 	h := sizeStatsHeap(slices.Collect(maps.Values(stats)))
 	heap.Init(&h)
 
@@ -397,112 +404,92 @@ func (t *SizeTracker) run() {
 	}
 }
 
-type buildResult struct {
-	stat        SizeStats
-	root        common.Hash
-	blockNumber uint64
-	elapsed     time.Duration
-	err         error
-}
-
+// init waits for snapshot generation to finish, locates the block whose state
+// root matches the persisted snapshot root, and runs the initial size
+// measurement synchronously. Returns a single-entry stats map keyed by the
+// snapshot root. Callers are blocked until this returns.
 func (t *SizeTracker) init() (map[common.Hash]SizeStats, error) {
-	// Wait for snapshot completion and then init
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
+	log.Info("Initializing state size tracker")
 
-wait:
-	for {
+	// Wait for snapshot completion. No drain of updateCh/queryCh is needed here
+	// because run() hasn't started yet — there are no producers.
+	for !t.triedb.SnapshotCompleted() {
 		select {
-		case <-ticker.C:
-			if t.triedb.SnapshotCompleted() {
-				break wait
-			}
-		case <-t.updateCh:
-			continue
-		case r := <-t.queryCh:
-			r.err = errors.New("state size is not initialized yet")
-			r.result <- nil
 		case <-t.abort:
 			return nil, errors.New("size tracker closed")
+		case <-time.After(10 * time.Second):
 		}
 	}
+	log.Info("Snapshot completed")
 
+	// Identify the head block so we can correlate it to the snapshot root.
+	head := rawdb.ReadHeadHeader(t.db)
+	if head == nil {
+		return nil, errors.New("head block not found")
+	}
+	headNumber := head.Number.Uint64()
+	log.Info("Head block found", "number", headNumber, "root", head.Root.Hex())
+
+	// Flush any pending trie diff layers so the on-disk snapshot/trie state is
+	// internally consistent before we scan it.
+	if err := t.triedb.Commit(head.Root, false); err != nil {
+		return nil, fmt.Errorf("flush triedb at head: %w", err)
+	}
+
+	snapshotRoot := rawdb.ReadSnapshotRoot(t.db)
+	if snapshotRoot == (common.Hash{}) {
+		return nil, errors.New("snapshot root not found")
+	}
+
+	// Walk back from head looking for the canonical header whose Root matches
+	// the snapshot's root. The snapshot generator can be up to a few blocks
+	// behind head while trie diff layers are still in memory, so the lookback
+	// gives some slack.
+	const maxLookback = 1024
 	var (
-		updates  = make(map[common.Hash]*StateUpdate)
-		children = make(map[common.Hash][]common.Hash)
-		done     chan buildResult
+		blockNumber uint64
+		blockHash   common.Hash
+		found       bool
 	)
-
-	for {
-		select {
-		case u := <-t.updateCh:
-			updates[u.Root] = u
-			children[u.OriginRoot] = append(children[u.OriginRoot], u.Root)
-			log.Debug("Received state update", "root", u.Root, "blockNumber", u.BlockNumber)
-
-		case r := <-t.queryCh:
-			r.err = errors.New("state size is not initialized yet")
-			r.result <- nil
-
-		case <-ticker.C:
-			// Only check timer if build hasn't started yet
-			if done != nil {
-				continue
-			}
-			root := rawdb.ReadSnapshotRoot(t.db)
-			if root == (common.Hash{}) {
-				continue
-			}
-			entry, exists := updates[root]
-			if !exists {
-				continue
-			}
-			done = make(chan buildResult)
-			go t.build(entry.Root, entry.BlockNumber, done)
-			log.Info("Measuring persistent state size", "root", root.Hex(), "number", entry.BlockNumber)
-
-		case result := <-done:
-			if result.err != nil {
-				return nil, result.err
-			}
-			var (
-				stats = make(map[common.Hash]SizeStats)
-				apply func(root common.Hash, stat SizeStats) error
-			)
-			apply = func(root common.Hash, base SizeStats) error {
-				for _, child := range children[root] {
-					entry, ok := updates[child]
-					if !ok {
-						return fmt.Errorf("the state update is not found, %x", child)
-					}
-					diff, err := calSizeStats(entry)
-					if err != nil {
-						return err
-					}
-					stats[child] = base.add(diff)
-					if err := apply(child, stats[child]); err != nil {
-						return err
-					}
-				}
-				return nil
-			}
-			if err := apply(result.root, result.stat); err != nil {
-				return nil, err
-			}
-
-			// Set initial latest stats
-			stats[result.root] = result.stat
-			log.Info("Measured persistent state size", "root", result.root, "number", result.blockNumber, "stat", result.stat, "elapsed", common.PrettyDuration(result.elapsed))
-			return stats, nil
-
-		case <-t.abort:
-			return nil, errors.New("size tracker closed")
+	for i := uint64(0); i < maxLookback && headNumber >= i; i++ {
+		number := headNumber - i
+		hash := rawdb.ReadCanonicalHash(t.db, number)
+		if hash == (common.Hash{}) {
+			continue
+		}
+		header := rawdb.ReadHeader(t.db, hash, number)
+		if header == nil {
+			continue
+		}
+		if header.Root == snapshotRoot {
+			blockNumber = number
+			blockHash = hash
+			found = true
+			break
 		}
 	}
+	if !found {
+		return nil, fmt.Errorf("snapshot root %s not matched against any header in last %d blocks", snapshotRoot.Hex(), maxLookback)
+	}
+	log.Info("Located snapshot block", "root", snapshotRoot.Hex(), "number", blockNumber, "hash", blockHash.Hex())
+
+	// Synchronous DB scan — this is the "blocking" part.
+	start := time.Now()
+	stat, err := t.measure(snapshotRoot, blockNumber, blockHash)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("Measured persistent state size", "root", snapshotRoot, "number", blockNumber, "stat", stat, "elapsed", common.PrettyDuration(time.Since(start)))
+
+	stats := make(map[common.Hash]SizeStats)
+	stats[snapshotRoot] = stat
+	return stats, nil
 }
 
-func (t *SizeTracker) build(root common.Hash, blockNumber uint64, done chan buildResult) {
-	// Metrics will be directly updated by each goroutine
+// measure performs the synchronous DB scan and returns the resulting SizeStats.
+// All table iterations run concurrently via errgroup; the function blocks
+// until they complete.
+func (t *SizeTracker) measure(root common.Hash, blockNumber uint64, blockHash common.Hash) (SizeStats, error) {
 	var (
 		accounts, accountBytes int64
 		storages, storageBytes int64
@@ -512,10 +499,8 @@ func (t *SizeTracker) build(root common.Hash, blockNumber uint64, done chan buil
 		storageTrienodes, storageTrienodeBytes int64
 
 		group errgroup.Group
-		start = time.Now()
 	)
 
-	// Start all table iterations concurrently with direct metric updates
 	group.Go(func() error {
 		count, bytes, err := t.iterateTableParallel(t.abort, rawdb.SnapshotAccountPrefix, "account")
 		if err != nil {
@@ -561,31 +546,24 @@ func (t *SizeTracker) build(root common.Hash, blockNumber uint64, done chan buil
 		return nil
 	})
 
-	// Wait for all goroutines to complete
 	if err := group.Wait(); err != nil {
-		done <- buildResult{err: err}
-	} else {
-		stat := SizeStats{
-			StateRoot:            root,
-			BlockNumber:          blockNumber,
-			Accounts:             accounts,
-			AccountBytes:         accountBytes,
-			Storages:             storages,
-			StorageBytes:         storageBytes,
-			AccountTrienodes:     accountTrienodes,
-			AccountTrienodeBytes: accountTrienodeBytes,
-			StorageTrienodes:     storageTrienodes,
-			StorageTrienodeBytes: storageTrienodeBytes,
-			ContractCodes:        codes,
-			ContractCodeBytes:    codeBytes,
-		}
-		done <- buildResult{
-			root:        root,
-			blockNumber: blockNumber,
-			stat:        stat,
-			elapsed:     time.Since(start),
-		}
+		return SizeStats{}, err
 	}
+	return SizeStats{
+		StateRoot:            root,
+		BlockNumber:          blockNumber,
+		BlockHash:            blockHash,
+		Accounts:             accounts,
+		AccountBytes:         accountBytes,
+		Storages:             storages,
+		StorageBytes:         storageBytes,
+		AccountTrienodes:     accountTrienodes,
+		AccountTrienodeBytes: accountTrienodeBytes,
+		StorageTrienodes:     storageTrienodes,
+		StorageTrienodeBytes: storageTrienodeBytes,
+		ContractCodes:        codes,
+		ContractCodeBytes:    codeBytes,
+	}, nil
 }
 
 // iterateTable performs iteration over a specific table and returns the results.

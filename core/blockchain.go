@@ -565,15 +565,18 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		bc.txIndexer = newTxIndexer(uint64(bc.cfg.TxLookupLimit), bc)
 	}
 
-	// Start state size tracker
+	// Start state size tracker. NewSizeTracker blocks until the initial state
+	// size measurement is complete, so the chain doesn't start servicing
+	// requests with an uninitialised tracker. Failure here is fatal: if the
+	// operator asked for state-size tracking, geth should refuse to start
+	// rather than silently run without it.
 	if bc.cfg.StateSizeTracking {
 		stateSizer, err := state.NewSizeTracker(bc.db, bc.triedb, bc.cfg.StateSizeTrackingDepth)
-		if err == nil {
-			bc.stateSizer = stateSizer
-			log.Info("Enabled state size metrics", "depth", bc.cfg.StateSizeTrackingDepth)
-		} else {
-			log.Info("Failed to setup size tracker", "err", err)
+		if err != nil {
+			return nil, fmt.Errorf("state size tracker init failed: %w", err)
 		}
+		bc.stateSizer = stateSizer
+		log.Info("Enabled state size metrics", "depth", bc.cfg.StateSizeTrackingDepth)
 	}
 	return bc, nil
 }
