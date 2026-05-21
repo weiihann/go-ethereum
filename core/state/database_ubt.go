@@ -18,7 +18,6 @@ package state
 
 import (
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/trie/bintrie"
 	"github.com/ethereum/go-ethereum/triedb"
 )
@@ -46,19 +45,16 @@ func NewUBTDatabase(triedb *triedb.Database, codedb *CodeDB) *UBTDatabase {
 }
 
 // StateReader returns a state reader associated with the specified state root.
+//
+// The reader chain consults the UBT flat-state (one blob per stem under
+// rawdb.UBTFlatStatePrefix) first; misses fall through to the binary trie
+// reader which resolves the full state via pathdb's layer tree. The flat
+// reader is intentionally unaware of pathdb diff layers and only serves the
+// latest committed state — historical-root reads always fall through to the
+// trie reader via errStemNotInFlatState.
 func (db *UBTDatabase) StateReader(stateRoot common.Hash) (StateReader, error) {
-	var readers []StateReader
+	readers := []StateReader{newUBTFlatReader(db.triedb.Disk())}
 
-	// Configure the state reader using the path database in path mode.
-	// This reader offers improved performance but is optional and only
-	// partially useful if the snapshot data in path database is not
-	// fully generated.
-	if db.TrieDB().Scheme() == rawdb.PathScheme {
-		reader, err := db.triedb.StateReader(stateRoot)
-		if err == nil {
-			readers = append(readers, newFlatReader(reader))
-		}
-	}
 	// Configure the trie reader, which is expected to be available as the
 	// gatekeeper unless the state is corrupted.
 	tr, err := newUBTTrieReader(stateRoot, db.triedb)
@@ -131,13 +127,19 @@ func (db *UBTDatabase) Commit(update *StateUpdate) error {
 	// Encode the state mutations in the UBT format
 	accounts, accountOrigin, storages, storageOrigin := update.EncodeUBTState()
 
-	return db.triedb.Update(update.Root, update.OriginRoot, update.BlockNumber, update.Nodes, &triedb.StateSet{
+	if err := db.triedb.Update(update.Root, update.OriginRoot, update.BlockNumber, update.Nodes, &triedb.StateSet{
 		Accounts:       accounts,
 		AccountsOrigin: accountOrigin,
 		Storages:       storages,
 		StoragesOrigin: storageOrigin,
 		RawStorageKey:  update.StorageKeyType == StorageKeyPlain,
-	})
+	}); err != nil {
+		return err
+	}
+	// Persist UBT flat-state blobs for the modified stems. This keeps the
+	// 'F'-prefixed blobs coherent with the just-committed trie root, so
+	// post-commit reads through ubtFlatReader see the latest values.
+	return writeUBTFlatState(db.triedb.Disk(), db.codedb, update)
 }
 
 // Iteratee returns a state iteratee associated with the specified state root,
