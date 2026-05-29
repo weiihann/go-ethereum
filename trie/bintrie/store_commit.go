@@ -146,12 +146,48 @@ func (s *nodeStore) serializeSubtree(ref nodeRef, remainingDepth int, position i
 	}
 }
 
+// depthBits is the number of bits used to encode one depth offset. A depth
+// offset is in [1, MaxGroupDepth] and is stored as (offset-1) in [0, 7], so it
+// always fits in 3 bits.
+const depthBits = 3
+
+// packedDepthsLen returns the byte length of the packed depth stream for k
+// entries, rounding the k*depthBits bit stream up to whole bytes.
+func packedDepthsLen(k int) int {
+	return (k*depthBits + 7) / 8
+}
+
+// putDepth3 writes the 3-bit value v (0..7) for entry idx into buf, MSB-first:
+// entry idx occupies bit positions [idx*3, idx*3+2], where earlier entries take
+// the higher-order bits. buf must be at least packedDepthsLen(idx+1) bytes.
+func putDepth3(buf []byte, idx int, v uint8) {
+	pos := idx * depthBits
+	for i := 0; i < depthBits; i++ {
+		bit := (v >> (depthBits - 1 - i)) & 1
+		p := pos + i
+		buf[p>>3] |= bit << (7 - (p & 7))
+	}
+}
+
+// getDepth3 reads the 3-bit value (0..7) for entry idx from buf, inverse of
+// putDepth3.
+func getDepth3(buf []byte, idx int) uint8 {
+	pos := idx * depthBits
+	var v uint8
+	for i := 0; i < depthBits; i++ {
+		p := pos + i
+		bit := (buf[p>>3] >> (7 - (p & 7))) & 1
+		v = v<<1 | bit
+	}
+	return v
+}
+
 // SerializeNode serializes a node into the flat on-disk format.
 func (s *nodeStore) serializeNode(ref nodeRef, groupDepth int) []byte {
 	switch ref.Kind() {
 	case kindInternal:
 		// InternalNode group format:
-		//   [type(1)] [groupDepth(1)] [bitmap (2^groupDepth bits)] [depths(1B × K)] [hashes(32B × K)]
+		//   [type(1)] [groupDepth(1)] [bitmap (2^groupDepth bits)] [depths(3 bits × K, padded)] [hashes(32B × K)]
 		bitmapSize := bitmapSizeForDepth(groupDepth)
 		bitmap := make([]byte, bitmapSize)
 		var hashes []common.Hash
@@ -161,16 +197,19 @@ func (s *nodeStore) serializeNode(ref nodeRef, groupDepth int) []byte {
 
 		// Build serialized output
 		k := len(hashes)
-		serializedLen := NodeTypeBytes + 1 + bitmapSize + k + k*HashSize
+		depthsLen := packedDepthsLen(k)
+		serializedLen := NodeTypeBytes + 1 + bitmapSize + depthsLen + k*HashSize
 		serialized := make([]byte, serializedLen)
 		serialized[0] = nodeTypeInternal
 		serialized[1] = byte(groupDepth)
 		copy(serialized[2:2+bitmapSize], bitmap)
 
 		depthsOff := NodeTypeBytes + 1 + bitmapSize
-		copy(serialized[depthsOff:depthsOff+k], depths) // TODO: see if this can't be pre-allocated
+		for i, d := range depths {
+			putDepth3(serialized[depthsOff:depthsOff+depthsLen], i, d-1)
+		}
 
-		hashesOff := depthsOff + k
+		hashesOff := depthsOff + depthsLen
 		for i, h := range hashes {
 			copy(serialized[hashesOff+i*HashSize:hashesOff+(i+1)*HashSize], h.Bytes())
 		}
@@ -222,8 +261,11 @@ func (s *nodeStore) deserializeNodeWithHash(serialized []byte, depth int, hn com
 
 // deserializeSubtree reconstructs an InternalNode subtree from grouped serialization.
 func (s *nodeStore) deserializeSubtree(hn common.Hash, groupDepth int, nodeDepth int, bitmap []byte, depths []byte, hashData []byte, mustRecompute bool, dirty bool) (nodeRef, error) {
-	k := len(depths)
-	if len(hashData) != k*HashSize {
+	if len(hashData)%HashSize != 0 {
+		return emptyRef, errInvalidSerializedLength
+	}
+	k := len(hashData) / HashSize
+	if len(depths) != packedDepthsLen(k) {
 		return emptyRef, errInvalidSerializedLength
 	}
 	if k == 0 {
@@ -244,8 +286,8 @@ func (s *nodeStore) deserializeSubtree(hn common.Hash, groupDepth int, nodeDepth
 		if bitmap[bit/8]>>(7-(bit%8))&1 == 0 {
 			continue
 		}
-		depthOffset := int(depths[entryIdx])
-		if depthOffset < 1 || depthOffset > groupDepth {
+		depthOffset := int(getDepth3(depths, entryIdx)) + 1
+		if depthOffset > groupDepth {
 			return emptyRef, errors.New("invalid depth offset")
 		}
 		// Canonical-encoding check: trailing position bits must be zero.
@@ -313,7 +355,7 @@ func (s *nodeStore) decodeNode(serialized []byte, depth int, hn common.Hash, mus
 	case nodeTypeInternal:
 		// Grouped format:
 		//   [type(1)] [groupDepth(1)] [bitmap (2^groupDepth bits, padded to bitmapSize bytes)]
-		//   [depthOffsets (1B × K)] [hashes (32B × K)]
+		//   [depthOffsets (3 bits × K, padded to bytes)] [hashes (32B × K)]
 		if len(serialized) < NodeTypeBytes+1 {
 			return emptyRef, errInvalidSerializedLength
 		}
@@ -339,13 +381,23 @@ func (s *nodeStore) decodeNode(serialized []byte, depth int, hn common.Hash, mus
 		for _, b := range bitmap {
 			k += bits.OnesCount8(b)
 		}
-		expectedLen := NodeTypeBytes + 1 + bitmapSize + k + k*HashSize
+		depthsLen := packedDepthsLen(k)
+		expectedLen := NodeTypeBytes + 1 + bitmapSize + depthsLen + k*HashSize
 		if len(serialized) != expectedLen {
 			return emptyRef, errInvalidSerializedLength
 		}
 		depthsOff := NodeTypeBytes + 1 + bitmapSize
-		depths := serialized[depthsOff : depthsOff+k]
-		hashData := serialized[depthsOff+k : depthsOff+k+k*HashSize]
+		depths := serialized[depthsOff : depthsOff+depthsLen]
+		hashData := serialized[depthsOff+depthsLen : depthsOff+depthsLen+k*HashSize]
+
+		// Canonical-encoding check: the unused low bits of the last packed
+		// depth byte must be zero.
+		if usedBits := k * depthBits; usedBits%8 != 0 {
+			padMask := byte(0xFF) >> (usedBits % 8)
+			if depths[depthsLen-1]&padMask != 0 {
+				return emptyRef, errors.New("non-canonical depth padding")
+			}
+		}
 
 		return s.deserializeSubtree(hn, groupDepth, depth, bitmap, depths, hashData, mustRecompute, dirty)
 
