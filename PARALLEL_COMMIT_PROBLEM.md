@@ -2,162 +2,332 @@
 
 ## TL;DR
 
-The shallow-depth goroutine fan-out in `trie/bintrie/store_commit.go` (`hashInternal`) is **net-negative** on this branch. End-to-end benchmark numbers show PBT pays a per-block hash+commit tax of **~15–20 ms** that UBT does not. The hash code path is structurally the same in both branches; the only thing that differs is the trie shape PBT creates (via the zone-prefix key derivation) and the fact that PBT's `BinaryTrie.Hash()` actually walks more *shallow* internal nodes per commit. Those shallow nodes are exactly the depths where this file spawns goroutines, and that overhead appears to dominate the gain.
+PBT's per-block update pipeline partitions account/code/storage updates by zone
+and applies them concurrently to the two halves of the trie. The mechanism is
+**`BinaryTrie.SplitRoot` → two parallel `errgroup` goroutines (zone 000 left,
+zone 1 right) → `BinaryTrie.MergeRoot`** in `core/state/statedb.go:592` and
+`trie/bintrie/trie.go:367/398`. The parallel path is currently slower than the
+sequential reference on the workloads we've measured: PBT pays ~15–20 ms of
+hash+commit tax per pure-read block that UBT does not, and the tax correlates
+with the per-block `SplitRoot` + `MergeRoot` work rather than with the parallel
+storage-update work that runs between them.
 
-The problem is to characterise the goroutine fan-out behaviour under PBT's tree shape and produce a faster implementation. This document only states the problem and points at the exact code involved — it does not prescribe a fix.
+The problem is to characterise the `SplitRoot` / `MergeRoot` cost and produce
+a parallel design where the per-zone apply speedup actually nets out positive
+end-to-end. This document only states the problem and points at the exact code
+involved — it does not prescribe a fix.
 
 ## Symptom (from the locality-sweep benchmark)
 
-Identical 1-tx blocks of ~6 M gas each, identical state, identical EVM workload across configs. Block-shape gate passes: `gas_used` byte-identical UBT vs PBT per cell across all 480 runs.
+Identical 1-tx blocks of ~6 M gas each, identical EVM workload across configs.
+The block-shape gate passes: `gas_used` is byte-identical UBT vs PBT per cell
+across all 480 runs.
 
 | benchmark (per-block median, ms) | UBT `state_hash` | PBT `state_hash` | UBT `commit` | PBT `commit` |
 |---|---:|---:|---:|---:|
 | pure-read 256-touch block | ~2 | ~15–20 | ~1 | ~5–8 |
 | write 256-touch block | ~110 | ~125 | ~50 | ~58 |
 
-So even on a **pure-read block** — where the trie state itself hasn't changed and the only commit work is recomputing root hashes — PBT spends an extra ~15 ms in `state_hash_ms` versus UBT. Multiply by every block, and that tax outweighs the disk-read savings PBT's clustering does provide. Per the locality sweep report: PBT/UBT total throughput ratio is 0.54–0.97 across all 12 cells; the gap correlates with `state_hash_ms + commit_ms`, not `state_read_ms`.
+PBT's read benchmark fires `applyBinaryTrieUpdates` despite no leaves being
+dirty (the only mutation is the coinbase / refund book-keeping at end-of-block).
+That zero-mutation block still incurs the `SplitRoot` + zero-work-parallel-apply
++ `MergeRoot` round-trip, and the slow-block log shows the PBT-specific time
+landing in `state_hash` and `commit`.
 
-This shouldn't happen on a pure-read block. The smoking gun is that PBT's hash time scales with the **number of internal nodes the root-hash walk visits** rather than with the number of leaves changed, and PBT's tree shape (zone prefix → wider sparse paths near the root) makes that walk visit more shallow internal nodes than UBT does.
+End-to-end, PBT/UBT total-throughput ratio is 0.54–0.97 across all 12 cells of
+the locality sweep; the gap correlates with `state_hash_ms + commit_ms`, not
+with `state_read_ms` (PBT's flat-state reads are actually faster than UBT's in
+11/12 cells, but the parallel-commit tax outweighs the disk savings).
 
-## Where the parallel commit lives
+## The parallel commit pipeline
 
-Branch: `binary/pbt-flat-state`. File: `trie/bintrie/store_commit.go`.
-
-Call chain:
+Call chain, top to bottom. All paths relative to the worktree of this branch
+(`binary/pbt-flat-state`).
 
 ```
-BinaryTrie.Hash()                                       trie/bintrie/trie.go:310
-  → store.computeHash(store.root)                       trie/bintrie/trie.go:311
-    → nodeStore.computeHash(ref)                        trie/bintrie/store_commit.go:36
-      switch ref.Kind() { case kindInternal:
-        → nodeStore.hashInternal(idx)                   trie/bintrie/store_commit.go:70
-          ↻ recurses via computeHash into left/right children
+StateDB.IntermediateRoot
+                                        core/state/statedb.go:1053
+  if s.db.Type().Is(TypeUBT) {
+    → s.applyBinaryTrieUpdates()         core/state/statedb.go:1060
+  }
 
-BinaryTrie.Commit(_ bool) (common.Hash, *trienode.NodeSet)
-                                                        trie/bintrie/trie.go:316
-  reuses the same hashInternal traversal.
+StateDB.applyBinaryTrieUpdates           core/state/statedb.go:592
+  bt, ok := s.trie.(*bintrie.BinaryTrie)
+  left, right, err := bt.SplitRoot()     trie/bintrie/trie.go:367
+  → partition mutations by zone (left = zone 000, right = zone 1)
+  workers := errgroup.Group
+  workers.Go(rightApply)                 core/state/statedb.go:652
+  workers.Go(leftApply)                  core/state/statedb.go:666
+  workers.Wait()                         core/state/statedb.go:688
+  bt.MergeRoot(left, right)              trie/bintrie/trie.go:398
+
+BinaryTrie.Hash() / .Commit(_)           trie/bintrie/trie.go:310/316
+  walks the (now-merged) trie via store.computeHash → hashInternal
 ```
 
-The hot function is `hashInternal`. Below is the goroutine-spawning branch as it stands in `store_commit.go:86-109`, verbatim:
+The zone partition is determined by `isMainStorage` (statedb.go:606) — slots
+≥ `bintrie.HeaderStorageSlots` (64) route to zone 1 (right); accounts, header
+storage, and code go to zone 000 (left).
+
+### `SplitRoot` — set up the sub-views
+
+`trie/bintrie/trie.go:367–394`:
 
 ```go
-// store_commit.go (line numbers as shown)
+func (t *BinaryTrie) SplitRoot() (left, right *BinaryTrie, err error) {
+    if t.store.root.Kind() != kindInternal {
+        return nil, nil, errors.New("SplitRoot: root is not an InternalNode")
+    }
+    rootNode := t.store.getInternal(t.store.root.Index())
 
-// 51 // parallelHashDepth is the tree depth below which hashInternal spawns
-// 52 // goroutines for shallow-depth parallelism. Computed once at init because
-// 53 // NumCPU() never changes after startup.
-// 54 var parallelHashDepth = min(bits.Len(uint(runtime.NumCPU())), 8)
+    subDepth := uint8(t.baseDepth + 1)
+    leftStore := newSubStore(subDepth)
+    leftStore.root = leftStore.copyFrom(t.store, rootNode.left)   // <-- deep copy
+    rightStore := newSubStore(subDepth)
+    rightStore.root = rightStore.copyFrom(t.store, rootNode.right) // <-- deep copy
 
-// 70 func (s *nodeStore) hashInternal(idx uint32) common.Hash {
-// 71     node := s.getInternal(idx)
-// 72     if !node.mustRecompute {
-// 73         return node.hash
-// 74     }
-// 75
-// 76     if s.groupDepth > 0 && int(node.depth)%s.groupDepth == 0 {
-// 77         bitmapSize := bitmapSizeForDepth(s.groupDepth)
-// 78         bitmap := make([]byte, bitmapSize)
-// 79         var hashes []common.Hash
-// 80         s.serializeSubtree(makeRef(kindInternal, idx), s.groupDepth, 0, int(node.depth), bitmap, &hashes)
-// 81         node.hash = groupedRecursiveHash(s.groupDepth, bitmap, hashes)
-// 82         node.mustRecompute = false
-// 83         return node.hash
-// 84     }
-// 85
-// 86     if int(node.depth) < parallelHashDepth {
-// 87         var input [64]byte
-// 88         var lh common.Hash
-// 89         var wg sync.WaitGroup
-// 90         if !node.left.IsEmpty() {
-// 91             wg.Add(1)
-// 92             go func() {
-// 93                 // defer wg.Done() so a panic in computeHash still releases
-// 94                 // the waiter; without this, a recover() higher in the call
-// 95                 // stack would leave the parent stuck in wg.Wait forever.
-// 96                 defer wg.Done()
-// 97                 lh = s.computeHash(node.left)
-// 98             }()
-// 99         }
-// 100        if !node.right.IsEmpty() {
-// 101            rh := s.computeHash(node.right)
-// 102            copy(input[32:], rh[:])
-// 103        }
-// 104        wg.Wait()
-// 105        copy(input[:32], lh[:])
-// 106        node.hash = sha256.Sum256(input[:])
-// 107        node.mustRecompute = false
-// 108        return node.hash
-// 109    }
-// 110
-// 111    // Deep sequential branch — mirrors the shallow branch's shape to keep
-// 112    // input on the stack. Writing lh/rh through hash.Hash (interface)
-// 113    // forces escape; copy into a local [64]byte and hash it in one shot.
-// 114    var input [64]byte
-// 115    if !node.left.IsEmpty() {
-// 116        lh := s.computeHash(node.left)
-// 117        copy(input[:HashSize], lh[:])
-// 118    }
-// 119    if !node.right.IsEmpty() {
-// 120        rh := s.computeHash(node.right)
-// 121        copy(input[HashSize:], rh[:])
-// 122    }
-// 123    node.hash = sha256.Sum256(input[:])
-// 124    node.mustRecompute = false
-// 125    return node.hash
-// 126 }
+    left  = &BinaryTrie{store: leftStore,  reader: t.reader, /* ... */
+                         baseDepth: t.baseDepth + 1}
+    right = &BinaryTrie{store: rightStore, reader: t.reader, /* ... */
+                         baseDepth: t.baseDepth + 1}
+    return left, right, nil
+}
 ```
 
-### Mechanics of the shallow branch
+Each sub-view gets its **own independent `nodeStore`** (via `newSubStore`), and
+the root's left/right subtrees are deep-copied into them via `copyFrom`.
 
-- `parallelHashDepth = min(bits.Len(NumCPU()), 8)`. On the benchmark machine (Xeon 8358, 8 cores), `bits.Len(8) = 4`, so the parallel branch is taken for nodes at depths `0, 1, 2, 3` — i.e. the top four levels of the trie. That's up to **15 internal nodes** in a fully populated top, and in practice (sparse tree) a handful per commit.
-- At each of those depths, if the node has a non-empty `left` child:
-  - `wg.Add(1)`
-  - `go func() { defer wg.Done(); lh = s.computeHash(node.left) }()`
-  - the goroutine recurses through `computeHash → hashInternal` on the left subtree (which may itself spawn more goroutines at the next two depths).
-- The current goroutine concurrently runs `rh = s.computeHash(node.right)` inline on the right subtree.
-- Then `wg.Wait()`, `sha256.Sum256(input[:])`, cache.
-- Below `parallelHashDepth`, the code falls through to the sequential branch (115–125) which does the same work without any goroutine/`WaitGroup` overhead.
-- There is also a group-boundary fast path (76–84) that bypasses both branches when `depth % groupDepth == 0` and the subtree fits in one group blob; it uses `groupedRecursiveHash` and never spawns.
+### `MergeRoot` — fold back
 
-### Properties worth noting
+`trie/bintrie/trie.go:398–404`:
 
-- **Goroutines spawn per node, not per commit.** Up to ~15 goroutine launches at the top of the tree per `Hash()` call — every commit, not amortised.
-- **No work threshold.** The branch chooses parallel-vs-sequential purely on `node.depth < parallelHashDepth`. It does not look at how much hashing is below the node. A shallow node whose left subtree is a single stem (i.e. one `sha256` to compute) still spawns a goroutine to do that one hash.
-- **`defer wg.Done()` and stack-allocated `wg`.** Cheap but non-zero, and adds an indirect call through the runtime.
-- **`lh` is captured by reference and written by the goroutine, read after `wg.Wait`.** No data race (the `wg.Wait` synchronises), but the compiler must heap-allocate `lh` because the goroutine's lifetime escapes the enclosing stack frame.
-- **The recursion can nest goroutines.** A depth-0 hashInternal spawns a goroutine which recurses into a depth-1 internal node, which spawns another goroutine for *its* left child, and so on down to `parallelHashDepth-1`. At 4 levels with both children non-empty, that's up to 15 goroutines per top-of-tree walk.
+```go
+func (t *BinaryTrie) MergeRoot(left, right *BinaryTrie) {
+    rootNode := t.store.getInternal(t.store.root.Index())
+    rootNode.left  = t.store.copyFrom(left.store,  left.store.root)  // <-- deep copy
+    rootNode.right = t.store.copyFrom(right.store, right.store.root) // <-- deep copy
+    rootNode.mustRecompute = true
+    rootNode.dirty = true
+}
+```
 
-## Why PBT pays more than UBT through this code path
+Both sub-view roots get deep-copied **back** into the parent store. The parent
+root is then marked `mustRecompute = true`, which discards its cached hash and
+forces a fresh `computeHash` walk on the next `Hash()` call.
 
-Both branches share `store_commit.go` byte-for-byte. The only thing that changed between UBT and PBT is **how trie keys are derived**, which determines the *shape* of the tree the hash walk visits:
+### `copyFrom` — the recursive deep-copy primitive
 
-- UBT (`feat/binary-trie/flat-state`): `key = sha256(addr ‖ slot)`. Keys are uniformly random across the 256-bit space. The tree is balanced; near the root, internal nodes are dense (both children populated, group-boundary fast-path applies at every group boundary).
-- PBT (`binary/pbt-flat-state`): `key = zone_prefix ‖ H(addr) ‖ slot` (see `trie/bintrie/key_encoding.go`). The 3-bit zone prefix lives in the **top of the key**, which means the top of the trie has only 2–3 populated branches out of 8 possible — wide *sparse* fanout near the root. Below the zone bits the keys diverge in a long chain of single-child internals before the next dense region.
+`trie/bintrie/node_store.go:211–248`:
 
-Net effect: PBT's `Hash()` walks a noticeably different shape, where the shallow-depth region (where the parallel branch fires) contains more single-child / sparse internal nodes than UBT's tree does. The empirical signature in the benchmark logs:
+```go
+func (dst *nodeStore) copyFrom(src *nodeStore, srcRef nodeRef) nodeRef {
+    switch srcRef.Kind() {
+    case kindEmpty:
+        return emptyRef
+    case kindInternal:
+        srcNode := src.getInternal(srcRef.Index())
+        dstIdx := dst.allocInternal()
+        dstNode := dst.getInternal(dstIdx)
+        dstNode.depth         = srcNode.depth
+        dstNode.mustRecompute = srcNode.mustRecompute
+        dstNode.dirty         = srcNode.dirty
+        dstNode.hash          = srcNode.hash
+        dstNode.left          = dst.copyFrom(src, srcNode.left)     // recurse
+        dstNode.right         = dst.copyFrom(src, srcNode.right)    // recurse
+        return makeRef(kindInternal, dstIdx)
+    case kindStem:
+        srcStem := src.getStem(srcRef.Index())
+        dstIdx  := dst.allocStem()
+        dstStem := dst.getStem(dstIdx)
+        dstStem.Stem          = srcStem.Stem
+        dstStem.depth         = srcStem.depth
+        dstStem.mustRecompute = srcStem.mustRecompute
+        dstStem.dirty         = srcStem.dirty
+        dstStem.hash          = srcStem.hash
+        for i, v := range srcStem.values {
+            if v == nil { continue }
+            cp := make([]byte, len(v))           // <-- per-slot alloc
+            copy(cp, v)
+            dstStem.values[i] = cp
+        }
+        return makeRef(kindStem, dstIdx)
+    case kindHashed:
+        hn := src.getHashed(srcRef.Index())
+        return dst.newHashedRef(hn.Hash())
+    }
+    panic("copyFrom: unknown node kind")
+}
+```
 
-- pure-read block (no leaves dirty, root recomputed only because cache was dropped): UBT `state_hash_ms ≈ 2`, PBT `state_hash_ms ≈ 15–20`. **Same workload, same `hashInternal` source, ~8× longer on PBT.**
-- write block (real hashing both sides): the gap shrinks (UBT 110 vs PBT 125), consistent with the per-spawn overhead being amortised once each spawned goroutine has substantial work.
+This is the hot primitive. **Each `SplitRoot` walks both halves of the parent's
+in-memory subtree exactly once; each `MergeRoot` walks both sub-views back into
+the parent.** That's two complete walks per zone (out + back), per block, with
+a fresh allocation for every internal node and every non-nil stem-value slice.
 
-The pure-read case is the clean one: when the *actual* hash work is small, every spawn cost shows up. PBT's tree shape ensures more spawns at shallow depths over thinner subtrees, and that's the regime where this branch was supposed to help.
+### The per-zone parallel apply
+
+`core/state/statedb.go:651–690`:
+
+```go
+var workers errgroup.Group
+workers.Go(func() error {
+    for _, op := range rightStorage {       // zone 1: main storage
+        if op.value != nil {
+            right.UpdateStorage(op.addr, op.key[:], op.value)
+        } else {
+            right.DeleteStorage(op.addr, op.key[:])
+        }
+    }
+    return nil
+})
+workers.Go(func() error {
+    for _, op := range leftStorage {        // zone 000: header storage
+        if op.value != nil {
+            left.UpdateStorage(op.addr, op.key[:], op.value)
+        } else {
+            left.DeleteStorage(op.addr, op.key[:])
+        }
+    }
+    for _, obj := range accountObjs {       // zone 000: accounts + code
+        left.UpdateAccount(obj.Address(), &obj.data, len(obj.code))
+        if obj.dirtyCode {
+            left.UpdateContractCode(obj.Address(), common.BytesToHash(obj.CodeHash()), obj.code)
+        }
+    }
+    return nil
+})
+workers.Wait()
+bt.MergeRoot(left, right)
+```
+
+Two goroutines, one per zone. The left goroutine also owns all account /
+code updates (zone 000 only).
+
+## Properties worth flagging
+
+- **Two deep-copy walks per block, regardless of dirty footprint.** `SplitRoot`
+  copies the entire current left and right subtrees into the sub-stores; on a
+  large in-memory trie, this can be expensive even when the block only mutates
+  a handful of slots. `MergeRoot` then walks the same subtrees back. The cost
+  is proportional to the in-memory tree size, not the dirty set.
+
+- **The `mustRecompute = true` at `MergeRoot`** invalidates the root hash
+  cache, so the next `Hash()` does a full root recomputation. Any hash work
+  the sub-views did during their `UpdateStorage` calls is preserved (the
+  sub-store node's `hash` + `mustRecompute = false` flags are deep-copied
+  through `copyFrom`), but the parent root must rehash itself from the merged
+  children.
+
+- **Per-stem value allocations.** Each Stem node copied performs
+  `make([]byte, len(v))` + `copy` for every non-nil slot. A block that
+  doesn't change a stem still triggers these allocations if the stem is in
+  the copied subtree (which it is, because we copy entire subtrees, not just
+  the dirty set).
+
+- **Sub-store has its own caches.** `newSubStore` (in `trie/bintrie/node_store.go`)
+  produces an independent `nodeStore` — own arena, own hashed-chunk cache.
+  Hashed children remain hashed (the comment at `trie.go:361` notes this is
+  resolved lazily via the same reader), but other in-memory caches that the
+  parent has warmed are not inherited.
+
+- **errgroup overhead, per block.** Two `workers.Go` + `workers.Wait` per
+  invocation, plus the closure heap allocations for the goroutine bodies and
+  the captured `rightStorage`/`leftStorage`/`accountObjs` slices.
+
+- **Pure-read blocks still pay the round-trip.** `applyBinaryTrieUpdates` is
+  invoked unconditionally under `TypeUBT` (statedb.go:1060). If a block has
+  zero pending storage updates and zero dirty accounts, the function still
+  runs the full `SplitRoot` → empty parallel work → `MergeRoot` pipeline. This
+  matches the benchmark's pure-read symptom (a 15–20 ms PBT tax with no
+  state mutations).
+
+- **The `errgroup` parallelism is 2-way only.** Account updates are co-located
+  on the left goroutine with the left storage ops; there's no further
+  decomposition. The maximum theoretical speedup from this design over a
+  sequential apply is ~2× on the storage-update phase, before subtracting any
+  setup/teardown cost.
+
+## Why this likely doesn't pay off as designed
+
+The empirical signature suggests `SplitRoot` + `MergeRoot` are dominating the
+PBT-side time, not the parallel apply itself:
+
+- The pure-read block (no storage updates, no account changes — both goroutines
+  have an effectively empty loop body) still shows PBT ~13–18 ms slower than
+  UBT in `state_hash + commit`. That gap can't come from the parallel apply
+  (which has nothing to do); it must come from the surrounding work.
+
+- On a large in-memory trie (12.8 M base contracts, deep paths from the root's
+  zone-prefixed key derivation), `SplitRoot` is walking large subtrees just to
+  hand them to goroutines that may have no work to do. `MergeRoot` then walks
+  them back.
+
+- The write benchmark gap shrinks (UBT 110 / PBT 125 hash, 50 / 58 commit),
+  consistent with the per-block round-trip being amortised once the parallel
+  goroutines actually have work to do — but never enough to net out positive.
+
+The hypothesis to investigate: **for the workloads we measure, `SplitRoot` +
+`MergeRoot`'s per-block copy cost exceeds the wall-clock saved by running the
+two zones' applies in parallel.** This needs measurement, not assumption — the
+numbers above are an aggregate signal, not a proof of which line(s) are slow.
 
 ## What an agent picking this up should investigate
 
-1. **Measure spawn count and per-spawn work distribution** for one PBT `Hash()` call on a representative pure-read block. The right tool is to instrument `hashInternal` (or use `runtime/trace`) and record `(depth, leaves_below, spawned)` for every call. Hypothesis to confirm: median spawned subtree contains very few leaves (≤ a handful of stem leaves), so the goroutine overhead exceeds the work it parallelises.
-2. **Profile** a tight loop of `BinaryTrie.Hash()` calls on a PBT-shaped tree (pprof CPU + block + sched-latency). Watch for runtime scheduling overhead and `runtime.gopark`/`runtime.goready` cost in the `hashInternal` stack.
-3. **Characterise the threshold.** `parallelHashDepth = min(bits.Len(NumCPU()), 8)` is a static, depth-only threshold with no notion of subtree size. The actual break-even depends on how many `sha256` operations a subtree contains. Quantify what subtree-size threshold actually pays off on this hardware.
-4. **Examine the group-boundary interaction.** Lines 76–84 short-circuit hashInternal into `groupedRecursiveHash` for nodes exactly on group boundaries. Confirm whether PBT's shallow tree puts most of the off-boundary work onto the parallel branch (likely) and whether shifting more work onto the group path is feasible (open question).
-5. **Determine the cost contributions.** Decompose the 15–20 ms PBT pure-read tax into: (a) goroutine spawn/teardown, (b) `wg.Add/Done/Wait` synchronisation, (c) heap allocation of captured `lh`, (d) the actual `sha256` hashing. Only (d) is unavoidable; (a–c) are candidates for elimination.
+1. **Profile `applyBinaryTrieUpdates` on a representative block.** CPU + alloc
+   profile. Quantify the share of wall-clock spent in `SplitRoot` (mostly
+   `copyFrom` allocs and recursion), the share spent in the two parallel
+   goroutines, and the share spent in `MergeRoot`. Hypothesis to confirm: the
+   two `copyFrom` round-trips dominate.
+
+2. **Count the work `copyFrom` actually does on a real block.** For a typical
+   block, how many `allocInternal` + `allocStem` calls occur during the two
+   `SplitRoot`/`MergeRoot` walks? How many bytes of stem-value `make+copy`?
+   Compare against the dirty-set size (number of slots actually updated).
+
+3. **Try the pure-read block isolated.** Set up a block with zero state
+   mutations and measure the `applyBinaryTrieUpdates` wall-clock. That should
+   be approximately the per-block fixed cost of `SplitRoot` + `MergeRoot`.
+   This is the "tax" component visible on the read benchmark.
+
+4. **Compare against the write-side win.** On a write-heavy block, measure how
+   much wall-clock the two parallel goroutines actually save relative to a
+   sequential apply on the same trie. Subtract the `SplitRoot` + `MergeRoot`
+   cost. Is the net positive at any realistic block size on this hardware?
+
+5. **Examine whether `copyFrom` can avoid the recursion.** The sub-stores are
+   discarded after `MergeRoot`. Is there a representation (shared arena +
+   copy-on-write, or sub-views that hold a pointer into the parent store
+   rather than a deep copy) that gives goroutines independent write surface
+   without copying the read-only portions?
+
+6. **Examine the `mustRecompute` invalidation in `MergeRoot`.** Setting the
+   root to `mustRecompute = true` forces a full root rehash even if both
+   sub-view roots are already hashed. Quantify the cost of that root rehash
+   on a typical commit; if it's significant, the cache invalidation may be
+   over-broad.
 
 ## Reproducing the symptom
 
-Build the PBT geth from this branch, run the `ubt-vs-pbt-benchmarks` locality sweep with the small-K cells (1 or 10), and inspect the per-block slow-block log:
+Build geth from this branch, then run the locality-sweep benchmark with the
+small-K storage cells and inspect per-block slow-block logs.
 
-- Repository: `weiihann/bintrie-benchmarks` branch `pbt`.
-- Benchmark: `bash ubt-vs-pbt/scripts/run_campaign.sh` with `NUM_RUNS=5 NUM_CONTRACTS=256 K_VALUES_STORAGE="1" BENCHMARKS="storage_sload" GAS_BENCHMARK_VALUE=6 COLD_CACHE=1 GROUP_DEPTH=5`.
-- Inspect: `data/pbt/storage_sload_k1_run*_geth.log` — look for `"Slow block"` JSON entries; the `timing.state_hash_ms` and `timing.commit_ms` fields show the per-block PBT-side cost. Compare against the matching `data/ubt/…` log to see the UBT baseline.
+- Benchmark repo: `weiihann/bintrie-benchmarks` branch `pbt`.
+- Command (small validation):
+  ```
+  NUM_RUNS=5 NUM_CONTRACTS=256 K_VALUES_STORAGE="1" \
+  BENCHMARKS="storage_sload" GAS_BENCHMARK_VALUE=6 \
+  COLD_CACHE=1 GROUP_DEPTH=5 \
+  bash ubt-vs-pbt/scripts/run_campaign.sh
+  ```
+- Inspect: `data/pbt/storage_sload_k1_run*_geth.log` — `"Slow block"` JSON
+  entries. The `timing.state_hash_ms` and `timing.commit_ms` fields are where
+  the PBT-side overhead lands. Compare against `data/ubt/storage_sload_k1_run*_geth.log`
+  for the UBT baseline.
 
-The block-shape gate (`gas_used` identical between configs per cell) is what makes this an apples-to-apples comparison: the only thing that can produce a `state_hash_ms` delta at byte-identical EVM workload is the in-process hash code's cost on the differently-shaped tree.
+The block-shape gate (`gas_used` identical UBT vs PBT per cell) is what makes
+this an apples-to-apples comparison: the only thing that can produce a
+`state_hash_ms` delta at byte-identical EVM workload is the in-process commit
+code's cost on a differently-shaped tree, dominated by `SplitRoot`/`MergeRoot`.
 
 ## Source pointers
 
@@ -165,11 +335,19 @@ All paths relative to the worktree of this branch (`binary/pbt-flat-state`).
 
 | What | Where |
 |---|---|
-| Parallel-spawn site | `trie/bintrie/store_commit.go:70–126` (`hashInternal`) |
-| Depth threshold | `trie/bintrie/store_commit.go:51–54` (`parallelHashDepth`) |
-| Hash dispatch | `trie/bintrie/store_commit.go:36–48` (`computeHash`) |
-| Group-boundary fast path | `trie/bintrie/store_commit.go:76–84` + `groupedRecursiveHash` at `:136` |
-| Trie-level entry points | `trie/bintrie/trie.go:310` (`Hash`), `:316` (`Commit`) |
-| Key derivation (what shapes the tree) | `trie/bintrie/key_encoding.go` (`buildKey3Zone`, `buildKeyStorageZone`) |
-| `nodeStore` definition (internal-node layout, `mustRecompute` flag) | `trie/bintrie/node_store.go` |
-| Sequential reference for comparison | `trie/bintrie/store_commit.go:114–125` (deep branch — same logic without the goroutine) |
+| Parallel commit orchestrator | `core/state/statedb.go:592` (`applyBinaryTrieUpdates`) |
+| Call site (always-on under TypeUBT) | `core/state/statedb.go:1053–1060` |
+| Zone partition predicate | `core/state/statedb.go:606` (`isMainStorage`, threshold `bintrie.HeaderStorageSlots = 64`) |
+| Per-zone goroutine bodies | `core/state/statedb.go:651–690` (`workers errgroup.Group`) |
+| Sequential reference (for comparison) | `core/state/statedb.go:713` (`applyBinaryTrieUpdatesSequential`) |
+| Sub-view set-up | `trie/bintrie/trie.go:367–394` (`SplitRoot`) |
+| Sub-view fold-back | `trie/bintrie/trie.go:396–404` (`MergeRoot`) |
+| Deep-copy primitive | `trie/bintrie/node_store.go:211–248` (`copyFrom`) |
+| Sub-store allocator | `trie/bintrie/node_store.go:65` (`newSubStore`) |
+| `BinaryTrie` `baseDepth` (sub-view marker) | `trie/bintrie/trie.go:115` |
+| Final root rehash entry | `trie/bintrie/trie.go:310` (`Hash`), `:316` (`Commit`) |
+
+Key derivation that shapes the tree (orthogonal to the parallel commit, but
+relevant to *why* the SplitRoot copy cost is the size it is — the prefix puts
+the dirty regions in deep subtrees of the two zone roots): `trie/bintrie/key_encoding.go`
+(`buildKey3Zone`, `buildKeyStorageZone`).
