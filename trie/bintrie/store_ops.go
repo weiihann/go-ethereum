@@ -151,15 +151,30 @@ func (s *nodeStore) InsertSingle(stem []byte, suffix byte, value []byte, resolve
 // sparse (nil entries are ignored). The recursive implementation dispatches
 // through the same body, so a single code path handles internal descent,
 // HashedNode resolution, stem merge, and stem split.
+//
+// Operates against the store's root in non-cow mode. Sub-views that share a
+// store with other writers must use InsertValuesAtStemCow.
 func (s *nodeStore) InsertValuesAtStem(stem []byte, values [][]byte, resolver nodeResolverFn) error {
 	var err error
-	s.root, err = s.insertValuesAtStem(s.root, stem, values, resolver, int(s.baseDepth))
+	s.root, err = s.insertValuesAtStem(s.root, stem, values, resolver, int(s.baseDepth), false)
 	return err
 }
 
-func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte, resolver nodeResolverFn, depth int) (nodeRef, error) {
+// InsertValuesAtStemCow performs the same logical operation as InsertValuesAtStem
+// but starting from an explicit root ref and respecting the cow flag. When cow
+// is true, internal nodes along the descent path are allocated fresh rather
+// than mutated in place — required when multiple goroutines share the arena.
+// Returns the new root ref.
+func (s *nodeStore) InsertValuesAtStemCow(curRoot nodeRef, stem []byte, values [][]byte, resolver nodeResolverFn, cow bool) (nodeRef, error) {
+	return s.insertValuesAtStem(curRoot, stem, values, resolver, int(s.baseDepth), cow)
+}
+
+func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte, resolver nodeResolverFn, depth int, cow bool) (nodeRef, error) {
 	switch ref.Kind() {
 	case kindInternal:
+		if cow {
+			return s.insertValuesAtStemInternalCow(ref, stem, values, resolver, depth)
+		}
 		node := s.getInternal(ref.Index())
 		bit := stem[node.depth/8] >> (7 - (node.depth % 8)) & 1
 		if bit == 0 {
@@ -183,7 +198,7 @@ func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte
 				s.freeHashedNode(node.left.Index())
 				node.left = resolved
 			}
-			newChild, err := s.insertValuesAtStem(node.left, stem, values, resolver, depth+1)
+			newChild, err := s.insertValuesAtStem(node.left, stem, values, resolver, depth+1, cow)
 			if err != nil {
 				return ref, err
 			}
@@ -209,7 +224,7 @@ func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte
 				s.freeHashedNode(node.right.Index())
 				node.right = resolved
 			}
-			newChild, err := s.insertValuesAtStem(node.right, stem, values, resolver, depth+1)
+			newChild, err := s.insertValuesAtStem(node.right, stem, values, resolver, depth+1, cow)
 			if err != nil {
 				return ref, err
 			}
@@ -222,7 +237,18 @@ func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte
 	case kindStem:
 		sn := s.getStem(ref.Index())
 		if sn.Stem == [StemSize]byte(stem[:StemSize]) {
-			// Same stem — merge values (setValue marks dirty+mustRecompute)
+			// Same stem — merge values (setValue marks dirty+mustRecompute).
+			// Under cow, allocate a fresh stem so the parent's view of the
+			// original stem isn't mutated.
+			if cow {
+				newRef, newSn := s.cowStem(ref)
+				for i, v := range values {
+					if v != nil {
+						newSn.setValue(byte(i), v)
+					}
+				}
+				return newRef, nil
+			}
 			for i, v := range values {
 				if v != nil {
 					sn.setValue(byte(i), v)
@@ -231,7 +257,7 @@ func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte
 			return ref, nil
 		}
 		// Different stem — split
-		return s.splitStemValuesInsert(ref, stem, values, resolver, depth)
+		return s.splitStemValuesInsert(ref, stem, values, resolver, depth, cow)
 
 	case kindHashed:
 		hn := s.getHashed(ref.Index())
@@ -256,8 +282,12 @@ func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte
 		if err != nil {
 			return ref, fmt.Errorf("InsertValuesAtStem deserialization error: %w", err)
 		}
-		s.freeHashedNode(ref.Index())
-		return s.insertValuesAtStem(resolved, stem, values, resolver, depth)
+		// Under cow, leave the parent's hashed slot in place (it may still
+		// be referenced from the parent's view). Otherwise free it for reuse.
+		if !cow {
+			s.freeHashedNode(ref.Index())
+		}
+		return s.insertValuesAtStem(resolved, stem, values, resolver, depth, cow)
 
 	case kindEmpty:
 		// Create new StemNode. Flag flips before the value loop so an
@@ -280,9 +310,83 @@ func (s *nodeStore) insertValuesAtStem(ref nodeRef, stem []byte, values [][]byte
 	}
 }
 
+// insertValuesAtStemInternalCow is the cow=true branch of insertValuesAtStem's
+// kindInternal case. It allocates a fresh internal node via cowInternal, routes
+// the modified child through it, and returns the new ref. The original
+// internal node is never mutated, so a concurrent worker walking through it
+// from a parent view sees a consistent state.
+func (s *nodeStore) insertValuesAtStemInternalCow(ref nodeRef, stem []byte, values [][]byte, resolver nodeResolverFn, depth int) (nodeRef, error) {
+	newRef, newNode := s.cowInternal(ref)
+	bit := stem[newNode.depth/8] >> (7 - (newNode.depth % 8)) & 1
+	if bit == 0 {
+		if newNode.left.Kind() == kindHashed {
+			if resolver == nil {
+				return ref, errors.New("insertValuesAtStem: cannot resolve hashed node without resolver")
+			}
+			hn := s.getHashed(newNode.left.Index())
+			path, err := keyToPath(int(newNode.depth), stem)
+			if err != nil {
+				return ref, fmt.Errorf("InsertValuesAtStem path error: %w", err)
+			}
+			data, err := resolver(path, hn.Hash())
+			if err != nil {
+				return ref, fmt.Errorf("InsertValuesAtStem resolve error: %w", err)
+			}
+			resolved, err := s.deserializeNodeWithHash(data, int(newNode.depth)+1, hn.Hash())
+			if err != nil {
+				return ref, fmt.Errorf("InsertValuesAtStem deserialization error: %w", err)
+			}
+			newNode.left = resolved
+		}
+		child, err := s.insertValuesAtStem(newNode.left, stem, values, resolver, depth+1, true)
+		if err != nil {
+			return ref, err
+		}
+		newNode.left = child
+	} else {
+		if newNode.right.Kind() == kindHashed {
+			if resolver == nil {
+				return ref, errors.New("insertValuesAtStem: cannot resolve hashed node without resolver")
+			}
+			hn := s.getHashed(newNode.right.Index())
+			path, err := keyToPath(int(newNode.depth), stem)
+			if err != nil {
+				return ref, fmt.Errorf("InsertValuesAtStem path error: %w", err)
+			}
+			data, err := resolver(path, hn.Hash())
+			if err != nil {
+				return ref, fmt.Errorf("InsertValuesAtStem resolve error: %w", err)
+			}
+			resolved, err := s.deserializeNodeWithHash(data, int(newNode.depth)+1, hn.Hash())
+			if err != nil {
+				return ref, fmt.Errorf("InsertValuesAtStem deserialization error: %w", err)
+			}
+			newNode.right = resolved
+		}
+		child, err := s.insertValuesAtStem(newNode.right, stem, values, resolver, depth+1, true)
+		if err != nil {
+			return ref, err
+		}
+		newNode.right = child
+	}
+	return newRef, nil
+}
+
 // splitStemValuesInsert splits a StemNode when the new stem diverges.
-func (s *nodeStore) splitStemValuesInsert(existingRef nodeRef, newStem []byte, values [][]byte, resolver nodeResolverFn, depth int) (nodeRef, error) {
-	existing := s.getStem(existingRef.Index())
+// Under cow, the existing stem is itself copied (cowStem) so the parent's
+// view of the original stem isn't mutated — the depth promotion lands on
+// the COWed copy. The new internal node we allocate is parent-invisible
+// either way (we just allocated it), so we can safely mutate it in place.
+func (s *nodeStore) splitStemValuesInsert(existingRef nodeRef, newStem []byte, values [][]byte, resolver nodeResolverFn, depth int, cow bool) (nodeRef, error) {
+	var (
+		existing        *StemNode
+		existingUsedRef = existingRef
+	)
+	if cow {
+		existingUsedRef, existing = s.cowStem(existingRef)
+	} else {
+		existing = s.getStem(existingRef.Index())
+	}
 
 	if int(existing.depth) >= StemSize*8 {
 		panic("splitStemValuesInsert: identical stems")
@@ -304,19 +408,20 @@ func (s *nodeStore) splitStemValuesInsert(existingRef nodeRef, newStem []byte, v
 		// Same direction — need deeper split
 		var child nodeRef
 		if bitStem == 0 {
-			nNode.left = existingRef
+			nNode.left = existingUsedRef
 			child = nNode.left
 		} else {
-			nNode.right = existingRef
+			nNode.right = existingUsedRef
 			child = nNode.right
 		}
-		newChild, err := s.insertValuesAtStem(child, newStem, values, resolver, depth+1)
+		newChild, err := s.insertValuesAtStem(child, newStem, values, resolver, depth+1, cow)
 		if err != nil {
-			// Roll back the depth increment so a retry sees the same
-			// existing state and extracts bitStem at the correct offset.
-			// nRef itself leaks (no internal free-list), but the slot is
-			// unreachable from the tree and harmless.
-			existing.depth--
+			// Roll back the depth increment only in the non-cow path — under
+			// cow we mutated the COWed copy, so the original is intact and
+			// retry will get a fresh copy anyway.
+			if !cow {
+				existing.depth--
+			}
 			return nRef, err
 		}
 		if bitStem == 0 {
@@ -342,11 +447,11 @@ func (s *nodeStore) splitStemValuesInsert(existingRef nodeRef, newStem []byte, v
 		newStemRef := makeRef(kindStem, newStemIdx)
 
 		if bitStem == 0 {
-			nNode.left = existingRef
+			nNode.left = existingUsedRef
 			nNode.right = newStemRef
 		} else {
 			nNode.left = newStemRef
-			nNode.right = existingRef
+			nNode.right = existingUsedRef
 		}
 	}
 	return nRef, nil

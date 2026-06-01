@@ -595,6 +595,26 @@ func (s *StateDB) applyBinaryTrieUpdates() {
 		s.applyBinaryTrieUpdatesSequential()
 		return
 	}
+	// Pure-read fast path: if no mutations are pending, skip the
+	// SplitRoot/MergeRoot round-trip entirely. Pure-read blocks were
+	// paying ~15-20 ms of unnecessary tax per PARALLEL_COMMIT_PROBLEM.md.
+	hasPending := false
+	for addr, op := range s.mutations {
+		if op.applied || op.isDelete() {
+			continue
+		}
+		obj := s.stateObjects[addr]
+		if obj != nil && len(obj.uncommittedStorage) > 0 {
+			hasPending = true
+			break
+		}
+		// Account-level dirty (UpdateAccount call needed) is also a write.
+		hasPending = true
+		break
+	}
+	if !hasPending {
+		return
+	}
 	left, right, err := bt.SplitRoot()
 	if err != nil {
 		// Fallback for empty trie / non-internal root.

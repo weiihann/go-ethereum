@@ -16,7 +16,12 @@
 
 package bintrie
 
-import "github.com/ethereum/go-ethereum/common"
+import (
+	"sync"
+	"sync/atomic"
+
+	"github.com/ethereum/go-ethereum/common"
+)
 
 // storeChunkSize is the number of nodes per chunk in each typed pool.
 const storeChunkSize = 4096
@@ -24,15 +29,27 @@ const storeChunkSize = 4096
 // nodeStore is a GC-friendly arena for binary trie nodes. Nodes are packed
 // into typed chunked pools so pointer-free types (InternalNode, HashedNode)
 // land in noscan spans the GC skips entirely.
+//
+// Concurrency: under the parallel-commit path (BinaryTrie.SplitRoot and
+// SplitForAccounts), multiple goroutines allocate into the same nodeStore.
+// Allocation counters are atomic; chunk-slice growth is guarded by
+// chunkGrowMu. The freelist for hashed nodes has its own mutex because it
+// is touched only during hashed-node resolution, which is rare relative to
+// fresh allocs. Reads via getInternal/getStem/getHashed are lock-free —
+// they index into already-grown chunk slices that callers never resize.
 type nodeStore struct {
 	internalChunks []*[storeChunkSize]InternalNode
-	internalCount  uint32
+	internalCount  atomic.Uint32
 
 	stemChunks []*[storeChunkSize]StemNode
-	stemCount  uint32
+	stemCount  atomic.Uint32
 
 	hashedChunks []*[storeChunkSize]HashedNode
-	hashedCount  uint32
+	hashedCount  atomic.Uint32
+
+	// chunkGrowMu serialises appends to *Chunks slices. The hot path
+	// (idx fits within an existing chunk) bypasses this lock.
+	chunkGrowMu sync.Mutex
 
 	root nodeRef
 
@@ -45,7 +62,8 @@ type nodeStore struct {
 	// stem nodes are never freed under current semantics (no delete path,
 	// stem-split keeps the old stem at a deeper position), so they don't
 	// have free lists.
-	freeHashed []uint32
+	freeHashedMu sync.Mutex
+	freeHashed   []uint32
 
 	// groupDepth, when > 0, makes hashInternal compute the same hash that
 	// would be produced by serializing the node to a group blob and
@@ -67,15 +85,22 @@ func newSubStore(baseDepth uint8) *nodeStore {
 }
 
 func (s *nodeStore) allocInternal() uint32 {
-	idx := s.internalCount
-	chunkIdx := idx / storeChunkSize
-	if uint32(len(s.internalChunks)) <= chunkIdx {
-		s.internalChunks = append(s.internalChunks, new([storeChunkSize]InternalNode))
-	}
-	s.internalCount++
-	if s.internalCount > indexMask {
+	idx := s.internalCount.Add(1) - 1
+	if idx > indexMask {
 		panic("internal node pool overflow")
 	}
+	chunkIdx := idx / storeChunkSize
+	// Fast path: chunk already exists.
+	if uint32(len(s.internalChunks)) > chunkIdx {
+		return idx
+	}
+	// Slow path: grow under the mutex. Another goroutine may have raced
+	// to extend the slice past chunkIdx, so loop until we cover it.
+	s.chunkGrowMu.Lock()
+	for uint32(len(s.internalChunks)) <= chunkIdx {
+		s.internalChunks = append(s.internalChunks, new([storeChunkSize]InternalNode))
+	}
+	s.chunkGrowMu.Unlock()
 	return idx
 }
 
@@ -96,15 +121,19 @@ func (s *nodeStore) newInternalRef(depth int) nodeRef {
 }
 
 func (s *nodeStore) allocStem() uint32 {
-	idx := s.stemCount
-	chunkIdx := idx / storeChunkSize
-	if uint32(len(s.stemChunks)) <= chunkIdx {
-		s.stemChunks = append(s.stemChunks, new([storeChunkSize]StemNode))
-	}
-	s.stemCount++
-	if s.stemCount > indexMask {
+	idx := s.stemCount.Add(1) - 1
+	if idx > indexMask {
 		panic("stem node pool overflow")
 	}
+	chunkIdx := idx / storeChunkSize
+	if uint32(len(s.stemChunks)) > chunkIdx {
+		return idx
+	}
+	s.chunkGrowMu.Lock()
+	for uint32(len(s.stemChunks)) <= chunkIdx {
+		s.stemChunks = append(s.stemChunks, new([storeChunkSize]StemNode))
+	}
+	s.chunkGrowMu.Unlock()
 	return idx
 }
 
@@ -126,21 +155,30 @@ func (s *nodeStore) newStemRef(stem []byte, depth int) nodeRef {
 }
 
 func (s *nodeStore) allocHashed() uint32 {
+	// Freelist pop, under its own mutex (rare path).
+	s.freeHashedMu.Lock()
 	if n := len(s.freeHashed); n > 0 {
 		idx := s.freeHashed[n-1]
 		s.freeHashed = s.freeHashed[:n-1]
+		s.freeHashedMu.Unlock()
 		*s.getHashed(idx) = HashedNode{}
 		return idx
 	}
-	idx := s.hashedCount
-	chunkIdx := idx / storeChunkSize
-	if uint32(len(s.hashedChunks)) <= chunkIdx {
-		s.hashedChunks = append(s.hashedChunks, new([storeChunkSize]HashedNode))
-	}
-	s.hashedCount++
-	if s.hashedCount > indexMask {
+	s.freeHashedMu.Unlock()
+
+	idx := s.hashedCount.Add(1) - 1
+	if idx > indexMask {
 		panic("hashed node pool overflow")
 	}
+	chunkIdx := idx / storeChunkSize
+	if uint32(len(s.hashedChunks)) > chunkIdx {
+		return idx
+	}
+	s.chunkGrowMu.Lock()
+	for uint32(len(s.hashedChunks)) <= chunkIdx {
+		s.hashedChunks = append(s.hashedChunks, new([storeChunkSize]HashedNode))
+	}
+	s.chunkGrowMu.Unlock()
 	return idx
 }
 
@@ -149,7 +187,9 @@ func (s *nodeStore) getHashed(idx uint32) *HashedNode {
 }
 
 func (s *nodeStore) freeHashedNode(idx uint32) {
+	s.freeHashedMu.Lock()
 	s.freeHashed = append(s.freeHashed, idx)
+	s.freeHashedMu.Unlock()
 }
 
 func (s *nodeStore) newHashedRef(hash common.Hash) nodeRef {
@@ -158,14 +198,52 @@ func (s *nodeStore) newHashedRef(hash common.Hash) nodeRef {
 	return makeRef(kindHashed, idx)
 }
 
+// cowInternal allocates a fresh internal node initialised from the existing
+// node at oldRef. Used by the copy-on-write path so concurrent workers
+// mutating a shared arena never write to an existing parent-visible node.
+// Callers must update the returned node's left/right child ref before
+// returning the new ref upward.
+func (s *nodeStore) cowInternal(oldRef nodeRef) (nodeRef, *InternalNode) {
+	old := s.getInternal(oldRef.Index())
+	newIdx := s.allocInternal()
+	n := s.getInternal(newIdx)
+	n.depth = old.depth
+	n.left = old.left
+	n.right = old.right
+	n.hash = old.hash
+	n.mustRecompute = true
+	n.dirty = true
+	return makeRef(kindInternal, newIdx), n
+}
+
+// cowStem allocates a fresh stem node initialised from the existing stem at
+// oldRef. The values slice is pointer-aliased: only slots the caller goes on
+// to overwrite need to allocate fresh []byte; unmodified slots safely alias
+// the original because original stem-value byte slices are never mutated
+// in place under either cow or non-cow paths.
+func (s *nodeStore) cowStem(oldRef nodeRef) (nodeRef, *StemNode) {
+	old := s.getStem(oldRef.Index())
+	newIdx := s.allocStem()
+	n := s.getStem(newIdx)
+	n.Stem = old.Stem
+	n.depth = old.depth
+	n.hash = old.hash
+	n.mustRecompute = true
+	n.dirty = true
+	for i, v := range old.values {
+		n.values[i] = v
+	}
+	return makeRef(kindStem, newIdx), n
+}
+
 func (s *nodeStore) Copy() *nodeStore {
 	ns := &nodeStore{
-		root:          s.root,
-		baseDepth:     s.baseDepth,
-		internalCount: s.internalCount,
-		stemCount:     s.stemCount,
-		hashedCount:   s.hashedCount,
+		root:      s.root,
+		baseDepth: s.baseDepth,
 	}
+	ns.internalCount.Store(s.internalCount.Load())
+	ns.stemCount.Store(s.stemCount.Load())
+	ns.hashedCount.Store(s.hashedCount.Load())
 	ns.internalChunks = make([]*[storeChunkSize]InternalNode, len(s.internalChunks))
 	for i, chunk := range s.internalChunks {
 		cp := *chunk
@@ -178,7 +256,8 @@ func (s *nodeStore) Copy() *nodeStore {
 	}
 	// Deep-copy each stem's value slots — they may alias serialized buffers,
 	// so we can't rely on the chunk-wise struct copy above.
-	for i := uint32(0); i < s.stemCount; i++ {
+	stemCount := s.stemCount.Load()
+	for i := uint32(0); i < stemCount; i++ {
 		src := s.getStem(i)
 		dst := ns.getStem(i)
 		for j, v := range src.values {

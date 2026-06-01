@@ -113,6 +113,18 @@ type BinaryTrie struct {
 	tracer     *trie.PrevalueTracer
 	groupDepth int // Number of levels per serialized group (1-8, default 8)
 	baseDepth  int // 0 for full trie, >0 for sub-views created by SplitRoot
+
+	// root is the trie's current root ref. For the top-level trie it mirrors
+	// store.root (kept in sync by mutating ops). For sub-views produced by
+	// SplitRoot / SplitForAccounts, it diverges from store.root and may not
+	// be reachable from store.root at all — sub-views own their own root.
+	root nodeRef
+
+	// cowOnWrite, when true, makes mutating ops (Insert/Update/Delete/Split)
+	// allocate fresh internal/stem nodes in the shared arena instead of
+	// mutating existing ones in place. Set on sub-views so concurrent
+	// workers sharing the parent's nodeStore don't race on writes.
+	cowOnWrite bool
 }
 
 func (t *BinaryTrie) GroupDepth() int {
@@ -155,6 +167,7 @@ func NewBinaryTrie(root common.Hash, db database.NodeDatabase, groupDepth int) (
 		}
 		t.store.root = ref
 	}
+	t.root = t.store.root
 	return t, nil
 }
 
@@ -237,6 +250,33 @@ func (t *BinaryTrie) GetStorage(addr common.Address, key []byte) ([]byte, error)
 	return t.store.Get(GetBinaryTreeKeyStorageSlot(addr, key), t.nodeResolver)
 }
 
+// applyStemValues writes values at stem via the cow-aware path, updating
+// t.root. For top-level tries (cowOnWrite=false) it keeps t.store.root in
+// sync so callers that read store.root directly (iterators, etc.) still see
+// the latest state.
+func (t *BinaryTrie) applyStemValues(stem []byte, values [][]byte) error {
+	newRoot, err := t.store.InsertValuesAtStemCow(t.root, stem, values, t.nodeResolver, t.cowOnWrite)
+	if err != nil {
+		return err
+	}
+	t.root = newRoot
+	if !t.cowOnWrite {
+		t.store.root = newRoot
+	}
+	return nil
+}
+
+// applyKeyValue writes value at key (31-byte stem + 1-byte suffix) via the
+// cow-aware path.
+func (t *BinaryTrie) applyKeyValue(key, value []byte) error {
+	if len(value) != HashSize {
+		return errors.New("invalid insertion: value length")
+	}
+	var values [StemNodeWidth][]byte
+	values[key[StemSize]] = value
+	return t.applyStemValues(key[:StemSize], values[:])
+}
+
 // UpdateAccount updates the account information for the given address.
 func (t *BinaryTrie) UpdateAccount(addr common.Address, acc *types.StateAccount, codeLen int) error {
 	var (
@@ -260,12 +300,12 @@ func (t *BinaryTrie) UpdateAccount(addr common.Address, acc *types.StateAccount,
 	values[BasicDataLeafKey] = basicData[:]
 	values[CodeHashLeafKey] = acc.CodeHash[:]
 
-	return t.store.InsertValuesAtStem(stem, values, t.nodeResolver)
+	return t.applyStemValues(stem[:StemSize], values)
 }
 
 // UpdateStem updates the values for the given stem key.
 func (t *BinaryTrie) UpdateStem(key []byte, values [][]byte) error {
-	return t.store.InsertValuesAtStem(key, values, t.nodeResolver)
+	return t.applyStemValues(key, values)
 }
 
 // UpdateStorage associates key with value in the trie. If value has length zero, any
@@ -280,8 +320,7 @@ func (t *BinaryTrie) UpdateStorage(address common.Address, key, value []byte) er
 	} else {
 		copy(v[HashSize-len(value):], value[:])
 	}
-	err := t.store.Insert(k, v[:], t.nodeResolver)
-	if err != nil {
+	if err := t.applyKeyValue(k, v[:]); err != nil {
 		return fmt.Errorf("UpdateStorage (%x) error: %v", address, err)
 	}
 	return nil
@@ -298,17 +337,28 @@ func (t *BinaryTrie) DeleteAccount(addr common.Address) error {
 func (t *BinaryTrie) DeleteStorage(addr common.Address, key []byte) error {
 	k := GetBinaryTreeKeyStorageSlot(addr, key)
 	var zero [HashSize]byte
-	err := t.store.Insert(k, zero[:], t.nodeResolver)
-	if err != nil {
+	if err := t.applyKeyValue(k, zero[:]); err != nil {
 		return fmt.Errorf("DeleteStorage (%x) error: %v", addr, err)
 	}
 	return nil
 }
 
+// effectiveRoot returns the root ref to traverse from. Top-level tries
+// (cowOnWrite=false) read from store.root because direct store-level callers
+// (tests, generators) bypass the BinaryTrie wrappers and update store.root
+// directly. Sub-views (cowOnWrite=true) own their own root and may diverge
+// from store.root entirely.
+func (t *BinaryTrie) effectiveRoot() nodeRef {
+	if t.cowOnWrite {
+		return t.root
+	}
+	return t.store.root
+}
+
 // Hash returns the root hash of the trie. It does not write to the database and
 // can be used even if the trie doesn't have one.
 func (t *BinaryTrie) Hash() common.Hash {
-	return t.store.computeHash(t.store.root)
+	return t.store.computeHash(t.effectiveRoot())
 }
 
 // Commit writes all nodes to the trie's memory database, tracking the internal
@@ -317,7 +367,7 @@ func (t *BinaryTrie) Commit(_ bool) (common.Hash, *trienode.NodeSet) {
 	nodeset := trienode.NewNodeSet(common.Hash{})
 
 	var rootPath BitArray
-	t.store.collectNodes(t.store.root, rootPath, func(path BitArray, hash common.Hash, serialized []byte) {
+	t.store.collectNodes(t.effectiveRoot(), rootPath, func(path BitArray, hash common.Hash, serialized []byte) {
 		var buf [33]byte
 		pathBytes := path.PutKeyBytes(buf[:])
 		nodeset.AddNode(pathBytes, trienode.NewNodeWithPrev(hash, serialized, t.tracer.Get(pathBytes)))
@@ -344,63 +394,78 @@ func (t *BinaryTrie) Prove(key []byte, proofDb ethdb.KeyValueWriter) error {
 
 // Copy creates a deep copy of the trie.
 func (t *BinaryTrie) Copy() *BinaryTrie {
-	return &BinaryTrie{
+	cp := &BinaryTrie{
 		store:      t.store.Copy(),
 		reader:     t.reader,
 		tracer:     t.tracer.Copy(),
 		groupDepth: t.groupDepth,
 		baseDepth:  t.baseDepth,
+		cowOnWrite: t.cowOnWrite,
 	}
+	cp.root = cp.store.root
+	return cp
 }
 
-// SplitRoot returns two sub-trie views wrapping the root's left and right
-// children. Each view owns an independent nodeStore — extracted from the
-// parent — so the caller can update the views concurrently. The caller MUST
-// invoke MergeRoot afterward to fold the updates back into this trie.
+// SplitRoot returns two sub-trie views, one for each child of this trie's
+// root. Both sub-views share this trie's nodeStore — no deep copy. Each
+// sub-view has its own root ref (the parent root's left/right child) and
+// runs with cowOnWrite=true, so any mutations allocate fresh nodes in the
+// shared arena rather than touching parent-visible state.
 //
 // Hashed children remain hashed in the sub-views; they're resolved lazily on
-// first use via the same disk reader the parent trie uses. The resolver path
-// for a sub-view node is derived from the stem being operated on, so the
-// lazy path is correct without any extra plumbing.
+// first use via the same disk reader the parent trie uses.
 //
 // Returns an error if the trie root is not an InternalNode.
 func (t *BinaryTrie) SplitRoot() (left, right *BinaryTrie, err error) {
-	if t.store.root.Kind() != kindInternal {
+	if t.effectiveRoot().Kind() != kindInternal {
 		return nil, nil, errors.New("SplitRoot: root is not an InternalNode")
 	}
-	rootNode := t.store.getInternal(t.store.root.Index())
-
-	subDepth := uint8(t.baseDepth + 1)
-	leftStore := newSubStore(subDepth)
-	leftStore.root = leftStore.copyFrom(t.store, rootNode.left)
-	rightStore := newSubStore(subDepth)
-	rightStore.root = rightStore.copyFrom(t.store, rootNode.right)
+	rootNode := t.store.getInternal(t.effectiveRoot().Index())
 
 	left = &BinaryTrie{
-		store:      leftStore,
+		store:      t.store,
+		root:       rootNode.left,
 		reader:     t.reader,
 		tracer:     t.tracer,
 		groupDepth: t.groupDepth,
 		baseDepth:  t.baseDepth + 1,
+		cowOnWrite: true,
 	}
 	right = &BinaryTrie{
-		store:      rightStore,
+		store:      t.store,
+		root:       rootNode.right,
 		reader:     t.reader,
 		tracer:     t.tracer,
 		groupDepth: t.groupDepth,
 		baseDepth:  t.baseDepth + 1,
+		cowOnWrite: true,
 	}
 	return left, right, nil
 }
 
-// MergeRoot folds two sub-views (from SplitRoot) back into this trie.
-// Must be called after parallel updates to left and right complete.
+// MergeRoot folds two sub-views back into this trie. Sub-views share this
+// trie's arena, so the merge is O(1): we just point the parent root's left
+// and right at the sub-views' (possibly COW-allocated) roots and mark the
+// parent dirty for the next Hash().
+//
+// If neither sub-view's root changed (pure-read block), neither flag is
+// flipped — the parent root keeps its cached hash and the next Hash() call
+// is a no-op. This is the Layer-3 "skip-when-empty" optimization.
 func (t *BinaryTrie) MergeRoot(left, right *BinaryTrie) {
-	rootNode := t.store.getInternal(t.store.root.Index())
-	rootNode.left = t.store.copyFrom(left.store, left.store.root)
-	rootNode.right = t.store.copyFrom(right.store, right.store.root)
-	rootNode.mustRecompute = true
-	rootNode.dirty = true
+	rootNode := t.store.getInternal(t.effectiveRoot().Index())
+	changed := false
+	if left.root != rootNode.left {
+		rootNode.left = left.root
+		changed = true
+	}
+	if right.root != rootNode.right {
+		rootNode.right = right.root
+		changed = true
+	}
+	if changed {
+		rootNode.mustRecompute = true
+		rootNode.dirty = true
+	}
 }
 
 // IsUBT returns true if the trie is a Verkle tree.
