@@ -16,7 +16,69 @@
 
 package bintrie
 
-import "testing"
+import (
+	"encoding/binary"
+	"sync/atomic"
+	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
+)
+
+// insertStorage writes one storage slot for the given account index, producing
+// keys spread across the storage zone's depth-5 subtrees.
+func insertStorage(t *testing.T, s *nodeStore, i int) {
+	t.Helper()
+	var addr common.Address
+	binary.BigEndian.PutUint64(addr[12:], uint64(i))
+	slot := make([]byte, 32)
+	binary.BigEndian.PutUint64(slot[24:], uint64(100+i)) // >=64 -> storage zone
+	key := GetBinaryTreeKeyStorageSlot(addr, slot)
+	var val [32]byte
+	binary.BigEndian.PutUint64(val[24:], uint64(i+1))
+	if err := s.Insert(key, val[:], nil); err != nil {
+		t.Fatalf("insert %d: %v", i, err)
+	}
+}
+
+func TestCollectSubtreeRootsDisjoint(t *testing.T) {
+	s := newNodeStore()
+	s.groupDepth = 5
+	for i := range 500 {
+		insertStorage(t, s, i)
+	}
+	var units []subtreeUnit
+	var root BitArray
+	s.collectSubtreeRoots(s.root, root, 5, &units)
+	if len(units) < 2 {
+		t.Fatalf("expected multiple subtree units, got %d", len(units))
+	}
+	seen := map[string]bool{}
+	for _, u := range units {
+		if u.ref.Kind() != kindInternal {
+			t.Fatalf("unit is not internal: kind %d", u.ref.Kind())
+		}
+		if d := s.getInternal(u.ref.Index()).depth; int(d) != 5 {
+			t.Fatalf("unit depth = %d, want 5", d)
+		}
+		var buf [33]byte
+		key := string(u.path.PutKeyBytes(buf[:]))
+		if seen[key] {
+			t.Fatalf("duplicate unit path %x", key)
+		}
+		seen[key] = true
+	}
+}
+
+func TestParallelForRunsEachOnce(t *testing.T) {
+	const n = 1000
+	var hits [n]int32
+	parallelFor(n, 4, func(i int) { atomic.AddInt32(&hits[i], 1) })
+	for i := range n {
+		if hits[i] != 1 {
+			t.Fatalf("index %d ran %d times", i, hits[i])
+		}
+	}
+}
 
 func TestCutDepthFor(t *testing.T) {
 	tests := []struct {
