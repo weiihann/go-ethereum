@@ -430,3 +430,82 @@ func TestNonStorageCutDepth(t *testing.T) {
 		}
 	}
 }
+
+// buildApplyWorkload returns the keys and values for a block-sized workload:
+// many accounts (account zone) and storage slots (storage zone, slot >= 64).
+func buildApplyWorkload(n int) (keys [][32]byte, vals [][32]byte) {
+	keys = make([][32]byte, 0, 2*n)
+	vals = make([][32]byte, 0, 2*n)
+	for i := range n {
+		var addr common.Address
+		binary.BigEndian.PutUint64(addr[12:], uint64(i))
+		var k [32]byte
+		copy(k[:], GetBinaryTreeKeyBasicData(addr))
+		var v [32]byte
+		binary.BigEndian.PutUint64(v[24:], uint64(i+1))
+		keys, vals = append(keys, k), append(vals, v)
+
+		slot := make([]byte, 32)
+		binary.BigEndian.PutUint64(slot[24:], uint64(100+i))
+		var sk [32]byte
+		copy(sk[:], GetBinaryTreeKeyStorageSlot(addr, slot))
+		keys, vals = append(keys, sk), append(vals, v)
+	}
+	return keys, vals
+}
+
+func applyAll(b *testing.B, store *nodeStore, keys, vals [][32]byte) {
+	for i := range keys {
+		if err := store.Insert(keys[i][:], vals[i][:], nil); err != nil {
+			b.Fatalf("insert: %v", err)
+		}
+	}
+}
+
+func benchBlockTrie(store *nodeStore) *BinaryTrie {
+	return &BinaryTrie{store: store, tracer: trie.NewPrevalueTracer(), groupDepth: 5,
+		cutDepthStorage: 5, cutDepthNonStorage: nonStorageCutDepth(runtime.NumCPU(), 5)}
+}
+
+// BenchmarkUBTBlockApply measures the sequential update-apply (insert) cost.
+func BenchmarkUBTBlockApply(b *testing.B) {
+	b.ReportAllocs()
+	keys, vals := buildApplyWorkload(5000)
+	for b.Loop() {
+		b.StopTimer()
+		store := newNodeStore()
+		store.groupDepth = 5
+		b.StartTimer()
+		applyAll(b, store, keys, vals)
+	}
+}
+
+// BenchmarkUBTBlockHash measures Hash on the applied trie (zoned parallel cut).
+func BenchmarkUBTBlockHash(b *testing.B) {
+	b.ReportAllocs()
+	keys, vals := buildApplyWorkload(5000)
+	for b.Loop() {
+		b.StopTimer()
+		store := newNodeStore()
+		store.groupDepth = 5
+		applyAll(b, store, keys, vals)
+		tr := benchBlockTrie(store)
+		b.StartTimer()
+		tr.Hash()
+	}
+}
+
+// BenchmarkUBTBlockCommit measures Commit on the applied+hashed trie.
+func BenchmarkUBTBlockCommit(b *testing.B) {
+	b.ReportAllocs()
+	keys, vals := buildApplyWorkload(5000)
+	for b.Loop() {
+		b.StopTimer()
+		store := newNodeStore()
+		store.groupDepth = 5
+		applyAll(b, store, keys, vals)
+		tr := benchBlockTrie(store)
+		b.StartTimer()
+		tr.Commit(false)
+	}
+}
