@@ -324,6 +324,80 @@ func BenchmarkHashParallel(b *testing.B) {
 	}
 }
 
+// insertAccount writes an account basic-data leaf for account index i (account
+// zone, key prefix 0x0000), so account stems share the 16-bit zone and branch
+// only at depth 16+.
+func insertAccount(t *testing.T, s *nodeStore, i int) {
+	t.Helper()
+	var addr common.Address
+	binary.BigEndian.PutUint64(addr[12:], uint64(i))
+	key := GetBinaryTreeKeyBasicData(addr)
+	var val [32]byte
+	binary.BigEndian.PutUint64(val[24:], uint64(i+1))
+	if err := s.Insert(key, val[:], nil); err != nil {
+		t.Fatalf("insert account %d: %v", i, err)
+	}
+}
+
+func TestZonedCutFansOutAccounts(t *testing.T) {
+	s := newNodeStore()
+	s.groupDepth = 5
+	// Account-heavy: 800 accounts (account zone), no storage.
+	for i := range 800 {
+		insertAccount(t, s, i)
+	}
+	// Shallow cut (5) alone: the whole non-storage zone is ONE unit.
+	var shallow []subtreeUnit
+	s.collectSubtreeRoots(s.root, BitArray{}, 5, &shallow)
+	if len(shallow) != 1 {
+		t.Fatalf("shallow cut: expected 1 non-storage unit, got %d", len(shallow))
+	}
+	// Zoned cut (storage 5, non-storage 20): account zone fans into many units.
+	var zoned []subtreeUnit
+	s.collectZonedSubtreeRoots(5, 20, &zoned)
+	if len(zoned) < 2 {
+		t.Fatalf("zoned cut: expected account zone to fan out, got %d units", len(zoned))
+	}
+	for _, u := range zoned {
+		d := s.getInternal(u.ref.Index()).depth
+		if int(d)%s.groupDepth != 0 {
+			t.Fatalf("unit at depth %d is not on a group boundary", d)
+		}
+	}
+}
+
+func TestZonedCutMixedZones(t *testing.T) {
+	s := newNodeStore()
+	s.groupDepth = 5
+	for i := range 400 {
+		insertAccount(t, s, i)
+		insertStorage(t, s, i)
+	}
+	var units []subtreeUnit
+	s.collectZonedSubtreeRoots(5, 20, &units)
+	if len(units) < 2 {
+		t.Fatalf("mixed zones: expected fan-out, got %d units", len(units))
+	}
+	var deep, shallow int
+	for _, u := range units {
+		d := int(s.getInternal(u.ref.Index()).depth)
+		if d%s.groupDepth != 0 {
+			t.Fatalf("unit at depth %d off group boundary", d)
+		}
+		if d >= nonStorageZoneBits { // past the 16-bit zone => non-storage fanned out
+			deep++
+		} else {
+			shallow++
+		}
+	}
+	if deep == 0 {
+		t.Fatalf("expected non-storage units past the zone (depth>=16), got none")
+	}
+	if shallow == 0 {
+		t.Fatalf("expected shallow storage units, got none")
+	}
+}
+
 func TestNonStorageCutDepth(t *testing.T) {
 	// groupDepth 5: smallest multiple of 5 strictly past the 16-bit zone is 20,
 	// and 2^(20-16)=16 fan-out buckets cover small core counts.
