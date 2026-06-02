@@ -33,17 +33,25 @@ type subtreeUnit struct {
 }
 
 // collectSubtreeRoots walks the trunk (internal nodes shallower than cutDepth)
-// and appends every internal node at depth >= cutDepth (the first split point
-// at or below the cut in each partition) to out, paired with its root path.
-// Non-internal nodes shallower than the cut (lone stems/hashed/empty) are left
-// for the sequential trunk pass — embedding them as parallel units would flush
-// them at the wrong granularity and diverge from baseline.
+// and appends every internal node at the cut depth to out, paired with its root
+// path. Non-internal nodes shallower than the cut (lone stems/hashed/empty) are
+// left for the sequential trunk pass — embedding them as parallel units would
+// flush them at the wrong granularity and diverge from baseline.
 func (s *nodeStore) collectSubtreeRoots(ref nodeRef, path BitArray, cutDepth int, out *[]subtreeUnit) {
 	if ref.Kind() != kindInternal {
 		return
 	}
 	node := s.getInternal(ref.Index())
 	if int(node.depth) >= cutDepth {
+		// A subtree root must land exactly on the cut depth. Internal-node depths
+		// increase by 1 per level (no path compression), so the first internal
+		// node at depth >= cutDepth is always exactly at cutDepth — a group
+		// boundary, since cutDepth is a multiple of groupDepth. A unit off the
+		// boundary would make a group blob straddle the trunk/subtree seam and
+		// corrupt the root relative to the on-disk read-back hash.
+		if int(node.depth) != cutDepth {
+			panic("collectSubtreeRoots: subtree root off group boundary (path compression?)")
+		}
 		*out = append(*out, subtreeUnit{ref: ref, path: path})
 		return
 	}

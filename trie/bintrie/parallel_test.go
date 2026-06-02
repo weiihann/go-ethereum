@@ -247,6 +247,63 @@ func benchTrie(b *testing.B, cutDepth, n int) *BinaryTrie {
 	return tr
 }
 
+// hashCommitEqual asserts two tries produce identical root, node count, and
+// per-path hash+blob from Commit.
+func hashCommitEqual(t *testing.T, seq, par *BinaryTrie) {
+	t.Helper()
+	if seq.Hash() != par.Hash() {
+		t.Fatalf("hash mismatch: seq %x par %x", seq.Hash(), par.Hash())
+	}
+	rootS, nsS := seq.Commit(false)
+	rootP, nsP := par.Commit(false)
+	if rootS != rootP {
+		t.Fatalf("commit root mismatch: seq %x par %x", rootS, rootP)
+	}
+	if len(nsS.Nodes) != len(nsP.Nodes) {
+		t.Fatalf("node count mismatch: seq %d par %d", len(nsS.Nodes), len(nsP.Nodes))
+	}
+	for path, ns := range nsS.Nodes {
+		np, ok := nsP.Nodes[path]
+		if !ok {
+			t.Fatalf("path %x missing in parallel set", path)
+		}
+		if ns.Hash != np.Hash || !bytes.Equal(ns.Blob, np.Blob) {
+			t.Fatalf("path %x mismatch", path)
+		}
+	}
+}
+
+func TestParallelEmptyTrie(t *testing.T) {
+	seq := newWorkloadTrie(t, 5, 0, 0)
+	par := newWorkloadTrie(t, 5, 5, 0)
+	hashCommitEqual(t, seq, par)
+	if seq.Hash() != (common.Hash{}) {
+		t.Fatalf("empty trie hash should be zero, got %x", seq.Hash())
+	}
+}
+
+func TestParallelSingleKey(t *testing.T) {
+	seq := newWorkloadTrie(t, 5, 0, 1)
+	par := newWorkloadTrie(t, 5, 5, 1)
+	hashCommitEqual(t, seq, par)
+}
+
+func TestParallelAllCleanRecommit(t *testing.T) {
+	seq := newWorkloadTrie(t, 5, 0, 2000)
+	par := newWorkloadTrie(t, 5, 5, 2000)
+	seq.Commit(false)
+	par.Commit(false)
+	// Re-commit with no mutation: both must yield the same root and an empty set.
+	rootS, nsS := seq.Commit(false)
+	rootP, nsP := par.Commit(false)
+	if rootS != rootP {
+		t.Fatalf("recommit root mismatch: seq %x par %x", rootS, rootP)
+	}
+	if len(nsS.Nodes) != 0 || len(nsP.Nodes) != 0 {
+		t.Fatalf("clean recommit should be empty: seq %d par %d", len(nsS.Nodes), len(nsP.Nodes))
+	}
+}
+
 func BenchmarkHashSequential(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
