@@ -222,3 +222,47 @@ func TestParallelCommitSecondCommitMatchesSequential(t *testing.T) {
 		}
 	}
 }
+
+func benchTrie(b *testing.B, cutDepth, n int) *BinaryTrie {
+	b.Helper()
+	store := newNodeStore()
+	store.groupDepth = 5
+	tr := &BinaryTrie{store: store, tracer: trie.NewPrevalueTracer(), groupDepth: 5, cutDepth: cutDepth}
+	var val [32]byte
+	for i := range n {
+		var addr common.Address
+		binary.BigEndian.PutUint64(addr[12:], uint64(i))
+		slot := make([]byte, 32)
+		binary.BigEndian.PutUint64(slot[24:], uint64(100+i))
+		key := GetBinaryTreeKeyStorageSlot(addr, slot)
+		binary.BigEndian.PutUint64(val[24:], uint64(i+1))
+		if err := store.Insert(key, val[:], nil); err != nil {
+			b.Fatalf("insert storage: %v", err)
+		}
+		akey := GetBinaryTreeKeyBasicData(addr)
+		if err := store.Insert(akey, val[:], nil); err != nil {
+			b.Fatalf("insert account: %v", err)
+		}
+	}
+	return tr
+}
+
+func BenchmarkHashSequential(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		tr := benchTrie(b, 0, 20000)
+		b.StartTimer()
+		tr.Hash()
+	}
+}
+
+func BenchmarkHashParallel(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		tr := benchTrie(b, 5, 20000)
+		b.StartTimer()
+		tr.Hash()
+	}
+}
