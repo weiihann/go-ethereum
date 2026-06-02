@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/trie/trienode"
 )
 
 // subtreeUnit is a parallelizable subtree: an internal node at the cut depth
@@ -121,4 +122,54 @@ func cutDepthFor(numCPU, groupDepth int) int {
 		d += groupDepth
 	}
 	return d
+}
+
+// flushFn builds the collectNodes callback that records a node into the given
+// set, capturing the tracer's previous value. The tracer is read-only during
+// commit (no nodeResolver runs), so concurrent Get calls from multiple workers
+// are safe; and each closure writes only to its own private set.
+func (t *BinaryTrie) flushFn(set *trienode.NodeSet) nodeFlushFn {
+	return func(path BitArray, hash common.Hash, serialized []byte) {
+		var buf [33]byte
+		pathBytes := path.PutKeyBytes(buf[:])
+		set.AddNode(pathBytes, trienode.NewNodeWithPrev(hash, serialized, t.tracer.Get(pathBytes)))
+	}
+}
+
+// commitParallel collects disjoint subtrees at cutDepth into per-worker node
+// sets concurrently, merges them (paths are disjoint), then collects the trunk
+// sequentially. collectNodes only writes each node's own dirty flag and a
+// private node set, so disjoint subtrees are race-free on the shared arena.
+func (t *BinaryTrie) commitParallel(cutDepth int) (common.Hash, *trienode.NodeSet) {
+	s := t.store
+	nodeset := trienode.NewNodeSet(common.Hash{})
+	var root BitArray
+
+	if cutDepth <= 0 || s.root.Kind() != kindInternal {
+		s.collectNodes(s.root, root, t.flushFn(nodeset), t.groupDepth)
+		return s.computeHash(s.root), nodeset
+	}
+	var units []subtreeUnit
+	s.collectSubtreeRoots(s.root, root, cutDepth, &units)
+	if len(units) <= 1 {
+		s.collectNodes(s.root, root, t.flushFn(nodeset), t.groupDepth)
+		return s.computeHash(s.root), nodeset
+	}
+
+	limit := min(runtime.NumCPU(), len(units))
+	subsets := make([]*trienode.NodeSet, len(units))
+	parallelFor(len(units), limit, func(i int) {
+		ss := trienode.NewNodeSet(common.Hash{})
+		s.collectNodes(units[i].ref, units[i].path, t.flushFn(ss), t.groupDepth)
+		subsets[i] = ss
+	})
+	for _, ss := range subsets {
+		if err := nodeset.MergeDisjoint(ss); err != nil {
+			panic("commitParallel: disjoint merge failed: " + err.Error())
+		}
+	}
+	// Subtree roots are now dirty=false, so the trunk pass flushes only trunk
+	// group blobs (it early-returns at each already-collected subtree root).
+	s.collectNodes(s.root, root, t.flushFn(nodeset), t.groupDepth)
+	return s.computeHash(s.root), nodeset
 }
