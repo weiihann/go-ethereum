@@ -20,9 +20,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math/bits"
-	"runtime"
-	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -48,25 +45,14 @@ func (s *nodeStore) computeHash(ref nodeRef) common.Hash {
 	}
 }
 
-// parallelHashDepth is the tree depth below which hashInternal spawns
-// goroutines for shallow-depth parallelism. Computed once at init because
-// NumCPU() never changes after startup.
-var parallelHashDepth = min(bits.Len(uint(runtime.NumCPU())), 8)
-
-// hashInternal hashes an InternalNode and caches the result.
+// hashInternal hashes an InternalNode and caches the result. It is sequential;
+// parallelism across disjoint subtrees is driven by the caller (see parallel.go).
 //
-// At shallow depths (< parallelHashDepth) the left subtree is hashed in a
-// goroutine while the right subtree is hashed inline, then the two digests
-// are combined. Below that threshold the goroutine spawn cost outweighs the
-// hashing work, so deeper nodes hash both children sequentially.
-//
-// At a group boundary (depth % groupDepth == 0, with groupDepth > 0) the
-// hash is computed from the group's bottom-layer slot hashes via the same
-// serialize-then-recursive-hash that a fresh reader applies after reading
-// the node's blob from disk. This guarantees the parent's stored child
-// hash equals the child's read-back hash byte-for-byte, regardless of
-// whether the in-memory subtree placed its stems at natural depth (via
-// UpdateStem split) or extended depth (via deserializeSubtree).
+// At a group boundary (depth % groupDepth == 0, with groupDepth > 0) the hash
+// is computed from the group's bottom-layer slot hashes via the same
+// serialize-then-recursive-hash that a fresh reader applies after reading the
+// node's blob from disk. This guarantees the parent's stored child hash equals
+// the child's read-back hash byte-for-byte.
 func (s *nodeStore) hashInternal(idx uint32) common.Hash {
 	node := s.getInternal(idx)
 	if !node.mustRecompute {
@@ -83,34 +69,6 @@ func (s *nodeStore) hashInternal(idx uint32) common.Hash {
 		return node.hash
 	}
 
-	if int(node.depth) < parallelHashDepth {
-		var input [64]byte
-		var lh common.Hash
-		var wg sync.WaitGroup
-		if !node.left.IsEmpty() {
-			wg.Add(1)
-			go func() {
-				// defer wg.Done() so a panic in computeHash still releases
-				// the waiter; without this, a recover() higher in the call
-				// stack would leave the parent stuck in wg.Wait forever.
-				defer wg.Done()
-				lh = s.computeHash(node.left)
-			}()
-		}
-		if !node.right.IsEmpty() {
-			rh := s.computeHash(node.right)
-			copy(input[32:], rh[:])
-		}
-		wg.Wait()
-		copy(input[:32], lh[:])
-		node.hash = sha256.Sum256(input[:])
-		node.mustRecompute = false
-		return node.hash
-	}
-
-	// Deep sequential branch — mirrors the shallow branch's shape to keep
-	// input on the stack. Writing lh/rh through hash.Hash (interface)
-	// forces escape; copy into a local [64]byte and hash it in one shot.
 	var input [64]byte
 	if !node.left.IsEmpty() {
 		lh := s.computeHash(node.left)
