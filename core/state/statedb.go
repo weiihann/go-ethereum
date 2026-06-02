@@ -1329,7 +1329,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool, blockNum
 	s.originalRoot = root
 
 	typ := StorageKeyHashed
-	if noStorageWiping {
+	if noStorageWiping || s.db.Type().Is(TypeUBT) {
 		typ = StorageKeyPlain
 	}
 	return NewStateUpdate(typ, origin, root, blockNumber, deletes, updates, nodes), nil
