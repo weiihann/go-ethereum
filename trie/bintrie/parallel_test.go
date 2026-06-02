@@ -509,3 +509,45 @@ func BenchmarkUBTBlockCommit(b *testing.B) {
 		tr.Commit(false)
 	}
 }
+
+// accountHeavyTrie builds an account-only workload (no storage) to exercise the
+// previously-imbalanced non-storage zone. cutDepth<=0 => sequential.
+func accountHeavyTrie(b *testing.B, cutDepth, n int) *BinaryTrie {
+	store := newNodeStore()
+	store.groupDepth = 5
+	var val [32]byte
+	for i := range n {
+		var addr common.Address
+		binary.BigEndian.PutUint64(addr[12:], uint64(i))
+		key := GetBinaryTreeKeyBasicData(addr)
+		binary.BigEndian.PutUint64(val[24:], uint64(i+1))
+		if err := store.Insert(key, val[:], nil); err != nil {
+			b.Fatalf("insert: %v", err)
+		}
+	}
+	tr := &BinaryTrie{store: store, tracer: trie.NewPrevalueTracer(), groupDepth: 5, cutDepthStorage: cutDepth}
+	if cutDepth > 0 {
+		tr.cutDepthNonStorage = nonStorageCutDepth(runtime.NumCPU(), 5)
+	}
+	return tr
+}
+
+func BenchmarkAccountHashSequential(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		tr := accountHeavyTrie(b, 0, 20000)
+		b.StartTimer()
+		tr.Hash()
+	}
+}
+
+func BenchmarkAccountHashZoned(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		tr := accountHeavyTrie(b, 5, 20000)
+		b.StartTimer()
+		tr.Hash()
+	}
+}
