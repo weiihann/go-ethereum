@@ -108,11 +108,12 @@ func ChunkifyCode(code []byte) ChunkedCode {
 
 // BinaryTrie is the implementation of https://eips.ethereum.org/EIPS/eip-7864.
 type BinaryTrie struct {
-	store      *nodeStore
-	reader     *trie.Reader
-	tracer     *trie.PrevalueTracer
-	groupDepth int // Number of levels per serialized group (1-8, default 8)
-	cutDepth   int // Depth at which Hash/Commit fan out; multiple of groupDepth, <=0 disables
+	store              *nodeStore
+	reader             *trie.Reader
+	tracer             *trie.PrevalueTracer
+	groupDepth         int // Number of levels per serialized group (1-8, default 8)
+	cutDepthStorage    int // Depth at which Hash/Commit fan out for storage zone; multiple of groupDepth, <=0 disables
+	cutDepthNonStorage int // account/code zone cut depth (deeper, past the 16-bit zone)
 }
 
 func (t *BinaryTrie) GroupDepth() int {
@@ -138,11 +139,12 @@ func NewBinaryTrie(root common.Hash, db database.NodeDatabase, groupDepth int) (
 	store := newNodeStore()
 	store.groupDepth = groupDepth
 	t := &BinaryTrie{
-		store:      store,
-		reader:     reader,
-		tracer:     trie.NewPrevalueTracer(),
-		groupDepth: groupDepth,
-		cutDepth:   cutDepthFor(runtime.NumCPU(), groupDepth),
+		store:              store,
+		reader:             reader,
+		tracer:             trie.NewPrevalueTracer(),
+		groupDepth:         groupDepth,
+		cutDepthStorage:    cutDepthFor(runtime.NumCPU(), groupDepth),
+		cutDepthNonStorage: nonStorageCutDepth(runtime.NumCPU(), groupDepth),
 	}
 	// Parse the root node if it's not empty
 	if root != types.EmptyBinaryHash && root != types.EmptyRootHash {
@@ -309,13 +311,13 @@ func (t *BinaryTrie) DeleteStorage(addr common.Address, key []byte) error {
 // Hash returns the root hash of the trie. It does not write to the database and
 // can be used even if the trie doesn't have one.
 func (t *BinaryTrie) Hash() common.Hash {
-	return t.store.computeHashParallel(t.cutDepth)
+	return t.store.computeHashParallel(t.cutDepthStorage, t.cutDepthNonStorage)
 }
 
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
 func (t *BinaryTrie) Commit(_ bool) (common.Hash, *trienode.NodeSet) {
-	return t.commitParallel(t.cutDepth)
+	return t.commitParallel(t.cutDepthStorage, t.cutDepthNonStorage)
 }
 
 // NodeIterator returns an iterator that returns nodes of the trie. Iteration
@@ -338,11 +340,12 @@ func (t *BinaryTrie) Prove(key []byte, proofDb ethdb.KeyValueWriter) error {
 // Copy creates a deep copy of the trie.
 func (t *BinaryTrie) Copy() *BinaryTrie {
 	return &BinaryTrie{
-		store:      t.store.Copy(),
-		reader:     t.reader,
-		tracer:     t.tracer.Copy(),
-		groupDepth: t.groupDepth,
-		cutDepth:   t.cutDepth,
+		store:              t.store.Copy(),
+		reader:             t.reader,
+		tracer:             t.tracer.Copy(),
+		groupDepth:         t.groupDepth,
+		cutDepthStorage:    t.cutDepthStorage,
+		cutDepthNonStorage: t.cutDepthNonStorage,
 	}
 }
 
