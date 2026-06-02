@@ -33,24 +33,22 @@ type subtreeUnit struct {
 }
 
 // collectSubtreeRoots walks the trunk (internal nodes shallower than cutDepth)
-// and appends every internal node at the cut depth to out, paired with its root
-// path. Non-internal nodes shallower than the cut (lone stems/hashed/empty) are
-// left for the sequential trunk pass — embedding them as parallel units would
-// flush them at the wrong granularity and diverge from baseline.
+// and appends every internal node at the first group boundary >= cutDepth to
+// out, paired with its root path. Non-internal nodes shallower than the cut
+// (lone stems/hashed/empty) are left for the sequential trunk pass.
 func (s *nodeStore) collectSubtreeRoots(ref nodeRef, path BitArray, cutDepth int, out *[]subtreeUnit) {
 	if ref.Kind() != kindInternal {
 		return
 	}
 	node := s.getInternal(ref.Index())
 	if int(node.depth) >= cutDepth {
-		// A subtree root must land exactly on the cut depth. Internal-node depths
-		// increase by 1 per level (no path compression), so the first internal
-		// node at depth >= cutDepth is always exactly at cutDepth — a group
-		// boundary, since cutDepth is a multiple of groupDepth. A unit off the
-		// boundary would make a group blob straddle the trunk/subtree seam and
-		// corrupt the root relative to the on-disk read-back hash.
-		if int(node.depth) != cutDepth {
-			panic("collectSubtreeRoots: subtree root off group boundary (path compression?)")
+		// A subtree root must land on a serialization group boundary, else a
+		// group blob would straddle the trunk/subtree seam and corrupt the root
+		// relative to the on-disk read-back hash. With no path compression the
+		// first internal node at depth >= cutDepth is at exactly cutDepth (a
+		// multiple of groupDepth), so this holds; the check guards regressions.
+		if s.groupDepth > 0 && int(node.depth)%s.groupDepth != 0 {
+			panic("collectSubtreeRoots: subtree root off group boundary")
 		}
 		*out = append(*out, subtreeUnit{ref: ref, path: path})
 		return
@@ -60,6 +58,32 @@ func (s *nodeStore) collectSubtreeRoots(ref nodeRef, path BitArray, cutDepth int
 	}
 	if !node.right.IsEmpty() {
 		s.collectSubtreeRoots(node.right, appendBit(path, 1), cutDepth, out)
+	}
+}
+
+// collectZonedSubtreeRoots splits the root by zone and collects parallel units
+// with a per-zone cut depth. The storage/non-storage split is at depth 0 (the
+// top key bit: 1 = storage, 0 = account/code). The non-storage side uses the
+// deeper nonStorageCut so account and code fan out past their shared 16-bit zone
+// prefix instead of collapsing into a single unit; storage uses the shallower
+// storageCut where it already fans out. Both cuts are multiples of groupDepth,
+// so every collected unit lands on a group boundary.
+func (s *nodeStore) collectZonedSubtreeRoots(storageCut, nonStorageCut int, out *[]subtreeUnit) {
+	if s.root.Kind() != kindInternal {
+		return
+	}
+	rootNode := s.getInternal(s.root.Index())
+	if rootNode.depth != 0 {
+		// Root internal is expected at depth 0 (the storage/non-storage split).
+		// Defensively fall back to a single shallow cut over the whole tree.
+		s.collectSubtreeRoots(s.root, BitArray{}, storageCut, out)
+		return
+	}
+	if !rootNode.left.IsEmpty() {
+		s.collectSubtreeRoots(rootNode.left, appendBit(BitArray{}, 0), nonStorageCut, out)
+	}
+	if !rootNode.right.IsEmpty() {
+		s.collectSubtreeRoots(rootNode.right, appendBit(BitArray{}, 1), storageCut, out)
 	}
 }
 
