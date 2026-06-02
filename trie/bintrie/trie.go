@@ -315,15 +315,7 @@ func (t *BinaryTrie) Hash() common.Hash {
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
 func (t *BinaryTrie) Commit(_ bool) (common.Hash, *trienode.NodeSet) {
-	nodeset := trienode.NewNodeSet(common.Hash{})
-
-	var rootPath BitArray
-	t.store.collectNodes(t.store.root, rootPath, func(path BitArray, hash common.Hash, serialized []byte) {
-		var buf [33]byte
-		pathBytes := path.PutKeyBytes(buf[:])
-		nodeset.AddNode(pathBytes, trienode.NewNodeWithPrev(hash, serialized, t.tracer.Get(pathBytes)))
-	}, t.groupDepth)
-	return t.Hash(), nodeset
+	return t.commitParallel(t.cutDepth)
 }
 
 // NodeIterator returns an iterator that returns nodes of the trie. Iteration

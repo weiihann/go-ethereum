@@ -17,6 +17,7 @@
 package bintrie
 
 import (
+	"bytes"
 	"encoding/binary"
 	"sync/atomic"
 	"testing"
@@ -150,5 +151,74 @@ func TestParallelHashMatchesSequential(t *testing.T) {
 	}
 	if got, want := par.Hash(), seq.Hash(); got != want {
 		t.Fatalf("parallel hash %x != sequential %x", got, want)
+	}
+}
+
+func TestParallelCommitMatchesSequential(t *testing.T) {
+	const groupDepth, n = 5, 2000
+	seq := newWorkloadTrie(t, groupDepth, 0, n)
+	par := newWorkloadTrie(t, groupDepth, 5, n)
+
+	rootS, nsS := seq.Commit(false)
+	rootP, nsP := par.Commit(false)
+
+	if rootS != rootP {
+		t.Fatalf("commit root mismatch: seq %x par %x", rootS, rootP)
+	}
+	if len(nsS.Nodes) != len(nsP.Nodes) {
+		t.Fatalf("node count mismatch: seq %d par %d", len(nsS.Nodes), len(nsP.Nodes))
+	}
+	for path, ns := range nsS.Nodes {
+		np, ok := nsP.Nodes[path]
+		if !ok {
+			t.Fatalf("path %x missing in parallel set", path)
+		}
+		if ns.Hash != np.Hash {
+			t.Fatalf("path %x hash mismatch: seq %x par %x", path, ns.Hash, np.Hash)
+		}
+		if !bytes.Equal(ns.Blob, np.Blob) {
+			t.Fatalf("path %x blob mismatch", path)
+		}
+	}
+}
+
+func TestParallelCommitSecondCommitMatchesSequential(t *testing.T) {
+	const groupDepth, n = 5, 2000
+	seq := newWorkloadTrie(t, groupDepth, 0, n)
+	par := newWorkloadTrie(t, groupDepth, 5, n)
+	seq.Commit(false)
+	par.Commit(false)
+	// Identically mutate a handful of existing storage slots in both tries.
+	for i := range 10 {
+		var addr common.Address
+		binary.BigEndian.PutUint64(addr[12:], uint64(i))
+		slot := make([]byte, 32)
+		binary.BigEndian.PutUint64(slot[24:], uint64(100+i))
+		key := GetBinaryTreeKeyStorageSlot(addr, slot)
+		var val [32]byte
+		binary.BigEndian.PutUint64(val[24:], uint64(9999+i))
+		if err := seq.store.Insert(key, val[:], nil); err != nil {
+			t.Fatalf("seq insert: %v", err)
+		}
+		if err := par.store.Insert(key, val[:], nil); err != nil {
+			t.Fatalf("par insert: %v", err)
+		}
+	}
+	rootS, nsS := seq.Commit(false)
+	rootP, nsP := par.Commit(false)
+	if rootS != rootP {
+		t.Fatalf("second-commit root mismatch: seq %x par %x", rootS, rootP)
+	}
+	if len(nsS.Nodes) != len(nsP.Nodes) {
+		t.Fatalf("second-commit node count mismatch: seq %d par %d", len(nsS.Nodes), len(nsP.Nodes))
+	}
+	for path, ns := range nsS.Nodes {
+		np, ok := nsP.Nodes[path]
+		if !ok {
+			t.Fatalf("path %x missing in parallel set", path)
+		}
+		if ns.Hash != np.Hash || !bytes.Equal(ns.Blob, np.Blob) {
+			t.Fatalf("path %x mismatch", path)
+		}
 	}
 }
