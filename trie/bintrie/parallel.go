@@ -16,7 +16,12 @@
 
 package bintrie
 
-import "sync"
+import (
+	"runtime"
+	"sync"
+
+	"github.com/ethereum/go-ethereum/common"
+)
 
 // subtreeUnit is a parallelizable subtree: an internal node at the cut depth
 // together with the bit-path from the root to it (used as the on-disk path
@@ -71,6 +76,29 @@ func parallelFor(n, limit int, fn func(i int)) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// computeHashParallel hashes disjoint subtrees at cutDepth concurrently, then
+// hashes the trunk sequentially. Subtree hashing only writes each node's own
+// cached hash, so disjoint subtrees are race-free on the shared arena. After
+// the parallel phase the subtree roots are cached (mustRecompute=false), so the
+// final sequential computeHash(root) walks only the trunk. cutDepth <= 0 (or a
+// trivial tree) falls back to the plain sequential walk.
+func (s *nodeStore) computeHashParallel(cutDepth int) common.Hash {
+	if cutDepth <= 0 || s.root.Kind() != kindInternal {
+		return s.computeHash(s.root)
+	}
+	var units []subtreeUnit
+	var root BitArray
+	s.collectSubtreeRoots(s.root, root, cutDepth, &units)
+	if len(units) <= 1 {
+		return s.computeHash(s.root)
+	}
+	limit := min(runtime.NumCPU(), len(units))
+	parallelFor(len(units), limit, func(i int) {
+		s.computeHash(units[i].ref)
+	})
+	return s.computeHash(s.root)
 }
 
 // cutDepthFor returns the trie depth at which Hash/Commit fan out into
