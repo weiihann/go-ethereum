@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"runtime"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -111,6 +112,7 @@ type BinaryTrie struct {
 	reader     *trie.Reader
 	tracer     *trie.PrevalueTracer
 	groupDepth int // Number of levels per serialized group (1-8, default 8)
+	cutDepth   int // Depth at which Hash/Commit fan out; multiple of groupDepth, <=0 disables
 }
 
 func (t *BinaryTrie) GroupDepth() int {
@@ -140,6 +142,7 @@ func NewBinaryTrie(root common.Hash, db database.NodeDatabase, groupDepth int) (
 		reader:     reader,
 		tracer:     trie.NewPrevalueTracer(),
 		groupDepth: groupDepth,
+		cutDepth:   cutDepthFor(runtime.NumCPU(), groupDepth),
 	}
 	// Parse the root node if it's not empty
 	if root != types.EmptyBinaryHash && root != types.EmptyRootHash {
@@ -347,6 +350,7 @@ func (t *BinaryTrie) Copy() *BinaryTrie {
 		reader:     t.reader,
 		tracer:     t.tracer.Copy(),
 		groupDepth: t.groupDepth,
+		cutDepth:   t.cutDepth,
 	}
 }
 

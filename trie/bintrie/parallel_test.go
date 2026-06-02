@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 // insertStorage writes one storage slot for the given account index, producing
@@ -77,6 +78,22 @@ func TestParallelForRunsEachOnce(t *testing.T) {
 		if hits[i] != 1 {
 			t.Fatalf("index %d ran %d times", i, hits[i])
 		}
+	}
+}
+
+func TestNewBinaryTrieSetsCutDepth(t *testing.T) {
+	tr, err := NewBinaryTrie(types.EmptyBinaryHash, nil, 5)
+	if err != nil {
+		t.Fatalf("NewBinaryTrie: %v", err)
+	}
+	if tr.cutDepth%tr.groupDepth != 0 {
+		t.Fatalf("cutDepth %d not a multiple of groupDepth %d", tr.cutDepth, tr.groupDepth)
+	}
+	if tr.cutDepth < tr.groupDepth {
+		t.Fatalf("cutDepth %d < groupDepth %d", tr.cutDepth, tr.groupDepth)
+	}
+	if cp := tr.Copy(); cp.cutDepth != tr.cutDepth {
+		t.Fatalf("Copy lost cutDepth: %d != %d", cp.cutDepth, tr.cutDepth)
 	}
 }
 
