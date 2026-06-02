@@ -323,3 +323,20 @@ func BenchmarkHashParallel(b *testing.B) {
 		tr.Hash()
 	}
 }
+
+func TestNonStorageCutDepth(t *testing.T) {
+	// groupDepth 5: smallest multiple of 5 strictly past the 16-bit zone is 20,
+	// and 2^(20-16)=16 fan-out buckets cover small core counts.
+	cases := []struct{ numCPU, groupDepth, want int }{
+		{1, 5, 20},
+		{16, 5, 20}, // 2^(20-16)=16 >= 16
+		{17, 5, 25}, // 16 < 17 -> 25 (2^9=512)
+		{8, 5, 20},
+		{4, 3, 18}, // multiples of 3 past 16: 18; 2^(18-16)=4 >= 4
+	}
+	for _, c := range cases {
+		if got := nonStorageCutDepth(c.numCPU, c.groupDepth); got != c.want {
+			t.Errorf("nonStorageCutDepth(%d,%d)=%d want %d", c.numCPU, c.groupDepth, got, c.want)
+		}
+	}
+}
