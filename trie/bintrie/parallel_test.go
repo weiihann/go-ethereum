@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 // insertStorage writes one storage slot for the given account index, producing
@@ -116,5 +117,38 @@ func TestCutDepthFor(t *testing.T) {
 		if got := cutDepthFor(tt.numCPU, tt.groupDepth); got != tt.want {
 			t.Errorf("cutDepthFor(%d,%d)=%d want %d", tt.numCPU, tt.groupDepth, got, tt.want)
 		}
+	}
+}
+
+// newWorkloadTrie builds an in-memory trie (no disk reader) with the given
+// groupDepth and cutDepth, populated with a deterministic multi-zone workload.
+func newWorkloadTrie(t *testing.T, groupDepth, cutDepth, n int) *BinaryTrie {
+	t.Helper()
+	store := newNodeStore()
+	store.groupDepth = groupDepth
+	tr := &BinaryTrie{store: store, tracer: trie.NewPrevalueTracer(), groupDepth: groupDepth, cutDepth: cutDepth}
+	for i := range n {
+		insertStorage(t, store, i)
+		var addr common.Address
+		binary.BigEndian.PutUint64(addr[12:], uint64(i))
+		akey := GetBinaryTreeKeyBasicData(addr)
+		var val [32]byte
+		binary.BigEndian.PutUint64(val[24:], uint64(i+7))
+		if err := store.Insert(akey, val[:], nil); err != nil {
+			t.Fatalf("insert account %d: %v", i, err)
+		}
+	}
+	return tr
+}
+
+func TestParallelHashMatchesSequential(t *testing.T) {
+	const groupDepth, n = 5, 2000
+	seq := newWorkloadTrie(t, groupDepth, 0, n) // cutDepth 0 -> sequential
+	par := newWorkloadTrie(t, groupDepth, 5, n) // cutDepth 5 -> parallel
+	if seq.Hash() == (common.Hash{}) {
+		t.Fatal("sequential hash is zero: trie was not populated")
+	}
+	if got, want := par.Hash(), seq.Hash(); got != want {
+		t.Fatalf("parallel hash %x != sequential %x", got, want)
 	}
 }
