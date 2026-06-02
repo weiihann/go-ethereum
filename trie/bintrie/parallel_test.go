@@ -19,6 +19,7 @@ package bintrie
 import (
 	"bytes"
 	"encoding/binary"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -88,14 +89,23 @@ func TestNewBinaryTrieSetsCutDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBinaryTrie: %v", err)
 	}
-	if tr.cutDepth%tr.groupDepth != 0 {
-		t.Fatalf("cutDepth %d not a multiple of groupDepth %d", tr.cutDepth, tr.groupDepth)
+	if tr.cutDepthStorage%tr.groupDepth != 0 {
+		t.Fatalf("cutDepthStorage %d not a multiple of groupDepth %d", tr.cutDepthStorage, tr.groupDepth)
 	}
-	if tr.cutDepth < tr.groupDepth {
-		t.Fatalf("cutDepth %d < groupDepth %d", tr.cutDepth, tr.groupDepth)
+	if tr.cutDepthStorage < tr.groupDepth {
+		t.Fatalf("cutDepthStorage %d < groupDepth %d", tr.cutDepthStorage, tr.groupDepth)
 	}
-	if cp := tr.Copy(); cp.cutDepth != tr.cutDepth {
-		t.Fatalf("Copy lost cutDepth: %d != %d", cp.cutDepth, tr.cutDepth)
+	if cp := tr.Copy(); cp.cutDepthStorage != tr.cutDepthStorage {
+		t.Fatalf("Copy lost cutDepthStorage: %d != %d", cp.cutDepthStorage, tr.cutDepthStorage)
+	}
+	if tr.cutDepthNonStorage%tr.groupDepth != 0 {
+		t.Fatalf("cutDepthNonStorage %d not a multiple of groupDepth %d", tr.cutDepthNonStorage, tr.groupDepth)
+	}
+	if tr.cutDepthNonStorage <= tr.cutDepthStorage {
+		t.Fatalf("cutDepthNonStorage %d should be deeper than cutDepthStorage %d", tr.cutDepthNonStorage, tr.cutDepthStorage)
+	}
+	if cp := tr.Copy(); cp.cutDepthNonStorage != tr.cutDepthNonStorage {
+		t.Fatalf("Copy lost cutDepthNonStorage: %d != %d", cp.cutDepthNonStorage, tr.cutDepthNonStorage)
 	}
 }
 
@@ -127,7 +137,10 @@ func newWorkloadTrie(t *testing.T, groupDepth, cutDepth, n int) *BinaryTrie {
 	t.Helper()
 	store := newNodeStore()
 	store.groupDepth = groupDepth
-	tr := &BinaryTrie{store: store, tracer: trie.NewPrevalueTracer(), groupDepth: groupDepth, cutDepth: cutDepth}
+	tr := &BinaryTrie{store: store, tracer: trie.NewPrevalueTracer(), groupDepth: groupDepth, cutDepthStorage: cutDepth}
+	if cutDepth > 0 {
+		tr.cutDepthNonStorage = nonStorageCutDepth(runtime.NumCPU(), groupDepth)
+	}
 	for i := range n {
 		insertStorage(t, store, i)
 		var addr common.Address
@@ -227,7 +240,10 @@ func benchTrie(b *testing.B, cutDepth, n int) *BinaryTrie {
 	b.Helper()
 	store := newNodeStore()
 	store.groupDepth = 5
-	tr := &BinaryTrie{store: store, tracer: trie.NewPrevalueTracer(), groupDepth: 5, cutDepth: cutDepth}
+	tr := &BinaryTrie{store: store, tracer: trie.NewPrevalueTracer(), groupDepth: 5, cutDepthStorage: cutDepth}
+	if cutDepth > 0 {
+		tr.cutDepthNonStorage = nonStorageCutDepth(runtime.NumCPU(), 5)
+	}
 	var val [32]byte
 	for i := range n {
 		var addr common.Address

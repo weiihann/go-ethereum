@@ -111,19 +111,17 @@ func parallelFor(n, limit int, fn func(i int)) {
 	wg.Wait()
 }
 
-// computeHashParallel hashes disjoint subtrees at cutDepth concurrently, then
-// hashes the trunk sequentially. Subtree hashing only writes each node's own
-// cached hash, so disjoint subtrees are race-free on the shared arena. After
-// the parallel phase the subtree roots are cached (mustRecompute=false), so the
-// final sequential computeHash(root) walks only the trunk. cutDepth <= 0 (or a
-// trivial tree) falls back to the plain sequential walk.
-func (s *nodeStore) computeHashParallel(cutDepth int) common.Hash {
-	if cutDepth <= 0 || s.root.Kind() != kindInternal {
+// computeHashParallel hashes disjoint subtrees concurrently using per-zone cut
+// depths, then hashes the trunk sequentially. storageCut is used for the storage
+// zone and nonStorageCut for the account/code zone. Both must be multiples of
+// groupDepth so every subtree root lands on a group boundary. Both cuts <= 0 (or
+// a trivial tree) falls back to the plain sequential walk.
+func (s *nodeStore) computeHashParallel(storageCut, nonStorageCut int) common.Hash {
+	if (storageCut <= 0 && nonStorageCut <= 0) || s.root.Kind() != kindInternal {
 		return s.computeHash(s.root)
 	}
 	var units []subtreeUnit
-	var root BitArray
-	s.collectSubtreeRoots(s.root, root, cutDepth, &units)
+	s.collectZonedSubtreeRoots(storageCut, nonStorageCut, &units)
 	if len(units) <= 1 {
 		return s.computeHash(s.root)
 	}
@@ -197,21 +195,23 @@ func (t *BinaryTrie) flushFn(set *trienode.NodeSet) nodeFlushFn {
 	}
 }
 
-// commitParallel collects disjoint subtrees at cutDepth into per-worker node
-// sets concurrently, merges them (paths are disjoint), then collects the trunk
-// sequentially. collectNodes only writes each node's own dirty flag and a
-// private node set, so disjoint subtrees are race-free on the shared arena.
-func (t *BinaryTrie) commitParallel(cutDepth int) (common.Hash, *trienode.NodeSet) {
+// commitParallel collects disjoint subtrees into per-worker node sets
+// concurrently using per-zone cut depths, merges them (paths are disjoint),
+// then collects the trunk sequentially. storageCut is used for the storage zone
+// and nonStorageCut for the account/code zone. collectNodes only writes each
+// node's own dirty flag and a private node set, so disjoint subtrees are
+// race-free on the shared arena.
+func (t *BinaryTrie) commitParallel(storageCut, nonStorageCut int) (common.Hash, *trienode.NodeSet) {
 	s := t.store
 	nodeset := trienode.NewNodeSet(common.Hash{})
 	var root BitArray
 
-	if cutDepth <= 0 || s.root.Kind() != kindInternal {
+	if (storageCut <= 0 && nonStorageCut <= 0) || s.root.Kind() != kindInternal {
 		s.collectNodes(s.root, root, t.flushFn(nodeset), t.groupDepth)
 		return s.computeHash(s.root), nodeset
 	}
 	var units []subtreeUnit
-	s.collectSubtreeRoots(s.root, root, cutDepth, &units)
+	s.collectZonedSubtreeRoots(storageCut, nonStorageCut, &units)
 	if len(units) <= 1 {
 		s.collectNodes(s.root, root, t.flushFn(nodeset), t.groupDepth)
 		return s.computeHash(s.root), nodeset
