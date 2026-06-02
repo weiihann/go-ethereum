@@ -132,6 +132,35 @@ func cutDepthFor(numCPU, groupDepth int) int {
 	return d
 }
 
+// nonStorageZoneBits is the width of the PBT zone prefix that every account
+// (0x0000) and code (0x0001) stem shares — a 2-byte zone, see buildKeyZone in
+// key_encoding.go. Account/code stems are identical through these bits and only
+// branch among themselves at deeper bits, so a useful cut for the non-storage
+// side must lie past this prefix.
+const nonStorageZoneBits = 16
+
+// nonStorageCutDepth returns the cut depth for the account/code (non-storage)
+// zone: the smallest multiple of groupDepth strictly greater than the zone
+// prefix width, deepened until it provides at least numCPU fan-out buckets
+// (2^(d-zoneBits) >= numCPU). This undoes the Phase-1 imbalance where the whole
+// non-storage zone collapsed into one unit at a shallow cut.
+func nonStorageCutDepth(numCPU, groupDepth int) int {
+	if numCPU < 1 {
+		numCPU = 1
+	}
+	if groupDepth < 1 {
+		groupDepth = 1
+	}
+	d := groupDepth
+	for d <= nonStorageZoneBits {
+		d += groupDepth
+	}
+	for (1<<uint(d-nonStorageZoneBits)) < numCPU && d < 40 {
+		d += groupDepth
+	}
+	return d
+}
+
 // flushFn builds the collectNodes callback that records a node into the given
 // set, capturing the tracer's previous value. The tracer is read-only during
 // commit (no nodeResolver runs), so concurrent Get calls from multiple workers
