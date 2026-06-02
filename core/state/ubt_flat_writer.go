@@ -62,7 +62,6 @@ func writeUBTFlatState(disk ethdb.KeyValueStore, codedb *CodeDB, update *StateUp
 	}
 
 	reader := codedb.Reader()
-	var zero [32]byte
 
 	// Account modifications. AccountsOrigin is keyed by raw address; Accounts
 	// is keyed by addrHash. Walk Origin to enumerate the addresses changed.
@@ -70,8 +69,7 @@ func writeUBTFlatState(disk ethdb.KeyValueStore, codedb *CodeDB, update *StateUp
 		addrHash := crypto.Keccak256Hash(addr[:])
 		acct := update.Accounts[addrHash]
 
-		accountKey := bintrie.GetBinaryTreeKey(addr, zero[:])
-		stem := accountKey[:bintrie.StemSize]
+		stem := bintrie.GetBinaryTreeStemAccount(addr)
 
 		if acct == nil {
 			// Deletion: write 32 zero bytes to both basic-data and code-hash

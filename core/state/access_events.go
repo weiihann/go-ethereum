@@ -69,17 +69,7 @@ func (ae *AccessEvents) Merge(other *AccessEvents) {
 // Keys returns, predictably, the list of keys that were touched during the
 // buildup of the access witness.
 func (ae *AccessEvents) Keys() [][]byte {
-	// TODO: consider if parallelizing this is worth it, probably depending on len(ae.chunks).
-	keys := make([][]byte, 0, len(ae.chunks))
-	for chunk := range ae.chunks {
-		var offset [32]byte
-		treeIndexBytes := chunk.treeIndex.Bytes32()
-		copy(offset[:31], treeIndexBytes[1:])
-		offset[31] = chunk.leafKey
-		key := bintrie.GetBinaryTreeKey(chunk.addr, offset[:])
-		keys = append(keys, key)
-	}
-	return keys
+	panic("TODO(weiihann): removed this temporarily")
 }
 
 func (ae *AccessEvents) Copy() *AccessEvents {

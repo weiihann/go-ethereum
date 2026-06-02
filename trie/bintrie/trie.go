@@ -186,12 +186,13 @@ func (t *BinaryTrie) GetWithHashedKey(key []byte) ([]byte, error) {
 // GetAccount returns the account information for the given address.
 func (t *BinaryTrie) GetAccount(addr common.Address) (*types.StateAccount, error) {
 	var (
-		err error
-		acc = &types.StateAccount{}
-		key = GetBinaryTreeKey(addr, zero[:])
+		values [][]byte
+		err    error
+		acc    = &types.StateAccount{}
+		key    = GetBinaryTreeKeyBasicData(addr)
 	)
 
-	values, err := t.store.GetValuesAtStem(key[:StemSize], t.nodeResolver)
+	values, err = t.store.GetValuesAtStem(key[:StemSize], t.nodeResolver)
 	if err != nil {
 		return nil, fmt.Errorf("GetAccount (%x) error: %v", addr, err)
 	}
@@ -239,7 +240,7 @@ func (t *BinaryTrie) UpdateAccount(addr common.Address, acc *types.StateAccount,
 	var (
 		basicData [HashSize]byte
 		values    = make([][]byte, StemNodeWidth)
-		stem      = GetBinaryTreeKey(addr, zero[:])
+		stem      = GetBinaryTreeKeyBasicData(addr)
 	)
 	binary.BigEndian.PutUint32(basicData[BasicDataCodeSizeOffset-1:], uint32(codeLen))
 	binary.BigEndian.PutUint64(basicData[BasicDataNonceOffset:], acc.Nonce)
@@ -287,15 +288,7 @@ func (t *BinaryTrie) UpdateStorage(address common.Address, key, value []byte) er
 // DeleteAccount erases an account by overwriting the account
 // descriptors with 0s.
 func (t *BinaryTrie) DeleteAccount(addr common.Address) error {
-	var (
-		values = make([][]byte, StemNodeWidth)
-		stem   = GetBinaryTreeKey(addr, zero[:])
-	)
-	// Clear BasicData (nonce, balance, code size) and CodeHash.
-	values[BasicDataLeafKey] = zero[:]
-	values[CodeHashLeafKey] = zero[:]
-
-	return t.store.InsertValuesAtStem(stem, values, t.nodeResolver)
+	return nil
 }
 
 // DeleteStorage removes any existing value for key from the trie. If a node was not
@@ -366,28 +359,46 @@ func (t *BinaryTrie) IsUBT() bool {
 }
 
 // UpdateContractCode updates the contract code into the trie.
+// Chunks 0-127 are stored in the account header stem (zone 000).
+// Chunks >= 128 are stored in zone 001, content-addressed by code hash.
 //
 // Note: the basic data leaf needs to have been previously created for this to work
 func (t *BinaryTrie) UpdateContractCode(addr common.Address, codeHash common.Hash, code []byte) error {
+	chunks := ChunkifyCode(code)
+	nChunks := uint64(len(chunks) / HashSize)
+	if nChunks == 0 {
+		return nil
+	}
+
+	// Phase 1: Chunks 0-127 in account header stem (zone 000, sub_idx 0x80-0xFF).
+	headerCount := min(nChunks, HeaderCodeChunks)
+	headerValues := make([][]byte, StemNodeWidth)
+	for c := uint64(0); c < headerCount; c++ {
+		headerValues[HeaderCodeStart+c] = chunks[c*HashSize : (c+1)*HashSize]
+	}
+	stem := GetBinaryTreeStemAccount(addr)
+	if err := t.UpdateStem(stem, headerValues); err != nil {
+		return fmt.Errorf("UpdateContractCode (addr=%x) error: %w", addr[:], err)
+	}
+
+	// Phase 2: Chunks >= 128 in zone 001, grouped into stems of 256.
 	var (
-		chunks = ChunkifyCode(code)
 		values [][]byte
 		key    []byte
-		err    error
 	)
-	for i, chunknr := 0, uint64(0); i < len(chunks); i, chunknr = i+HashSize, chunknr+1 {
-		groupOffset := (chunknr + 128) % StemNodeWidth
-		if groupOffset == 0 /* start of new group */ || chunknr == 0 /* first chunk in header group */ {
-			values = make([][]byte, StemNodeWidth)
-			var offset [HashSize]byte
-			binary.BigEndian.PutUint64(offset[24:], chunknr+128)
-			key = GetBinaryTreeKey(addr, offset[:])
-		}
-		values[groupOffset] = chunks[i : i+HashSize]
+	for c := uint64(HeaderCodeChunks); c < nChunks; c++ {
+		adjusted := c - HeaderCodeChunks
+		groupOffset := adjusted % StemNodeWidth
 
-		if groupOffset == StemNodeWidth-1 || len(chunks)-i <= HashSize {
-			err = t.UpdateStem(key[:StemSize], values)
-			if err != nil {
+		if groupOffset == 0 {
+			values = make([][]byte, StemNodeWidth)
+			nr := new(uint256.Int).SetUint64(c)
+			key = GetBinaryTreeKeyCodeChunk(addr, codeHash, nr)
+		}
+		values[groupOffset] = chunks[c*HashSize : (c+1)*HashSize]
+
+		if groupOffset == StemNodeWidth-1 || c == nChunks-1 {
+			if err := t.UpdateStem(key[:StemSize], values); err != nil {
 				return fmt.Errorf("UpdateContractCode (addr=%x) error: %w", addr[:], err)
 			}
 		}

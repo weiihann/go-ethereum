@@ -68,8 +68,7 @@ func newUBTFlatReader(disk ethdb.KeyValueReader) *ubtFlatReader {
 // handles the fall-through.
 func (r *ubtFlatReader) Account(addr common.Address) (*types.StateAccount, error) {
 	var zero [32]byte
-	key := bintrie.GetBinaryTreeKey(addr, zero[:])
-	stem := key[:bintrie.StemSize]
+	stem := bintrie.GetBinaryTreeStemAccount(addr)
 
 	blob := rawdb.ReadUBTFlatStem(r.disk, stem)
 	if blob == nil {

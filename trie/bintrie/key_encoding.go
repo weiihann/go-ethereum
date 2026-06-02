@@ -17,12 +17,13 @@
 package bintrie
 
 import (
-	"bytes"
+	"encoding/binary"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 )
 
+// Leaf key indices for account header data in the account zone.
 const (
 	BasicDataLeafKey        = 0
 	CodeHashLeafKey         = 1
@@ -31,115 +32,202 @@ const (
 	BasicDataBalanceOffset  = 16
 )
 
-var (
-	zeroInt                             = uint256.NewInt(0)
-	zeroHash                            = common.Hash{}
-	verkleNodeWidthLog2                 = 8
-	headerStorageOffset                 = uint256.NewInt(64)
-	codeOffset                          = uint256.NewInt(128)
-	codeStorageDelta                    = uint256.NewInt(0).Sub(codeOffset, headerStorageOffset)
-	mainStorageOffsetLshVerkleNodeWidth = new(uint256.Int).Lsh(uint256.NewInt(1), 248-uint(verkleNodeWidthLog2))
-	CodeOffset                          = uint256.NewInt(128)
-	VerkleNodeWidth                     = uint256.NewInt(256)
-	HeaderStorageOffset                 = uint256.NewInt(64)
-	VerkleNodeWidthLog2                 = 8
+// PBT zone identifiers. The high 16 bits of every non-storage stem hold the
+// zone. The storage zone is any key with the high bit set and is handled
+// separately by buildKeyStorageZone.
+const (
+	ZoneAccount uint16 = 0x0000 // account headers
+	ZoneCode    uint16 = 0x0001 // content-addressed code overflow
 )
 
-func GetBinaryTreeKey(addr common.Address, key []byte) []byte {
-	return getBinaryTreeKey(addr, key, false)
-}
+// Bit widths for the storage-zone key segments. All zones produce 256-bit keys.
+const (
+	addrPrefixBits = 60  // H(addr) prefix bits in the storage zone
+	stemSuffixBits = 187 // H(addr||tree_index) suffix bits in the storage zone
+	subIndexBits   = 8   // sub-index width in all zones
+)
 
-func getBinaryTreeKey(addr common.Address, offset []byte, overflow bool) []byte {
+// Sub-index offsets for account header stem (zone 000, EIP-7864 layout).
+const (
+	HeaderStorageStart = 0x40 // sub_idx for storage slot 0
+	HeaderCodeStart    = 0x80 // sub_idx for code chunk 0
+	HeaderCodeChunks   = 128  // chunks 0-127 in account header
+	HeaderStorageSlots = 64   // slots 0-63 in account header
+)
+
+var (
+	zeroTreeIndex        uint256.Int
+	headerStorageMaxSlot = uint256.NewInt(HeaderStorageSlots)
+	headerCodeChunkCount = uint256.NewInt(HeaderCodeChunks)
+)
+
+// hashAddr returns SHA256(addr). Plain 20-byte input per PBT spec.
+func hashAddr(addr common.Address) [32]byte {
 	hasher := newSha256()
 	defer returnSha256(hasher)
-	hasher.Write(zeroHash[:12])
 	hasher.Write(addr[:])
-	var buf [32]byte // TODO: make offset a 33-byte value to avoid an extra stack alloc
-	copy(buf[1:32], offset[:31])
-	if overflow {
-		// Overflow detected when adding MAIN_STORAGE_OFFSET,
-		// reporting it in the shifter 32 byte value.
-		buf[0] = 1
-	}
+	var out [32]byte
+	copy(out[:], hasher.Sum(nil))
+	return out
+}
+
+// hashConcat returns SHA256(a || b) where b is a uint256 encoded as
+// 32-byte big-endian. Used for H(addr || tree_index) and
+// H(code_hash || tree_index).
+func hashConcat(a []byte, b *uint256.Int) [32]byte {
+	hasher := newSha256()
+	defer returnSha256(hasher)
+	hasher.Write(a)
+	buf := b.Bytes32()
 	hasher.Write(buf[:])
-	k := hasher.Sum(nil)
-	k[31] = offset[31]
-	return k
+	var out [32]byte
+	copy(out[:], hasher.Sum(nil))
+	return out
 }
 
+// buildKeyZone constructs a 256-bit key for a non-storage zone (account or
+// code). The 16-bit zone makes the layout byte-aligned:
+//
+//	[2-byte zone | 29-byte hash (top 232 bits) | 1-byte sub_idx] = 32 bytes
+func buildKeyZone(zone uint16, hash [32]byte, subIdx byte) [32]byte {
+	var key [32]byte
+	binary.BigEndian.PutUint16(key[0:2], zone)
+	copy(key[2:StemSize], hash[:StemSize-2]) // top 232 bits = first 29 bytes
+	key[StemSize] = subIdx
+	return key
+}
+
+// buildKeyStorageZone constructs a 256-bit key for zone 1 (storage).
+//
+// Layout (bit 255 = MSB, bit 0 = LSB):
+//
+//	[1 zone bit | 60 addr_prefix bits | 187 stem_suffix bits | 8 sub_idx bits] = 256 bits
+func buildKeyStorageZone(addrHash, stemHash [32]byte, subIdx byte) [32]byte {
+	var result uint256.Int
+
+	// Zone bit "1" at bit 255.
+	result.SetUint64(1)
+	result.Lsh(&result, 255)
+
+	// Top 60 bits of H(addr) at [254..195].
+	var addrBits uint256.Int
+	addrBits.SetBytes(addrHash[:])
+	addrBits.Rsh(&addrBits, 256-addrPrefixBits)          // 196: keep top 60 bits
+	addrBits.Lsh(&addrBits, stemSuffixBits+subIndexBits) // 195: place at [254..195]
+	result.Or(&result, &addrBits)
+
+	// Top 187 bits of H(addr || tree_index) at [194..8].
+	var stemBits uint256.Int
+	stemBits.SetBytes(stemHash[:])
+	stemBits.Rsh(&stemBits, 256-stemSuffixBits) // 69: keep top 187 bits
+	stemBits.Lsh(&stemBits, subIndexBits)       // 8: place at [194..8]
+	result.Or(&result, &stemBits)
+
+	// Sub_idx at [7..0].
+	var sub uint256.Int
+	sub.SetUint64(uint64(subIdx))
+	result.Or(&result, &sub)
+
+	return result.Bytes32()
+}
+
+// GetBinaryTreeKeyBasicData returns the 256-bit key for an account's
+// basic data leaf (nonce, balance, code_size) in the account zone.
 func GetBinaryTreeKeyBasicData(addr common.Address) []byte {
-	var k [32]byte
-	k[31] = BasicDataLeafKey
-	return GetBinaryTreeKey(addr, k[:])
+	key := buildKeyZone(ZoneAccount, hashAddr(addr), BasicDataLeafKey)
+	return key[:]
 }
 
+// GetBinaryTreeKeyCodeHash returns the 256-bit key for an account's
+// code hash leaf in the account zone.
 func GetBinaryTreeKeyCodeHash(addr common.Address) []byte {
-	var k [32]byte
-	k[31] = CodeHashLeafKey
-	return GetBinaryTreeKey(addr, k[:])
+	key := buildKeyZone(ZoneAccount, hashAddr(addr), CodeHashLeafKey)
+	return key[:]
 }
 
-func GetBinaryTreeKeyStorageSlot(address common.Address, slotnum []byte) []byte {
-	var offset [32]byte
+// GetBinaryTreeStemAccount returns the 31-byte stem for an account's
+// header in the account zone. All leaves in the account header (basic data,
+// code hash, hot storage, initial code) share this stem prefix.
+func GetBinaryTreeStemAccount(addr common.Address) []byte {
+	key := GetBinaryTreeKeyBasicData(addr)
+	return key[:StemSize]
+}
 
-	// Case when the key belongs to the account header
-	if bytes.Equal(slotnum[:31], zeroHash[:31]) && slotnum[31] < 64 {
-		offset[31] = 64 + slotnum[31]
-		return GetBinaryTreeKey(address, offset[:])
+// GetBinaryTreeKeyStorageSlot returns the 256-bit key for a storage slot.
+// Slots 0-63 are in the account header (account zone, sub_idx 0x40-0x7F).
+// Slots >= 64 are in the storage zone with a 60-bit address prefix and 187-bit
+// stem suffix.
+func GetBinaryTreeKeyStorageSlot(addr common.Address, slotKey []byte) []byte {
+	var slot uint256.Int
+	slot.SetBytes(slotKey)
+
+	// Slots 0-63: account zone header.
+	if slot.Cmp(headerStorageMaxSlot) < 0 {
+		subIdx := byte(HeaderStorageStart + slot[0])
+		key := buildKeyZone(ZoneAccount, hashAddr(addr), subIdx)
+		return key[:]
 	}
 
-	// Set the main storage offset offset = MAIN_STORAGE_OFFSET + slotnum
-	//   * Note that MAIN_STORAGE_OFFSET is 1 << 248, so the number
-	//     can overflow into a 33rd byte, but since the value is
-	//     shifted by one byte in getBinaryTreeKey, this only takes
-	//     note of the overflow, and the value will be added after
-	//     the shift, in order to avoid allocating an extra byte.
-	//   * Note that the first 64 bytes of the main offset storage
-	//     are unreachable, which is consistent with the spec.
-	//   * Note that `slotnum` is big-endian
-	overflow := slotnum[0] == 255
-	copy(offset[:], slotnum)
-	offset[0] += 1 // 1 << 248, handle overflow out of band
+	// Slots >= 64: storage zone.
+	addrHash := hashAddr(addr)
 
-	return getBinaryTreeKey(address, offset[:], overflow)
+	// tree_index = slot / 256, sub_idx = slot % 256
+	var treeIndex uint256.Int
+	treeIndex.Rsh(&slot, subIndexBits)
+	subIdx := byte(slot[0] & 0xFF)
+
+	stemHash := hashConcat(addr[:], &treeIndex)
+	key := buildKeyStorageZone(addrHash, stemHash, subIdx)
+	return key[:]
 }
 
-func GetBinaryTreeKeyCodeChunk(address common.Address, chunknr *uint256.Int) []byte {
-	chunkOffset := new(uint256.Int).Add(codeOffset, chunknr).Bytes()
-	return GetBinaryTreeKey(address, chunkOffset)
+// GetBinaryTreeKeyCodeChunk returns the 256-bit key for a code chunk.
+// Chunks 0-127 are in the account header (account zone, sub_idx 0x80-0xFF).
+// Chunks >= 128 are content-addressed in the code zone using the code hash.
+func GetBinaryTreeKeyCodeChunk(
+	addr common.Address,
+	codeHash common.Hash,
+	chunknr *uint256.Int,
+) []byte {
+	// Chunks 0-127: account zone header.
+	if chunknr.Cmp(headerCodeChunkCount) < 0 {
+		subIdx := byte(HeaderCodeStart + chunknr[0])
+		key := buildKeyZone(ZoneAccount, hashAddr(addr), subIdx)
+		return key[:]
+	}
+
+	// Chunks >= 128: code zone, content-addressed by code_hash.
+	var adjusted uint256.Int
+	adjusted.Sub(chunknr, headerCodeChunkCount)
+
+	// tree_index = (chunk_id - 128) / 256
+	var treeIndex uint256.Int
+	treeIndex.Rsh(&adjusted, subIndexBits)
+
+	// sub_idx = (chunk_id - 128) % 256
+	subIdx := byte(adjusted[0] & 0xFF)
+
+	h := hashConcat(codeHash[:], &treeIndex)
+	key := buildKeyZone(ZoneCode, h, subIdx)
+	return key[:]
 }
 
+// StorageIndex returns the tree index and sub-index for a storage key,
+// used by the gas accounting system to track accessed branches and chunks.
+// Slots 0-63 return treeIndex=0 with sub_idx in the header range.
+// Slots >= 64 return treeIndex = slot/256, sub_idx = slot%256.
 func StorageIndex(storageKey []byte) (*uint256.Int, byte) {
-	// If the storage slot is in the header, we need to add the header offset.
-	var key uint256.Int
-	key.SetBytes(storageKey)
-	if key.Cmp(codeStorageDelta) < 0 {
-		// This addition is always safe; it can't ever overflow since pos<codeStorageDelta.
-		key.Add(headerStorageOffset, &key)
+	var slot uint256.Int
+	slot.SetBytes(storageKey)
 
-		// In this branch, the tree-index is zero since we're in the account header,
-		// and the sub-index is the LSB of the modified storage key.
-		return zeroInt, byte(key[0] & 0xFF)
+	// Slots 0-63: account header, treeIndex = 0.
+	if slot.Cmp(headerStorageMaxSlot) < 0 {
+		return &zeroTreeIndex, byte(HeaderStorageStart + slot[0])
 	}
-	// If the storage slot is in the main storage, we need to add the main storage offset.
 
-	// The first MAIN_STORAGE_OFFSET group will see its
-	// first 64 slots unreachable. This is either a typo in the
-	// spec or intended to conserve the 256-u256
-	// alignment. If we decide to ever access these 64
-	// slots, uncomment this.
-	// // Get the new offset since we now know that we are above 64.
-	// pos.Sub(&pos, codeStorageDelta)
-	// suffix := byte(pos[0] & 0xFF)
-	suffix := storageKey[len(storageKey)-1]
-
-	// We first divide by VerkleNodeWidth to create room to avoid an overflow next.
-	key.Rsh(&key, uint(verkleNodeWidthLog2))
-
-	// We add mainStorageOffset/VerkleNodeWidth which can't overflow.
-	key.Add(&key, mainStorageOffsetLshVerkleNodeWidth)
-
-	// The sub-index is the LSB of the original storage key, since mainStorageOffset
-	// doesn't affect this byte, so we can avoid masks or shifts.
-	return &key, suffix
+	// Slots >= 64: zone 1 storage.
+	subIdx := byte(slot[0] & 0xFF)
+	var treeIndex uint256.Int
+	treeIndex.Rsh(&slot, subIndexBits)
+	return &treeIndex, subIdx
 }
