@@ -139,9 +139,7 @@ func TestUBTFlatReaderHit(t *testing.T) {
 	ch := make([]byte, 32)
 	copy(ch, codeHash[:])
 
-	var zero [32]byte
-	accountKey := bintrie.GetBinaryTreeKey(addr, zero[:])
-	stem := accountKey[:bintrie.StemSize]
+	stem := bintrie.GetBinaryTreeStemAccount(addr)
 	blob := serializeStemBlob(map[byte][]byte{
 		bintrie.BasicDataLeafKey: basicData[:],
 		bintrie.CodeHashLeafKey:  ch,
@@ -184,9 +182,7 @@ func TestUBTFlatReaderMiss(t *testing.T) {
 
 	// 2. Stem blob exists but the basic-data bitmap bit is unset (only an
 	//    unrelated suffix is populated).
-	var zero [32]byte
-	accountKey := bintrie.GetBinaryTreeKey(addr, zero[:])
-	stem := accountKey[:bintrie.StemSize]
+	stem := bintrie.GetBinaryTreeStemAccount(addr)
 	blob := serializeStemBlob(map[byte][]byte{
 		42: bytesPattern(0xDE),
 	})
