@@ -34,6 +34,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/trie/archive"
 	"github.com/ethereum/go-ethereum/triedb/inactive"
 	"github.com/urfave/cli/v2"
 )
@@ -186,6 +187,20 @@ walk reads a consistent on-disk view.`,
 		Name:  "inactive-file",
 		Usage: "Path to the inactive trie file (default: <chaindata>/inactive.bin)",
 	}
+	eip8188ConvertFormatFlag = &cli.StringFlag{
+		Name:  "format",
+		Usage: "Move-out format: 'inactive' (EIP-8188 frozen-trie blob) or 'archive' (archive-expiry leaves-only records)",
+		Value: "inactive",
+	}
+	eip8188SubtreeHeightFlag = &cli.UintFlag{
+		Name:  "subtree-height",
+		Usage: "Subtree granularity: 0 = maximal inactive subtree; N = only fully-inactive subtrees of height exactly N (gballet-style height-N grouping)",
+		Value: 0,
+	}
+	eip8188ArchiveFileFlag = &cli.StringFlag{
+		Name:  "archive-file",
+		Usage: "Path to the archive-expiry node archive file (default: <datadir>/geth/nodearchive)",
+	}
 	eip8188ConvertBatchSizeFlag = &cli.IntFlag{
 		Name:  "convert-batch-size",
 		Usage: "Chaindb pebble batch size (bytes) for stub writes and original-node deletes",
@@ -228,6 +243,9 @@ post-modification chaindb produces hybrids along the modified path.`,
 			eip8188CurrentPeriodFlag,
 			eip8188ScopeFlag,
 			eip8188InactiveFileFlag,
+			eip8188ConvertFormatFlag,
+			eip8188ArchiveFileFlag,
+			eip8188SubtreeHeightFlag,
 			eip8188ConvertBatchSizeFlag,
 			eip8188ConvertDryRunFlag,
 			eip8188SkipCleanSlateFlag,
@@ -468,20 +486,51 @@ func dbConvertInactive(ctx *cli.Context) error {
 	}
 	dryRun := ctx.Bool(eip8188ConvertDryRunFlag.Name)
 
-	// Resolve inactive file path. Default to <chaindata>/inactive.bin.
-	inactivePath := ctx.String(eip8188InactiveFileFlag.Name)
-	if inactivePath == "" {
-		inactivePath = filepath.Join(stack.ResolvePath("chaindata"), "inactive.bin")
-	}
-
-	var file *inactive.File
-	if !dryRun {
-		f, err := inactive.Open(inactivePath, true) // create=true; appends if exists
-		if err != nil {
-			return fmt.Errorf("open inactive file %q: %w", inactivePath, err)
+	// Resolve move-out format + open the active writer.
+	format := ctx.String(eip8188ConvertFormatFlag.Name)
+	var (
+		inactiveFile  *inactive.File
+		archiveWriter *archive.ArchiveWriter
+		moveOutPath   string
+	)
+	switch format {
+	case "archive":
+		moveOutPath = ctx.String(eip8188ArchiveFileFlag.Name)
+		if moveOutPath == "" {
+			moveOutPath = filepath.Join(stack.ResolvePath(""), "nodearchive")
 		}
-		file = f
-		defer f.Close()
+		// The resolver reads <ArchiveDataDir>/geth/nodearchive; point it at the
+		// datadir so a later read-back resolves this file.
+		archive.ArchiveDataDir = filepath.Dir(stack.ResolvePath(""))
+		if !dryRun {
+			// Start from a clean archive file: a fresh post-inject snapshot has
+			// none, and appending to a stale file would orphan/duplicate bytes.
+			if err := os.Remove(moveOutPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove stale archive file %q: %w", moveOutPath, err)
+			}
+			w, err := archive.NewArchiveWriter(moveOutPath)
+			if err != nil {
+				return fmt.Errorf("open archive file %q: %w", moveOutPath, err)
+			}
+			archiveWriter = w
+			defer w.Close()
+		}
+	case "", "inactive":
+		format = "inactive"
+		moveOutPath = ctx.String(eip8188InactiveFileFlag.Name)
+		if moveOutPath == "" {
+			moveOutPath = filepath.Join(stack.ResolvePath("chaindata"), "inactive.bin")
+		}
+		if !dryRun {
+			f, err := inactive.Open(moveOutPath, true) // create=true; appends if exists
+			if err != nil {
+				return fmt.Errorf("open inactive file %q: %w", moveOutPath, err)
+			}
+			inactiveFile = f
+			defer f.Close()
+		}
+	default:
+		return fmt.Errorf("unknown --format %q (want 'inactive' or 'archive')", format)
 	}
 
 	log.Info("EIP-8188 convert-inactive starting",
@@ -490,7 +539,9 @@ func dbConvertInactive(ctx *cli.Context) error {
 		"current-period", currentPeriod,
 		"inactive-min-age", threshold,
 		"scope", scope,
-		"inactive-file", inactivePath,
+		"format", format,
+		"subtree-height", ctx.Uint(eip8188SubtreeHeightFlag.Name),
+		"move-out-file", moveOutPath,
 		"dry-run", dryRun,
 	)
 
@@ -499,9 +550,12 @@ func dbConvertInactive(ctx *cli.Context) error {
 			CurrentPeriod:  currentPeriod,
 			InactiveMinAge: threshold,
 			Scope:          scope,
+			SubtreeHeight:  uint8(ctx.Uint(eip8188SubtreeHeightFlag.Name)),
 		},
 		StateRoot:      stateRoot,
-		InactiveFile:   file,
+		Format:         format,
+		InactiveFile:   inactiveFile,
+		ArchiveWriter:  archiveWriter,
 		BatchSize:      ctx.Int(eip8188ConvertBatchSizeFlag.Name),
 		DryRun:         dryRun,
 		SkipCleanSlate: ctx.Bool(eip8188SkipCleanSlateFlag.Name),

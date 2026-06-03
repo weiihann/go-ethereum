@@ -44,6 +44,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/archive"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/database"
 	"github.com/ethereum/go-ethereum/triedb/inactive"
@@ -62,9 +63,18 @@ type ConvertConfig struct {
 	// the chaindb head's state root (caller derives via rawdb.ReadHeadBlock).
 	StateRoot common.Hash
 
+	// Format selects the move-out encoding: "" / "inactive" uses the EIP-8188
+	// frozen-trie blob (InactiveFile); "archive" uses the archive-expiry
+	// leaves-only record format (ArchiveWriter).
+	Format string
+
 	// InactiveFile is the file that receives the appended frozen-trie blobs.
-	// Must be opened by the caller; closed by the caller after Convert returns.
+	// Required for the "inactive" format; opened/closed by the caller.
 	InactiveFile *inactive.File
+
+	// ArchiveWriter receives the appended archive-expiry record blocks.
+	// Required for the "archive" format; opened/closed by the caller.
+	ArchiveWriter *archive.ArchiveWriter
 
 	// BatchSize bounds the chaindb pebble batch size in bytes. Zero falls
 	// back to DefaultConvertBatchSize.
@@ -110,11 +120,37 @@ type ConvertStats struct {
 // safe because each subtree's stub+deletes are committed atomically.
 func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, cfg ConvertConfig) (ConvertStats, error) {
 	var stats ConvertStats
-	if cfg.InactiveFile == nil && !cfg.DryRun {
-		return stats, fmt.Errorf("eip8188 convert: InactiveFile is required (unless DryRun)")
+	if !cfg.DryRun {
+		switch cfg.Format {
+		case "archive":
+			if cfg.ArchiveWriter == nil {
+				return stats, fmt.Errorf("eip8188 convert: ArchiveWriter is required for archive format (unless DryRun)")
+			}
+		default:
+			if cfg.InactiveFile == nil {
+				return stats, fmt.Errorf("eip8188 convert: InactiveFile is required (unless DryRun)")
+			}
+		}
 	}
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = DefaultConvertBatchSize
+	}
+
+	// syncArchive fsyncs whichever move-out file is active. The crash-safety
+	// ordering (sync archive before writing the chaindb batch of stubs) is the
+	// same for both formats.
+	syncArchive := func() error {
+		switch cfg.Format {
+		case "archive":
+			if cfg.ArchiveWriter != nil {
+				return cfg.ArchiveWriter.Sync()
+			}
+		default:
+			if cfg.InactiveFile != nil {
+				return cfg.InactiveFile.Sync()
+			}
+		}
+		return nil
 	}
 
 	// Clean-slate prep: a fresh conversion starts with an empty inactive
@@ -149,10 +185,8 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 		if cfg.DryRun {
 			return
 		}
-		if cfg.InactiveFile != nil {
-			if err := cfg.InactiveFile.Sync(); err != nil {
-				log.Crit("eip8188 convert: inactive file sync failed", "err", err)
-			}
+		if err := syncArchive(); err != nil {
+			log.Crit("eip8188 convert: archive file sync failed", "err", err)
 		}
 		if err := batch.Write(); err != nil {
 			log.Crit("eip8188 convert: batch flush failed", "err", err)
@@ -175,7 +209,7 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 			return
 		default:
 		}
-		if err := convertOne(reader, cfg.InactiveFile, batch, s, &stats, cfg.DryRun); err != nil {
+		if err := convertOne(reader, cfg.InactiveFile, cfg.ArchiveWriter, batch, s, &stats, cfg.Format, cfg.DryRun); err != nil {
 			log.Warn("eip8188 convert: subtree failed",
 				"trie", s.Trie, "owner", s.Owner, "path", s.Path, "err", err)
 			stats.ConversionErrors++
@@ -225,10 +259,8 @@ func Convert(ctx context.Context, chainDB ethdb.Database, tdb *triedb.Database, 
 
 	// Final batch flush — same ordering as periodic flushes.
 	if !cfg.DryRun {
-		if cfg.InactiveFile != nil {
-			if err := cfg.InactiveFile.Sync(); err != nil {
-				return stats, fmt.Errorf("eip8188 convert: final inactive file sync: %w", err)
-			}
+		if err := syncArchive(); err != nil {
+			return stats, fmt.Errorf("eip8188 convert: final archive file sync: %w", err)
 		}
 		if err := batch.Write(); err != nil {
 			return stats, fmt.Errorf("eip8188 convert: final batch write: %w", err)
@@ -327,8 +359,11 @@ func sweepStubs(ctx context.Context, chainDB ethdb.Database, prefix []byte) (uin
 	return removed, nil
 }
 
-// convertOne handles a single emitted subtree.
-func convertOne(reader database.NodeReader, file *inactive.File, batch ethdb.Batch, s InactiveSubtree, stats *ConvertStats, dryRun bool) error {
+// convertOne handles a single emitted subtree. It materialises the subtree,
+// encodes it in the configured format (frozen-trie blob or archive-expiry
+// records), appends it to the active move-out file, and stages the chaindb
+// stub + interior-node deletes into the batch.
+func convertOne(reader database.NodeReader, file *inactive.File, writer *archive.ArchiveWriter, batch ethdb.Batch, s InactiveSubtree, stats *ConvertStats, format string, dryRun bool) error {
 	rootPath := common.Hex2Bytes(s.Path)
 
 	// 1. Materialise the subtree from the live chaindb.
@@ -337,53 +372,71 @@ func convertOne(reader database.NodeReader, file *inactive.File, batch ethdb.Bat
 		return fmt.Errorf("materialise: %w", err)
 	}
 
-	// 2. Encode as a frozen-trie blob.
-	blob, rootHashFromBlob, err := trie.EncodeInactiveBlob(root)
-	if err != nil {
-		return fmt.Errorf("encode: %w", err)
-	}
-	// Hash invariance check: the root's standard MPT RLP — derived during
-	// encoding — must hash to the same value the trie iterator gave us when
-	// it identified this subtree. A mismatch here means the v2 encoder is
-	// producing different RLP bytes than the original parent's RLP, which
-	// would silently break consensus on the first write that crosses this
-	// stub. Bail loudly so we catch the bug at convert time, not import time.
-	if rootHashFromBlob != s.Hash {
-		return fmt.Errorf("hash invariance violated: encoded blob root hashes to %x but subtree was identified as %x",
-			rootHashFromBlob, s.Hash)
-	}
-
-	if dryRun {
+	// 2. Encode + append in the configured format, producing the 17-byte stub.
+	// Both formats run a hash-invariance check (the encoded/reconstructed root
+	// must hash to the value the iterator identified) so encoder bugs are
+	// caught at convert time, before any interior node is deleted.
+	var stub []byte
+	switch format {
+	case "archive":
+		recs, rootHash, err := trie.EncodeArchiveRecords(root)
+		if err != nil {
+			return fmt.Errorf("encode records: %w", err)
+		}
+		if rootHash != s.Hash {
+			return fmt.Errorf("hash invariance violated: reconstructed subtree hashes to %x but subtree was identified as %x",
+				rootHash, s.Hash)
+		}
+		if dryRun {
+			n, err := archive.RecordsEncodedSize(recs)
+			if err != nil {
+				return fmt.Errorf("size records: %w", err)
+			}
+			stats.BytesAppended += n
+			stats.NodesDeleted += uint64(len(paths)) // approximate
+			return nil
+		}
+		// Append the record block; fsync deferred to the next batch flush.
+		offset, size, err := writer.WriteSubtree(recs)
+		if err != nil {
+			return fmt.Errorf("write subtree: %w", err)
+		}
+		stats.BytesAppended += size
+		stub = trie.EncodeExpiredNodeBlob(offset, size)
+	default:
+		blob, rootHashFromBlob, err := trie.EncodeInactiveBlob(root)
+		if err != nil {
+			return fmt.Errorf("encode: %w", err)
+		}
+		if rootHashFromBlob != s.Hash {
+			return fmt.Errorf("hash invariance violated: encoded blob root hashes to %x but subtree was identified as %x",
+				rootHashFromBlob, s.Hash)
+		}
+		if dryRun {
+			stats.BytesAppended += uint64(len(blob))
+			stats.NodesDeleted += uint64(len(paths)) // approximate
+			return nil
+		}
+		// Append the blob; fsync deferred to the next batch flush. The stub
+		// records the blob offset plus the (offset, size) of the blob's root
+		// node so decodeStub needs no extra header read at runtime.
+		offset, err := file.AppendNoSync(blob)
+		if err != nil {
+			return fmt.Errorf("append: %w", err)
+		}
 		stats.BytesAppended += uint64(len(blob))
-		stats.NodesDeleted += uint64(len(paths)) // approximate
-		return nil
+		hdr, err := inactive.ParseHeader(blob)
+		if err != nil {
+			return fmt.Errorf("parse header of just-encoded blob: %w", err)
+		}
+		stub = trie.EncodeStub(offset, hdr.RootOffset, hdr.RootSize)
 	}
 
-	// 3. Append the blob to the inactive file. The fsync is deferred until
-	// the next pebble batch flush in Convert(); see flushBatch for the
-	// crash-safety invariant. The stub we stage below in this same batch
-	// will only be committed AFTER the corresponding Sync().
-	offset, err := file.AppendNoSync(blob)
-	if err != nil {
-		return fmt.Errorf("append: %w", err)
-	}
-	stats.BytesAppended += uint64(len(blob))
-
-	// 4. Stage stub + deletes. The stub records the blob's file offset plus
-	// the (offset, size) of the blob's root node — pre-resolved here so the
-	// trie's decodeStub can produce a normalised *expiredNode without an
-	// extra header read at runtime.
-	hdr, err := inactive.ParseHeader(blob)
-	if err != nil {
-		return fmt.Errorf("parse header of just-encoded blob: %w", err)
-	}
-	stub := trie.EncodeStub(offset, hdr.RootOffset, hdr.RootSize)
-
+	// 3. Stage stub at the subtree root + delete every interior node key
+	// (skip the root — we just wrote the stub there).
 	switch s.Trie {
 	case "account":
-		// Stub at the subtree root path.
 		rawdb.WriteAccountTrieNode(batch, rootPath, stub)
-		// Delete every interior node key (skip root — we just wrote there).
 		for _, p := range paths {
 			path := []byte(p)
 			if bytes.Equal(path, rootPath) {
