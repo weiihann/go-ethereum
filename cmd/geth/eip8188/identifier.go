@@ -108,6 +108,14 @@ type IdentifyConfig struct {
 
 	// Scope selects which tries to walk.
 	Scope Scope
+
+	// SubtreeHeight selects the granularity of emitted subtrees.
+	//   0 → maximal inactive subtrees (largest fully-inactive subtree; default).
+	//   N → emit only subtrees of height exactly N (from leaves: a leaf node is
+	//       height 1) whose leaves are all inactive. Mirrors gballet's height-N
+	//       archival, gated by inactivity. Taller fully-cold regions are tiled
+	//       into height-N pieces; cold regions shorter than N are left in place.
+	SubtreeHeight uint8
 }
 
 // IdentifyStats summarises an identification run.
@@ -118,6 +126,7 @@ type IdentifyStats struct {
 	InactiveAccountTrees uint64 `json:"inactive_account_subtrees"`
 	InactiveStorageTrees uint64 `json:"inactive_storage_subtrees"`
 	SnapshotMismatches   uint64 `json:"snapshot_mismatches"`
+	MaxSubtreeLeaves     uint64 `json:"max_subtree_leaves"` // largest emitted subtree (sanity: height-3 ⇒ ≤256)
 }
 
 // EmitFunc receives each inactive subtree root as it's identified. Callers
@@ -180,11 +189,12 @@ func (id *identifier) isInactive(leafPeriod uint32) bool {
 
 // nodeFrame is one entry in the bottom-up aggregation stack.
 type nodeFrame struct {
-	path        []byte // Hex-nibble path to this node from the trie root.
-	hash        common.Hash
-	allInactive bool
-	leafCount   uint64
-	candidates  []InactiveSubtree // deferred inactive children waiting for parent decision
+	path           []byte // Hex-nibble path to this node from the trie root.
+	hash           common.Hash
+	allInactive    bool
+	leafCount      uint64
+	maxChildHeight uint8             // tallest child seen so far; node height = maxChildHeight+1
+	candidates     []InactiveSubtree // deferred inactive children waiting for parent decision (maximal mode)
 }
 
 // leafLookup returns (period, ok) for a leaf identified by leafKey. It also
@@ -361,6 +371,7 @@ func (id *identifier) runCoreLoop(trieIt trie.NodeIterator, lookup leafLookup, t
 				"storage-slots", id.stats.StorageSlotsScanned,
 				"inactive-account-trees", id.stats.InactiveAccountTrees,
 				"inactive-storage-trees", id.stats.InactiveStorageTrees,
+				"max-subtree-leaves", id.stats.MaxSubtreeLeaves,
 				"snapshot-mismatches", id.stats.SnapshotMismatches,
 				"leaves-per-sec", uint64(rate),
 				"elapsed", common.PrettyDuration(elapsed),
@@ -385,8 +396,9 @@ func (id *identifier) runCoreLoop(trieIt trie.NodeIterator, lookup leafLookup, t
 					"trie", trieLabel, "owner", owner,
 					"key", common.Bytes2Hex(leafKey))
 				if len(stack) > 0 {
-					stack[len(stack)-1].allInactive = false
-					stack[len(stack)-1].leafCount++
+					f := stack[len(stack)-1]
+					f.allInactive = false
+					f.leafCount++
 				}
 				continue
 			}
@@ -429,6 +441,34 @@ func (id *identifier) runCoreLoop(trieIt trie.NodeIterator, lookup leafLookup, t
 // finalize processes a popped frame: either propagate its status to the
 // parent, or emit candidates if the parent is mixed.
 func (id *identifier) finalize(popped *nodeFrame, stack []*nodeFrame, trieLabel string, owner common.Hash, emitOutput bool) {
+	// Height-N gated mode: emit a subtree iff it is exactly the target height
+	// (from leaves) AND all its leaves are inactive. No maximal roll-up — taller
+	// fully-cold regions are tiled into height-N pieces (their height-N
+	// descendants were already emitted), and regions shorter than N are skipped.
+	if id.cfg.SubtreeHeight != 0 {
+		poppedHeight := popped.maxChildHeight + 1
+		if emitOutput && poppedHeight == id.cfg.SubtreeHeight && popped.allInactive && popped.hash != (common.Hash{}) {
+			id.emitSubtree(InactiveSubtree{
+				Trie:      trieLabel,
+				Owner:     owner,
+				Path:      common.Bytes2Hex(popped.path),
+				Hash:      popped.hash,
+				LeafCount: popped.leafCount,
+			})
+		}
+		if len(stack) > 0 {
+			parent := stack[len(stack)-1]
+			parent.leafCount += popped.leafCount
+			if poppedHeight > parent.maxChildHeight {
+				parent.maxChildHeight = poppedHeight
+			}
+			if !popped.allInactive {
+				parent.allInactive = false
+			}
+		}
+		return
+	}
+
 	if len(stack) == 0 {
 		// popped is the trie root.
 		if !emitOutput {
@@ -503,6 +543,9 @@ func (id *identifier) finalize(popped *nodeFrame, stack []*nodeFrame, trieLabel 
 // emitSubtree calls the user emit callback and updates stats.
 func (id *identifier) emitSubtree(s InactiveSubtree) {
 	id.emit(s)
+	if s.LeafCount > id.stats.MaxSubtreeLeaves {
+		id.stats.MaxSubtreeLeaves = s.LeafCount
+	}
 	if s.Trie == "account" {
 		id.stats.InactiveAccountTrees++
 	} else {
