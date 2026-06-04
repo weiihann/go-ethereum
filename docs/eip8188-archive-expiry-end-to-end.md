@@ -133,7 +133,27 @@ the whole point of it.
 
 ---
 
-## Step 3: move inactive subtrees out
+## Step 3: move inactive state out
+
+Now that every leaf carries a last-used period (step 2), we can take the cold parts of
+the state out of the main database and put them in a cheaper side file, leaving the node
+a smaller hot working set. There are two ways to do this, and the gap between them is the
+point of this section.
+
+### The naive approach: move every cold node, as-is
+
+The obvious move is to take every inactive node out, with no grouping, down to individual
+cold pockets of about two leaves, and copy the actual trie nodes into a side file, with
+interior branches and extensions included. A 17-byte stub replaces each moved subtree
+root in the main database, and a read follows the stub into the side file where the
+original nodes are waiting.
+
+This empties most of the cold state out of the hot database, so the main database shrinks
+a lot. The catch is the side file. Copying the full tree structure verbatim makes it
+enormous, larger than the space freed back in the main database, so the total on disk
+goes up rather than down. The numbers are in the comparison at the end of this section.
+
+### The subtree approach: move fully-inactive subtrees, leaves only
 
 **The idea.** Find chunks of the trie whose leaves are all inactive, write their leaf
 data to a side file (`nodearchive`), and replace the whole chunk with a 17-byte
@@ -219,46 +239,37 @@ because the blocks are too small for zstd to find anything, and a shared diction
 trained on sample records, which moved the number by a couple of points and sometimes
 made it worse. You have to compress many subtrees together.
 
----
+### Naive vs subtree
 
-## Comparison with the earlier prototype
+Side by side on the same datadir, with logical (value-byte) figures so the two are
+measured the same way:
 
-Before this, an earlier EIP-8188 prototype took a blunter approach. It moved out every
-inactive node it could find, with no fixed height, down to individual cold pockets of
-about two leaves. And it stored the actual trie nodes, interior branches and extensions
-included, in a side file called `inactive.bin`. There was no leaves-only trick and no
-rebuild on read. A 17-byte stub still replaced each moved subtree root.
-
-Moving everything shrank the hot chaindb much more than the subtree approach does. The
-problem was the side file. Storing the full structure made it enormous, and that is
-where the prototype lost. Both runs are on the same datadir, so the logical (value-byte)
-figures line up:
-
-| | full-structure prototype | leaves-only, height 3 (this report) |
+| | naive (every cold node) | subtree (height 3) |
 |---|---:|---:|
-| granularity | maximal (every inactive node) | fully-inactive height-3 subtrees |
+| granularity | maximal, every inactive node | fully-inactive height-3 subtrees |
 | stubs written | 316.3 M | 77.0 M |
 | nodes moved out | ~1.66 B | 661 M |
 | stored in the side file | full subtree structure | leaves only, interior rebuilt on read |
 | trie value bytes | 148.14 -> 32.68 GB (-115.46) | 148.13 -> 98.86 GB (-49.28) |
-| side file | **162.39 GB** (`inactive.bin`) | **43.09 GB** raw / **22.59 GB** zstd (`nodearchive`) |
+| side file | **162.39 GB** | **43.09 GB** raw / **22.59 GB** zstd |
 | net (trie delta + side file) | **+46.93 GB** | **-6.19 GB** raw / **-26.69 GB** zstd |
 
-The side file is the whole story. Keeping the full structure costs 162 GB, close to
-four times the leaves-only archive and over seven times the compressed one. The
-prototype's chaindb shrank more, because it moved about 2.5x as many nodes, but the side
-file outgrew that saving, so the prototype's total disk went *up* by about 47 GB while
-the leaves-only approach brings it *down*.
+The side file is the whole story. The naive approach keeps the full structure, which
+costs 162 GB, close to four times the leaves-only archive and over seven times the
+compressed one. It moves about 2.5x as many nodes, so its main-database saving is larger,
+but the side file outgrows that saving and total disk goes *up* by about 47 GB. The
+subtree approach drops the interior and rebuilds it on read, so its side file stays small
+and total disk comes *down*.
 
 (One note on the basis: these net figures are logical, trie value bytes plus the side
-file, to match what the prototype reported. On the physical `du` basis used elsewhere in
-this report the leaves-only net is better still, -11.45 GB raw and -31.95 GB compressed,
+file, so the two are measured the same way. On the physical `du` basis used elsewhere in
+this report the subtree net is better still, -11.45 GB raw and -31.95 GB compressed,
 because deleting a node also frees its key and pebble overhead, not just its value
 bytes.)
 
-The lesson that shaped the current design is simple. Do not relocate interior nodes.
-Drop them and rebuild on read. That one change is what turns a net disk increase into a
-net decrease.
+The takeaway that shaped the design is simple. Do not relocate interior nodes. Drop them
+and rebuild on read. That one change is what turns a net disk increase into a net
+decrease.
 
 ---
 
