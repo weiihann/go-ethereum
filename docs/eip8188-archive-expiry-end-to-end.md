@@ -1,6 +1,6 @@
 # Shrinking Ethereum state by moving cold subtrees out: a mainnet experiment
 
-I ran a three-step experiment on a real mainnet node to see how much disk you save
+We ran a three-step experiment on a real mainnet node to see how much disk you save
 by pulling "cold" state out of the hot database. This writes up what each step does
 and what it actually measured. No prior familiarity assumed.
 
@@ -90,7 +90,7 @@ trie never changes.
 **Where the timestamps come from.** An external source (a database of historical
 access "diffs", meaning which address or slot changed at which block) streams
 `(key, block)` pairs. The injector turns each block into a period and stamps the
-matching snapshot record. In this experiment, I used [Xatu](https://github.com/ethpandaops/xatu) as the primary data source.
+matching snapshot record. In this experiment, we used [Xatu](https://github.com/ethpandaops/xatu) as the primary data source.
 
 ```
    access-history source            injector                  snapshot (pebble)
@@ -144,7 +144,7 @@ leaves on the rare read.
 every leaf is inactive. The picture below uses height 3 (leaves three levels under the
 root). Height is configured. A deeper subtree holds more leaves (up to 16^(N-1)), so it
 bounds how much you rebuild on a read, but a deeper subtree is much less likely to be
-*entirely* cold. I swept heights 3, 4 and 5.
+*entirely* cold. We swept heights 3, 4 and 5.
 
 ```
    BEFORE (in chaindb)                  AFTER
@@ -200,7 +200,7 @@ far less out of chaindb, only about 17.5 M and 3.4 M subtrees qualify against 77
 height 3, and their smaller archives do not make up for it. Heights 4 and 5 basically
 land in the same place, hitting the same deep cold regions just packed into fewer,
 bigger subtrees. Deeper is worse. If anything the way to push further is shallower, not
-deeper, which honestly was not what I expected going in.
+deeper, which honestly was not what we expected going in.
 
 Physical footprint at height 3 (compacted pebble SSTs, ancient freezer excluded):
 
@@ -218,6 +218,47 @@ by far. Two things that did not work: compressing each leaf or each subtree on i
 because the blocks are too small for zstd to find anything, and a shared dictionary
 trained on sample records, which moved the number by a couple of points and sometimes
 made it worse. You have to compress many subtrees together.
+
+---
+
+## Comparison with the earlier prototype
+
+Before this, an earlier EIP-8188 prototype took a blunter approach. It moved out every
+inactive node it could find, with no fixed height, down to individual cold pockets of
+about two leaves. And it stored the actual trie nodes, interior branches and extensions
+included, in a side file called `inactive.bin`. There was no leaves-only trick and no
+rebuild on read. A 17-byte stub still replaced each moved subtree root.
+
+Moving everything shrank the hot chaindb much more than the subtree approach does. The
+problem was the side file. Storing the full structure made it enormous, and that is
+where the prototype lost. Both runs are on the same datadir, so the logical (value-byte)
+figures line up:
+
+| | full-structure prototype | leaves-only, height 3 (this report) |
+|---|---:|---:|
+| granularity | maximal (every inactive node) | fully-inactive height-3 subtrees |
+| stubs written | 316.3 M | 77.0 M |
+| nodes moved out | ~1.66 B | 661 M |
+| stored in the side file | full subtree structure | leaves only, interior rebuilt on read |
+| trie value bytes | 148.14 -> 32.68 GB (-115.46) | 148.13 -> 98.86 GB (-49.28) |
+| side file | **162.39 GB** (`inactive.bin`) | **43.09 GB** raw / **22.59 GB** zstd (`nodearchive`) |
+| net (trie delta + side file) | **+46.93 GB** | **-6.19 GB** raw / **-26.69 GB** zstd |
+
+The side file is the whole story. Keeping the full structure costs 162 GB, close to
+four times the leaves-only archive and over seven times the compressed one. The
+prototype's chaindb shrank more, because it moved about 2.5x as many nodes, but the side
+file outgrew that saving, so the prototype's total disk went *up* by about 47 GB while
+the leaves-only approach brings it *down*.
+
+(One note on the basis: these net figures are logical, trie value bytes plus the side
+file, to match what the prototype reported. On the physical `du` basis used elsewhere in
+this report the leaves-only net is better still, -11.45 GB raw and -31.95 GB compressed,
+because deleting a node also frees its key and pebble overhead, not just its value
+bytes.)
+
+The lesson that shaped the current design is simple. Do not relocate interior nodes.
+Drop them and rebuild on read. That one change is what turns a net disk increase into a
+net decrease.
 
 ---
 
@@ -240,7 +281,7 @@ made it worse. You have to compress many subtrees together.
 | chaindb (physical, compacted) | 251.75 GB | 251.75 GB | **197.22 GB** (-54.5) |
 | **net total disk vs baseline** | - | ~+0.3 GB | **-11.45 GB raw / -31.95 GB compressed** |
 
-What I take from this:
+What we take from this:
 
 - Injection is free and it stays out of the way. It only touches the snapshot
   (about +0.3 GB), never the trie, and it is the thing that lets step 3 tell cold from
