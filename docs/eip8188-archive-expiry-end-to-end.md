@@ -1,6 +1,6 @@
-# Shrinking Ethereum state by moving cold subtrees out: a mainnet experiment
+# How much cold state can EIP-8188 actually move out?
 
-We ran a three-step experiment on a real mainnet node to see how much disk you save
+We ran a three-step experiment on a real mainnet go-ethereum node to see how much disk you save
 by pulling "cold" state out of the hot database. This writes up what each step does
 and what it actually measured. No prior familiarity assumed.
 
@@ -10,9 +10,9 @@ The three steps:
 - **Period injection.** Tag every account and slot with when it was last used, so we
   can tell what is cold.
 - **Move inactive subtrees out.** Pull the cold parts out of the main database into a
-  side file, shrinking what the node has to keep hot.
+  flat file, shrinking what the node has to keep hot.
 
-Everything below is measured on one datadir: mainnet at block 19,999,256.
+Everything below is measured on one data directory: mainnet at block 19,999,256.
 
 ---
 
@@ -65,7 +65,7 @@ inactive if it has not been written for at least `minAge` periods (here it's 2, 
 ## Step 1: baseline
 
 The node as-is. Sizes are logical bytes (sum of record contents) unless noted. The
-physical on-disk compacted chaindb is about 251.75 GB.
+physical on-disk compacted PebbleDB is about 251.75 GB.
 
 | component | count | size |
 |---|---:|---:|
@@ -136,27 +136,27 @@ the whole point of it.
 ## Step 3: move inactive state out
 
 Now that every leaf carries a last-used period (step 2), we can take the cold parts of
-the state out of the main database and put them in a cheaper side file, leaving the node
+the state out of the main database and put them in a cheaper flat file, leaving the node
 a smaller hot working set. There are two ways to do this, and the gap between them is the
 point of this section.
 
 ### The naive approach: move every cold node, as-is
 
 The obvious move is to take every inactive node out, with no grouping, down to individual
-cold pockets of about two leaves, and copy the actual trie nodes into a side file, with
+cold pockets of about two leaves, and copy the actual trie nodes into a flat file, with
 interior branches and extensions included. A 17-byte stub replaces each moved subtree
-root in the main database, and a read follows the stub into the side file where the
+root in the main database, and a read follows the stub into the flat file where the
 original nodes are waiting.
 
 This empties most of the cold state out of the hot database, so the main database shrinks
-a lot. The catch is the side file. Copying the full tree structure verbatim makes it
+a lot. The catch is the flat file. Copying the full tree structure verbatim makes it
 enormous, larger than the space freed back in the main database, so the total on disk
 goes up rather than down. The numbers are in the comparison at the end of this section.
 
 ### The subtree approach: move fully-inactive subtrees, leaves only
 
 **The idea.** Find chunks of the trie whose leaves are all inactive, write their leaf
-data to a side file (`nodearchive`), and replace the whole chunk with a 17-byte
+data to a flat file (`nodearchive`), and replace the whole chunk with a 17-byte
 pointer (a "stub"). The interior nodes get deleted. They are cheap to rebuild from the
 leaves on the rare read.
 
@@ -167,13 +167,13 @@ bounds how much you rebuild on a read, but a deeper subtree is much less likely 
 *entirely* cold. We swept heights 3, 4 and 5.
 
 ```
-   BEFORE (in chaindb)                  AFTER
+   BEFORE (in PebbleDB)                  AFTER
 
         N (subtree root, height 3)       N  ->  17-byte stub  --+
        / \                                                      |
   (branch)(branch)   interior nodes      subtree gone from      |
-   / \     / \         (deleted)         chaindb                v
- leaf leaf leaf leaf  (all inactive)            nodearchive (side file)
+   / \     / \         (deleted)         PebbleDB                v
+ leaf leaf leaf leaf  (all inactive)            nodearchive (flat file)
                                                 +------------------------+
                                                 | [leaf][leaf][leaf] ... |
                                                 +------------------------+
@@ -181,7 +181,7 @@ bounds how much you rebuild on a read, but a deeper subtree is much less likely 
 
 **What is stored where.**
 
-- The stub, 17 bytes in chaindb: `[0x00 marker | fileOffset:8 | size:8]`. A real trie
+- The stub, 17 bytes in PebbleDB: `[0x00 marker | fileOffset:8 | size:8]`. A real trie
   node's first byte is `0xc0` or higher, so `0x00` can never be mistaken for one. The
   offset and size bracket this subtree's records in the file.
 - The archive, leaves only: one RLP record per leaf, `[pathToLeaf, leafValue]`. No
@@ -206,17 +206,17 @@ anything is deleted.
 height-4 account region covers about 4,096 leaves and is basically never 100% cold, so
 far fewer subtrees qualify and less moves out, but each archive block is bigger and
 compresses better. The snapshot does not change at any height. Net is
-`chaindb_after + archive - 251.75 GB baseline`. The "zstd" archive column is
+`PebbleDB_after + archive - 251.75 GB baseline`. The "zstd" archive column is
 chunk-compressed (explained below).
 
-| height | trie nodes after | subtrees moved (stubs) | chaindb reduction | archive raw | archive zstd | net raw | **net zstd** |
+| height | trie nodes after | subtrees moved (stubs) | PebbleDB reduction | archive raw | archive zstd | net raw | **net zstd** |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | **3** | 1,234.4 M | **77.0 M** | **-54.5 GB** | 43.09 GB | 22.59 GB | -11.45 | **-31.95** |
 | 4 | 1,380.6 M | 17.5 M | -41.6 GB | 30.45 GB | 16.44 GB | -11.15 | -25.16 |
 | 5 | 1,389.7 M | 3.44 M | -40.7 GB | 29.30 GB | 16.01 GB | -11.39 | -24.68 |
 
 Height 3 wins, and the gap grows once you compress the archive. Heights 4 and 5 pull
-far less out of chaindb, only about 17.5 M and 3.4 M subtrees qualify against 77 M at
+far less out of PebbleDB, only about 17.5 M and 3.4 M subtrees qualify against 77 M at
 height 3, and their smaller archives do not make up for it. Heights 4 and 5 basically
 land in the same place, hitting the same deep cold regions just packed into fewer,
 bigger subtrees. Deeper is worse. If anything the way to push further is shallower, not
@@ -225,7 +225,7 @@ deeper, which honestly was not what we expected going in.
 Physical footprint at height 3 (compacted pebble SSTs, ancient freezer excluded):
 
 ```
-                       chaindb     + archive    = total       vs baseline
+                       PebbleDB     + archive    = total       vs baseline
    baseline            251.75 GB     -            251.75 GB     -
    after move-out      197.22 GB     43.09 GB     240.31 GB     -11.45 GB
    archive compressed  197.22 GB     22.59 GB     219.81 GB     -31.95 GB
@@ -249,23 +249,17 @@ measured the same way:
 | granularity | maximal, every inactive node | fully-inactive height-3 subtrees |
 | stubs written | 316.3 M | 77.0 M |
 | nodes moved out | ~1.66 B | 661 M |
-| stored in the side file | full subtree structure | leaves only, interior rebuilt on read |
+| stored in the flat file | full subtree structure | leaves only, interior rebuilt on read |
 | trie value bytes | 148.14 -> 32.68 GB (-115.46) | 148.13 -> 98.86 GB (-49.28) |
-| side file | **162.39 GB** | **43.09 GB** raw / **22.59 GB** zstd |
-| net (trie delta + side file) | **+46.93 GB** | **-6.19 GB** raw / **-26.69 GB** zstd |
+| flat file | **162.39 GB** | **43.09 GB** raw / **22.59 GB** zstd |
+| net (trie delta + flat file) | **+46.93 GB** | **-6.19 GB** raw / **-26.69 GB** zstd |
 
-The side file is the whole story. The naive approach keeps the full structure, which
+The flat file is the whole story. The naive approach keeps the full structure, which
 costs 162 GB, close to four times the leaves-only archive and over seven times the
 compressed one. It moves about 2.5x as many nodes, so its main-database saving is larger,
-but the side file outgrows that saving and total disk goes *up* by about 47 GB. The
-subtree approach drops the interior and rebuilds it on read, so its side file stays small
+but the flat file outgrows that saving and total disk goes *up* by about 47 GB. The
+subtree approach drops the interior and rebuilds it on read, so its flat file stays small
 and total disk comes *down*.
-
-(One note on the basis: these net figures are logical, trie value bytes plus the side
-file, so the two are measured the same way. On the physical `du` basis used elsewhere in
-this report the subtree net is better still, -11.45 GB raw and -31.95 GB compressed,
-because deleting a node also frees its key and pebble overhead, not just its value
-bytes.)
 
 The takeaway that shaped the design is simple. Do not relocate interior nodes. Drop them
 and rebuild on read. That one change is what turns a net disk increase into a net
@@ -280,6 +274,7 @@ decrease.
    ---------------          --------------------        ------------------------
    trie     148.1 GB  --->  trie     148.1 GB  (same) -> trie     ~99 GB + 77 M stubs
    snapshot 101.4 GB  --->  snapshot 101.6 GB  (+0.3) -> snapshot 101.6 GB (same)
+
    no timestamps            every leaf has its          nodearchive 43 GB raw
                             last-used period            (22.6 GB compressed)
 ```
@@ -289,7 +284,7 @@ decrease.
 | trie nodes | 1,895.4 M | 1,895.4 M | **1,234.4 M** (-35%) |
 | snapshot | 101.38 GB | ~101.6 GB (+under 0.5%) | ~101.6 GB |
 | external archive | - | - | 43.09 GB raw / **22.59 GB** zstd |
-| chaindb (physical, compacted) | 251.75 GB | 251.75 GB | **197.22 GB** (-54.5) |
+| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **197.22 GB** (-54.5) |
 | **net total disk vs baseline** | - | ~+0.3 GB | **-11.45 GB raw / -31.95 GB compressed** |
 
 What we take from this:
@@ -298,7 +293,7 @@ What we take from this:
   (about +0.3 GB), never the trie, and it is the thing that lets step 3 tell cold from
   hot.
 - The move-out shrinks the hot database by deleting cold interior nodes and relocating
-  cold leaves. chaindb drops 54.5 GB and the leaves land in a side file you can park on
+  cold leaves. PebbleDB drops 54.5 GB and the leaves land in a flat file you can park on
   cheaper storage.
 - Total on-disk still shrinks after counting the archive: -11.45 GB raw, and -31.95 GB
   (about 13%) with the chunked compression. The price is recomputing a small subtree on
@@ -307,9 +302,21 @@ What we take from this:
   move out less and net worse, about -25 GB at heights 4 and 5 against -32 GB at
   height 3.
 
-Methodology: each run is on an LVM thin-snapshot of the injected datadir. Sizes are
-`du` of compacted pebble SSTs. A delete in pebble is a tombstone until compaction
-rewrites it, and the constant `ancient/` freezer is excluded. Every moved subtree is
-hash-verified before deletion, so `errors = 0` means each one rebuilds exactly. The
-snapshot and period numbers come from the earlier injection run on this same datadir.
-The trie and move-out numbers come from the height runs in `eip8188-mainnet-runs/`.
+## Open Questions
+
+**Read performance under real workloads.** Everything above is a static footprint
+measurement. What it does not measure is the runtime cost of the design, and that cost
+differs sharply between the naive and subtree approaches. The naive approach serves a
+moved node with a single read into the side file. The subtree approach pays a rebuild on
+every hit: read the leaf records, re-insert each `(path, value)` into a fresh mini-trie,
+and hash-check the result before returning. That is cheap per hit (at most 256 leaves)
+but it is not free, and it happens every time execution touches an expired subtree.
+
+So the footprint winner is not automatically the workload winner. A design that saves the
+most disk can still lose if a common access pattern keeps reaching into cold subtrees and
+paying the rebuild. The experiment we have not run yet is to replay real mainnet blocks,
+plus some adversarial patterns that deliberately touch expired state, against an expired
+datadir and measure: resurrections per block, rebuild latency, the resulting read
+amplification, and tail latency on the unlucky reads. Compression adds a second layer
+here, since a hit on a compressed chunk also pays a zstd decompress of that chunk. Until
+those numbers exist, the -32 GB is a storage result only, not a performance one.
