@@ -1,33 +1,28 @@
 # How much cold state can EIP-8188 actually move out?
 
-We ran a three-step experiment on a real mainnet go-ethereum node to see how much disk you save
+We ran a three-step experiment on a real mainnet go-ethereum (geth) node to see how much disk you save
 by pulling "cold" state out of the hot database. This writes up what each step does
-and what it actually measured. No prior familiarity assumed.
+and what it actually measured.
 
 The three steps:
 
-- **Baseline.** The node as it ships.
+- **Baseline.** The normal geth node.
 - **Period injection.** Tag every account and slot with when it was last used, so we
   can tell what is cold.
-- **Move inactive subtrees out.** Pull the cold parts out of the main database into a
+- **Move inactive state out.** Pull the cold parts out of the main database into a
   flat file, shrinking what the node has to keep hot.
 
 Everything below is measured on one data directory: mainnet at block 19,999,256.
 
 ---
 
-## How a node stores the state
+## How geth stores the state
 
 The state is every account (balance, nonce, code, storage root) plus every contract's
-storage slots. geth keeps it twice inside its key-value store (pebble).
+storage slots. geth keeps it twice inside its key-value store (PebbleDB).
 
 **1. The Merkle-Patricia Trie (MPT).** The authenticated tree whose root hash is the
-block's stateRoot. It has three kinds of node:
-
-- **branch**: 16 slots, one per hex nibble of the key.
-- **extension**: a shortcut node that holds a shared key-prefix and points to a single
-  child, so a long run of single-child nodes does not waste space.
-- **leaf**: the tail of a key plus its value.
+block's stateRoot.
 
 ```
    account trie  (root hash = stateRoot)
@@ -50,15 +45,6 @@ have to walk the tree.
    accountHash             -> account
    accountHash + slotHash  -> slot value
 ```
-
-Two things matter for the rest of this. The trie's bulk is interior nodes (branches
-and extensions). The snapshot's bulk is its keys, because a storage key is
-`1 + 32 + 32 = 65` bytes and there are over a billion of them. And most of the state
-is cold, never touched in a long time. If we knew which parts, we could move them
-somewhere cheaper.
-
-A "period" is just a time window, here 1,314,000 blocks (about six months). A leaf is
-inactive if it has not been written for at least `minAge` periods (here it's 2, so 1-year inactivity).
 
 ---
 
@@ -84,8 +70,7 @@ timestamp. That is what step 2 fixes.
 ## Step 2: period injection
 
 **What it does.** For each account and slot, store the most recent period it was
-written, a `uint32` called `LastWrittenPeriod`. This goes only into the snapshot. The
-trie never changes.
+written. This goes only into the snapshot. A "period" is just a time window, here 1,314,000 blocks (about six months). A leaf is inactive if it has not been written for at least `minAge` periods (here it's 2, so 1-year inactivity in total).
 
 **Where the timestamps come from.** An external source (a database of historical
 access "diffs", meaning which address or slot changed at which block) streams
@@ -93,13 +78,14 @@ access "diffs", meaning which address or slot changed at which block) streams
 matching snapshot record. In this experiment, we used [Xatu](https://github.com/ethpandaops/xatu) as the primary data source.
 
 ```
-   access-history source            injector                  snapshot (pebble)
+    access-history source                     injector             snapshot (pebble)
+
    +---------------------+  (key, block)   +-------------+   read -> set period -> write
    | addr A wrote @ blk  | --------------> | period =    |   +---------------------------+
    | slot S wrote @ blk  |                 | (blk - fork)| ->| accountHash -> [acct, P]  |
    | ...                 |                 |   / perLen  |   | slotHash    -> [value, P] |
    +---------------------+                 +-------------+   +---------------------------+
-                                                            (only ever raises a period)
+                                                              (only ever raises a period)
 ```
 
 `ComputePeriod(block) = (block - forkBlock) / blocksPerPeriod`. With `forkBlock`
@@ -128,22 +114,18 @@ the bytes are identical to a legacy record, so only recently-written records gro
 | change | none, byte-identical | +0.2 to 0.3 GB (on ~32.5 M accounts plus recently-written slots) |
 | as % | 0% | under 0.5% of the 101 GB snapshot |
 
-Injection is close to free, and now every leaf knows when it was last used. That is
-the whole point of it.
-
 ---
 
 ## Step 3: move inactive state out
 
 Now that every leaf carries a last-used period (step 2), we can take the cold parts of
-the state out of the main database and put them in a cheaper flat file, leaving the node
+the state out of the main database and put them in a flat file, leaving the node
 a smaller hot working set. There are two ways to do this, and the gap between them is the
 point of this section.
 
 ### The naive approach: move every cold node, as-is
 
-The obvious move is to take every inactive node out, with no grouping, down to individual
-cold pockets of about two leaves, and copy the actual trie nodes into a flat file, with
+The obvious move is to take every inactive trie node out into a flat file, with
 interior branches and extensions included. A 17-byte stub replaces each moved subtree
 root in the main database, and a read follows the stub into the flat file where the
 original nodes are waiting.
