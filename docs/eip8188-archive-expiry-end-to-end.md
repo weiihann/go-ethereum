@@ -138,8 +138,11 @@ database with a tiny **17-byte pointer** ("stub"). The chunk's interior nodes ar
 **deleted** — they're cheap to recompute from the leaves when (rarely) needed.
 
 ### What gets moved: a "height-3 subtree"
-We move subtrees of **height 3** (the leaves are 3 levels below the subtree root)
-whose every leaf is inactive. Height-3 caps how much must be rebuilt on a read.
+We move subtrees of a chosen **height** whose every leaf is inactive — illustrated
+here at **height 3** (leaves 3 levels below the subtree root). The height is a
+tunable knob: deeper subtrees hold more leaves (≤ 16^(N-1)) so they cap how much
+must be rebuilt on a read, but a deeper subtree is far less likely to be *entirely*
+cold. We swept heights 3, 4 and 5 (results below).
 
 ```
    BEFORE (in the main trie / chaindb):        AFTER:
@@ -179,15 +182,29 @@ For each height-3 node it asks "are *all* my leaves inactive?" (using the period
 from Step 2: inactive ⇔ `currentPeriod − leafPeriod ≥ 2`). If yes, it's moved; the
 move is verified (rebuilt hash == original) **before** anything is deleted.
 
-### Result (Step 2 → Step 3)
+### Result — sweeping the subtree height (3, 4, 5)
 
-| | trie (chaindb) | snapshot | new file |
-|---|---|---|---|
-| trie nodes | 1,895.4 M → **1,234.4 M** (−661 M, −35%) | unchanged | — |
-| of which stubs | 0 → **77.0 M** (17 B each = 1.31 GB) | — | — |
-| `nodearchive` | — | — | **43.09 GB** raw |
+Going deeper trades coverage for compressibility: a height-4 account region spans
+~4,096 leaves and is almost *never* 100% cold, so far fewer subtrees qualify and
+**less** is moved out — but each archive block is bigger and compresses better.
+(The snapshot is unchanged at every height.) Net = `chaindb_after + archive −
+251.75 GB baseline`; archive "zstd" = chunk-compressed (see below).
 
-**Physical on-disk footprint** (compacted pebble SSTs, ancient freezer excluded):
+| height | trie nodes after | subtrees moved (stubs) | chaindb reduction | archive raw | archive zstd | net raw | **net zstd** |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| **3** | 1,234.4 M | **77.0 M** | **−54.5 GB** | 43.09 GB | 22.59 GB | −11.45 | **−31.95** |
+| 4 | 1,380.6 M | 17.5 M | −41.6 GB | 30.45 GB | 16.44 GB | −11.15 | −25.16 |
+| 5 | 1,389.7 M | 3.44 M | −40.7 GB | 29.30 GB | 16.01 GB | −11.39 | −24.68 |
+
+**Height-3 is the sweet spot, and the gap widens once the archive is compressed.**
+Heights 4 and 5 remove far less from chaindb (coverage collapses — only ~17.5 M and
+3.4 M subtrees qualify, vs 77 M at height-3), and their smaller archives don't make
+up for it. Heights 4 and 5 essentially **converge** (same deep cold regions, just
+packed into fewer, larger subtrees). So *deeper is worse* — the way to do better
+would be *shallower*, not deeper.
+
+**Physical on-disk footprint at the recommended height-3** (compacted pebble SSTs,
+ancient freezer excluded):
 
 ```
                          chaindb        + archive     = total      vs baseline
@@ -199,8 +216,10 @@ move is verified (rebuilt hash == original) **before** anything is deleted.
 
 The archive is compressed in ~1 MB chunks (one zstd frame per chunk + a small
 offset table), which roughly halves it while still letting a single subtree be
-resurrected by decompressing just its one chunk. (Compression is the single biggest
-lever; per-leaf or per-subtree compression doesn't work — the blocks are too small.)
+resurrected by decompressing just its one chunk. Compression is the single biggest
+lever — and notably, *per-leaf or per-subtree* compression doesn't work (the blocks
+are too small for zstd to find redundancy), nor does a shared dictionary; only
+chunking many subtrees together captures the gain.
 
 ---
 
@@ -215,7 +234,7 @@ lever; per-leaf or per-subtree compression doesn't work — the blocks are too s
                                 last-used period             (22.6 GB compressed)
 ```
 
-| | Step 1 baseline | Step 2 post-inject | Step 3 post-move-out (height-3) |
+| | Step 1 baseline | Step 2 post-inject | Step 3 post-move-out (height-3, best of the 3–5 sweep) |
 |---|---|---|---|
 | trie nodes | 1,895.4 M | 1,895.4 M | **1,234.4 M** (−35%) |
 | snapshot | 101.38 GB | ~101.6 GB (+<0.5%) | ~101.6 GB |
@@ -233,6 +252,9 @@ lever; per-leaf or per-subtree compression doesn't work — the blocks are too s
 - **Net on-disk shrinks** even counting the archive: −11.45 GB raw, and **−31.95 GB
   (~13%)** once the archive is chunk-compressed — at the cost of recomputing a small
   subtree on the rare read of expired state.
+- **Height-3 was chosen from a sweep of heights 3–5.** Deeper subtrees qualify far
+  less often (a deep region is rarely *entirely* cold), so they move out less and
+  net worse (−25 GB at heights 4/5 vs −32 GB at height-3) — see the Step 3 table.
 
 *Methodology:* run on an LVM thin-snapshot of the injected datadir; sizes are
 `du` of compacted pebble SSTs (deletes become tombstones until compaction, and the
