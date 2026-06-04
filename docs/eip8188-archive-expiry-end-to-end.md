@@ -143,10 +143,11 @@ pointer (a "stub"). The interior nodes get deleted. They are cheap to rebuild fr
 leaves on the rare read.
 
 **What gets moved, and the height param.** We move subtrees of a fixed height whose
-every leaf is inactive. The picture below uses height 3 (leaves three levels under the
-root). Height is configured. A deeper subtree holds more leaves (up to 16^(N-1)), so it
-bounds how much you rebuild on a read, but a deeper subtree is much less likely to be
-*entirely* cold. We swept heights 3, 4 and 5.
+every leaf is inactive. Height is counted from the leaves, so a leaf node is height 1, a
+branch directly above leaves is height 2, and the height-3 root in the picture below sits
+two levels above its leaves (up to 16^(N-1) leaves under it). A deeper subtree holds more
+leaves, so it bounds how much you rebuild on a read, but a deeper subtree is much less
+likely to be *entirely* cold. We swept heights 2, 3, 4 and 5.
 
 ```
    BEFORE (in PebbleDB)                  AFTER
@@ -184,33 +185,38 @@ leaves under it are inactive (`currentPeriod - leafPeriod >= 2`, using the perio
 step 2). If they are, it moves the subtree, and the rebuilt-hash check runs before
 anything is deleted.
 
-**Results, sweeping the height.** Going deeper trades coverage for compressibility. A
-height-4 account region covers about 4,096 leaves and is basically never 100% cold, so
-far fewer subtrees qualify and less moves out, but each archive block is bigger and
-compresses better. The snapshot does not change at any height. Net is
-`PebbleDB_after + archive - 251.75 GB baseline`. The "zstd" archive column is
-chunk-compressed (explained below).
+**Results, sweeping the height.** Shallower subtrees qualify more often, because a small
+group is more likely to be entirely cold, so more moves out, but they leave a bigger raw
+archive. Deeper subtrees move out far less. The snapshot does not change at any height.
+Net is `PebbleDB_after + archive - 251.75 GB baseline`, and the "zstd" column is the
+chunk-compressed archive (explained below).
 
 | height | trie nodes after | subtrees moved (stubs) | PebbleDB reduction | archive raw | archive zstd | net raw | **net zstd** |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| **3** | 1,234.4 M | **77.0 M** | **-54.5 GB** | 43.09 GB | 22.59 GB | -11.45 | **-31.95** |
-| 4 | 1,380.6 M | 17.5 M | -41.6 GB | 30.45 GB | 16.44 GB | -11.15 | -25.16 |
-| 5 | 1,389.7 M | 3.44 M | -40.7 GB | 29.30 GB | 16.01 GB | -11.39 | -24.68 |
+| **2** | 1,159.3 M | 295.1 M | **-66.93 GB** | 63.35 GB | 31.39 GB | -3.58 | **-35.54** |
+| 3 | 1,234.4 M | 77.0 M | -54.54 GB | 43.09 GB | 22.59 GB | -11.45 | -31.95 |
+| 4 | 1,380.6 M | 17.5 M | -41.60 GB | 30.45 GB | 16.44 GB | -11.15 | -25.16 |
+| 5 | 1,389.7 M | 3.44 M | -40.69 GB | 29.30 GB | 16.01 GB | -11.39 | -24.68 |
 
-Height 3 wins, and the gap grows once you compress the archive. Heights 4 and 5 pull
-far less out of PebbleDB, only about 17.5 M and 3.4 M subtrees qualify against 77 M at
-height 3, and their smaller archives do not make up for it. Heights 4 and 5 basically
-land in the same place, hitting the same deep cold regions just packed into fewer,
-bigger subtrees. Deeper is worse. If anything the way to push further is shallower, not
-deeper, which honestly was not what we expected going in.
+The answer flips depending on whether you compress the archive. On the raw archive,
+height 3 is best (-11.45), because height 2's archive is too big to pay for itself. But
+the archive is exactly the thing we compress, and once we do, height 2 takes the lead.
+Height 2 has the largest PebbleDB reduction (-66.93 GB), and it carries far more account
+records, which compress well, so it gets the best ratio too (49.6%). That lands the best
+net by a clear margin, -35.54 GB. Going the other way, heights 4 and 5 move out far less,
+only 17.5 M and 3.4 M subtrees qualify against 295 M at height 2, and they converge on the
+same deep cold regions, so they net worse. The lesson, which honestly was not what we
+expected going in: with a compressed archive, shallower wins. Height 2 looks like the
+floor, because height 1 would move individual leaves with no interior to drop, which
+turns net-negative.
 
-Physical footprint at height 3 (compacted pebble SSTs, ancient freezer excluded):
+Physical footprint at height 2 (compacted pebble SSTs, ancient freezer excluded):
 
 ```
                        PebbleDB     + archive    = total       vs baseline
    baseline            251.75 GB     -            251.75 GB     -
-   after move-out      197.22 GB     43.09 GB     240.31 GB     -11.45 GB
-   archive compressed  197.22 GB     22.59 GB     219.81 GB     -31.95 GB
+   after move-out      184.83 GB     63.35 GB     248.18 GB     -3.58 GB
+   archive compressed  184.83 GB     31.39 GB     216.22 GB     -35.54 GB
 ```
 
 The archive is compressed in roughly 1 MB chunks, one zstd frame per chunk plus a
@@ -254,20 +260,20 @@ decrease.
 ```
    STEP 1 baseline          STEP 2 period inject        STEP 3 move inactive out
    ---------------          --------------------        ------------------------
-   trie     148.1 GB  --->  trie     148.1 GB  (same) -> trie     ~99 GB + 77 M stubs
+   trie     148.1 GB  --->  trie     148.1 GB  (same) -> trie     ~84 GB + 295 M stubs
    snapshot 101.4 GB  --->  snapshot 101.6 GB  (+0.3) -> snapshot 101.6 GB (same)
 
-   no timestamps            every leaf has its          nodearchive 43 GB raw
-                            last-used period            (22.6 GB compressed)
+   no timestamps            every leaf has its          nodearchive 63 GB raw
+                            last-used period            (31 GB compressed)
 ```
 
-| | Step 1 baseline | Step 2 post-inject | Step 3 post-move-out (height 3, best of the 3 to 5 sweep) |
+| | Step 1 baseline | Step 2 post-inject | Step 3 post-move-out (height 2, best of the 2 to 5 sweep) |
 |---|---|---|---|
-| trie nodes | 1,895.4 M | 1,895.4 M | **1,234.4 M** (-35%) |
+| trie nodes | 1,895.4 M | 1,895.4 M | **1,159.3 M** (-39%) |
 | snapshot | 101.38 GB | ~101.6 GB (+under 0.5%) | ~101.6 GB |
-| external archive | - | - | 43.09 GB raw / **22.59 GB** zstd |
-| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **197.22 GB** (-54.5) |
-| **net total disk vs baseline** | - | ~+0.3 GB | **-11.45 GB raw / -31.95 GB compressed** |
+| external archive | - | - | 63.35 GB raw / **31.39 GB** zstd |
+| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **184.83 GB** (-66.9) |
+| **net total disk vs baseline** | - | ~+0.3 GB | **-3.58 GB raw / -35.54 GB compressed** |
 
 What we take from this:
 
@@ -275,14 +281,16 @@ What we take from this:
   (about +0.3 GB), never the trie, and it is the thing that lets step 3 tell cold from
   hot.
 - The move-out shrinks the hot database by deleting cold interior nodes and relocating
-  cold leaves. PebbleDB drops 54.5 GB and the leaves land in a flat file you can park on
-  cheaper storage.
-- Total on-disk still shrinks after counting the archive: -11.45 GB raw, and -31.95 GB
-  (about 13%) with the chunked compression. The price is recomputing a small subtree on
+  cold leaves. At height 2 PebbleDB drops 66.9 GB and the leaves land in a flat file you
+  can park on cheaper storage.
+- Total on-disk still shrinks after counting the archive: -3.58 GB raw, and -35.54 GB
+  (about 14%) with the chunked compression. The price is recomputing a small subtree on
   the rare read of expired state.
-- Height 3 came out of a 3-to-5 sweep. Deeper subtrees qualify far less often, so they
-  move out less and net worse, about -25 GB at heights 4 and 5 against -32 GB at
-  height 3.
+- The best height depends on compression. We swept heights 2 to 5. On the raw archive
+  height 3 is best, but once the archive is compressed the shallowest height wins, because
+  height 2 frees the most from PebbleDB and its account-heavy archive compresses best.
+  Deeper subtrees qualify far less often, so they move out less and net worse, about
+  -25 GB at heights 4 and 5 against -35.54 GB at height 2.
 
 ## Open Questions
 
@@ -291,8 +299,8 @@ measurement. What it does not measure is the runtime cost of the design, and tha
 differs sharply between the naive and subtree approaches. The naive approach serves a
 moved node with a single read into the side file. The subtree approach pays a rebuild on
 every hit: read the leaf records, re-insert each `(path, value)` into a fresh mini-trie,
-and hash-check the result before returning. That is cheap per hit (at most 256 leaves)
-but it is not free, and it happens every time execution touches an expired subtree.
+and hash-check the result before returning. That is cheap per hit (at most 16 leaves at
+height 2, 256 at height 3) but it is not free, and it happens every time execution touches an expired subtree.
 
 So the footprint winner is not automatically the workload winner. A design that saves the
 most disk can still lose if a common access pattern keeps reaching into cold subtrees and
@@ -301,4 +309,4 @@ plus some adversarial patterns that deliberately touch expired state, against an
 datadir and measure: resurrections per block, rebuild latency, the resulting read
 amplification, and tail latency on the unlucky reads. Compression adds a second layer
 here, since a hit on a compressed chunk also pays a zstd decompress of that chunk. Until
-those numbers exist, the -32 GB is a storage result only, not a performance one.
+those numbers exist, the -35.54 GB is a storage result only, not a performance one.

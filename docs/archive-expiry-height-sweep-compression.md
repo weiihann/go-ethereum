@@ -16,11 +16,12 @@ thin snapshot of the periods-injected datadir; compacted vanilla baseline =
 **251.75 GB** chaindb (pebble SSTs, ancient freezer excluded). Net =
 `chaindb_after + archive − baseline`.
 
-## Headline frontier (heights 3–5)
+## Headline frontier (heights 2–5)
 
 | height | chaindb reduction | raw archive | **chunked archive** | raw net | **chunked net** | subtrees | max leaves |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| **3** | −54.54 GB | 43.09 GB | **22.59 GB** | −11.45 GB | **−31.95 GB** | 77.0 M | 73 |
+| **2** | **−66.93 GB** | 63.35 GB | **31.39 GB** | −3.58 GB | **−35.54 GB** | 295.1 M | 14 |
+| 3 | −54.54 GB | 43.09 GB | 22.59 GB | −11.45 GB | −31.95 GB | 77.0 M | 73 |
 | 4 | −41.60 GB | 30.45 GB | 16.44 GB | −11.15 GB | −25.16 GB | 17.5 M | 295 |
 | 5 | −40.69 GB | 29.30 GB | 16.01 GB | −11.39 GB | −24.68 GB | 3.44 M | 1118 |
 
@@ -37,15 +38,22 @@ Chunked archive = 1 MB frames, zstd-9 (the realistic compressed on-disk size; se
   them into 5× fewer, larger subtrees (3.4 M vs 17.5 M).
 - **Raw net is flat (~−11 GB) across 3–5;** the differences live almost entirely in the
   archive, which compression then shrinks.
-- **Compression makes the shallow end win.** zstd halves every archive (~52–55%), so a
+- **Compression makes the shallow end win.** zstd halves every archive (~50–55%), so a
   shallower height's *larger* archive penalty mostly evaporates while its *larger*
   chaindb reduction stays. The chunked net therefore peaks at the shallow end of the
-  sweep: **height-3 (−31.95 GB) ≫ height-4 (−25.16) ≈ height-5 (−24.68).**
+  sweep: **height-2 (−35.54 GB) > height-3 (−31.95) ≫ height-4 (−25.16) ≈ height-5
+  (−24.68).** Height-2 also gets the best ratio (49.6%) because it carries far more
+  account records (EOAs share the same codeHash/storageRoot, which compress well), and it
+  frees the most from chaindb (−66.93 GB), so it wins on every axis once compressed.
+  Height-2 is the floor: height-1 would move individual leaves with no interior to drop,
+  which goes net-negative.
 
-**Conclusion: height-3 with chunked compression is the measured sweet spot — net
-−31.95 GB (≈ 13% of the 251.75 GB baseline), ~2.8× the uncompressed height-3 saving.**
-Going deeper than 3 is counterproductive; the only remaining lever is *shallower*
-granularity (more coverage, with compression absorbing the bigger archive), not deeper.
+**Conclusion: with a compressed archive, height-2 is the measured sweet spot — net
+−35.54 GB (≈ 14% of the 251.75 GB baseline), ~9.9× the uncompressed height-2 saving
+(−3.58 GB).** Raw, height-3 looked best; compression flips that, because it absorbs
+height-2's much larger archive (63 GB → 31 GB) while keeping its much larger chaindb
+reduction (−66.93 GB). Going deeper than 3 is counterproductive, and the shallow lever
+bottoms out at height-2 (height-1 has no interior to drop, so it goes net-negative).
 
 ## Compression: why chunked
 
