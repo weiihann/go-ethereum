@@ -58,7 +58,7 @@ is cold, never touched in a long time. If we knew which parts, we could move the
 somewhere cheaper.
 
 A "period" is just a time window, here 1,314,000 blocks (about six months). A leaf is
-inactive if it has not been written for at least `minAge` periods.
+inactive if it has not been written for at least `minAge` periods (here it's 2, so 1-year inactivity).
 
 ---
 
@@ -90,7 +90,7 @@ trie never changes.
 **Where the timestamps come from.** An external source (a database of historical
 access "diffs", meaning which address or slot changed at which block) streams
 `(key, block)` pairs. The injector turns each block into a period and stamps the
-matching snapshot record.
+matching snapshot record. In this experiment, I used [Xatu](https://github.com/ethpandaops/xatu) as the primary data source.
 
 ```
    access-history source            injector                  snapshot (pebble)
@@ -140,9 +140,9 @@ data to a side file (`nodearchive`), and replace the whole chunk with a 17-byte
 pointer (a "stub"). The interior nodes get deleted. They are cheap to rebuild from the
 leaves on the rare read.
 
-**What gets moved, and the height dial.** We move subtrees of a fixed height whose
+**What gets moved, and the height param.** We move subtrees of a fixed height whose
 every leaf is inactive. The picture below uses height 3 (leaves three levels under the
-root). Height is a dial. A deeper subtree holds more leaves (up to 16^(N-1)), so it
+root). Height is configured. A deeper subtree holds more leaves (up to 16^(N-1)), so it
 bounds how much you rebuild on a read, but a deeper subtree is much less likely to be
 *entirely* cold. I swept heights 3, 4 and 5.
 
@@ -155,7 +155,7 @@ bounds how much you rebuild on a read, but a deeper subtree is much less likely 
    / \     / \         (deleted)         chaindb                v
  leaf leaf leaf leaf  (all inactive)            nodearchive (side file)
                                                 +------------------------+
-                                                | [leaf][leaf][leaf] ...  |
+                                                | [leaf][leaf][leaf] ... |
                                                 +------------------------+
 ```
 
