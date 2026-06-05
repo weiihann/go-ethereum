@@ -20,10 +20,10 @@ thin snapshot of the periods-injected datadir; compacted vanilla baseline =
 
 | height | chaindb reduction | raw archive | **chunked archive** | raw net | **chunked net** | subtrees | max leaves |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| **2** | **−66.93 GB** | 63.35 GB | **31.39 GB** | −3.58 GB | **−35.54 GB** | 295.1 M | 14 |
-| 3 | −54.54 GB | 43.09 GB | 22.59 GB | −11.45 GB | −31.95 GB | 77.0 M | 73 |
-| 4 | −41.60 GB | 30.45 GB | 16.44 GB | −11.15 GB | −25.16 GB | 17.5 M | 295 |
-| 5 | −40.69 GB | 29.30 GB | 16.01 GB | −11.39 GB | −24.68 GB | 3.44 M | 1118 |
+| **2** | **−66.93 GB (−26.6%)** | 63.35 GB | **31.39 GB** | −3.58 GB (−1.4%) | **−35.54 GB (−14.1%)** | 295.1 M | 14 |
+| 3 | −54.54 GB (−21.7%) | 43.09 GB | 22.59 GB | −11.45 GB (−4.5%) | −31.95 GB (−12.7%) | 77.0 M | 73 |
+| 4 | −41.60 GB (−16.5%) | 30.45 GB | 16.44 GB | −11.15 GB (−4.4%) | −25.16 GB (−10.0%) | 17.5 M | 295 |
+| 5 | −40.69 GB (−16.2%) | 29.30 GB | 16.01 GB | −11.39 GB (−4.5%) | −24.68 GB (−9.8%) | 3.44 M | 1118 |
 
 Chunked archive = 1 MB frames, zstd-9 (the realistic compressed on-disk size; see
 §Compression). `errors = 0` on every run.
