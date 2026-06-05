@@ -17,13 +17,11 @@
 package bintrie
 
 import (
-	"encoding/binary"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 )
 
-// Leaf key indices for account header data in the account zone.
+// Leaf key indices for account header data in zone 000.
 const (
 	BasicDataLeafKey        = 0
 	CodeHashLeafKey         = 1
@@ -32,19 +30,19 @@ const (
 	BasicDataBalanceOffset  = 16
 )
 
-// PBT zone identifiers. The high 16 bits of every non-storage stem hold the
-// zone. The storage zone is any key with the high bit set and is handled
-// separately by buildKeyStorageZone.
+// PBT zone prefixes (bit-level). These occupy the most significant bits
+// of each 256-bit key.
 const (
-	ZoneAccount uint16 = 0x0000 // account headers
-	ZoneCode    uint16 = 0x0001 // content-addressed code overflow
+	zoneAccountPrefix = 0b000 // 3-bit prefix for zone 000 (account headers)
+	zoneCodePrefix    = 0b001 // 3-bit prefix for zone 001 (code overflow)
 )
 
-// Bit widths for the storage-zone key segments. All zones produce 256-bit keys.
+// Bit widths for each segment of a PBT key. All zones produce 256-bit keys.
 const (
-	addrPrefixBits = 60  // H(addr) prefix bits in the storage zone
-	stemSuffixBits = 187 // H(addr||tree_index) suffix bits in the storage zone
-	subIndexBits   = 8   // sub-index width in all zones
+	zoneAccountBits = 3   // zone prefix width for zones 000 and 001
+	addrPrefixBits  = 60  // H(addr) prefix bits in zone 1 (storage)
+	stemSuffixBits  = 187 // H(addr||tree_index) suffix bits in zone 1
+	subIndexBits    = 8   // sub-index width in all zones
 )
 
 // Sub-index offsets for account header stem (zone 000, EIP-7864 layout).
@@ -85,16 +83,32 @@ func hashConcat(a []byte, b *uint256.Int) [32]byte {
 	return out
 }
 
-// buildKeyZone constructs a 256-bit key for a non-storage zone (account or
-// code). The 16-bit zone makes the layout byte-aligned:
+// buildKey3Zone constructs a 256-bit key for a 3-bit zone (000 or 001).
 //
-//	[2-byte zone | 29-byte hash (top 232 bits) | 1-byte sub_idx] = 32 bytes
-func buildKeyZone(zone uint16, hash [32]byte, subIdx byte) [32]byte {
-	var key [32]byte
-	binary.BigEndian.PutUint16(key[0:2], zone)
-	copy(key[2:StemSize], hash[:StemSize-2]) // top 232 bits = first 29 bytes
-	key[StemSize] = subIdx
-	return key
+// Layout (bit 255 = MSB, bit 0 = LSB):
+//
+//	[3 zone bits | 245 hash bits | 8 sub_idx bits] = 256 bits
+func buildKey3Zone(zone byte, hash [32]byte, subIdx byte) [32]byte {
+	var h uint256.Int
+	h.SetBytes(hash[:])
+
+	// Discard bottom 11 bits of hash, keeping top 245 bits.
+	h.Rsh(&h, zoneAccountBits+subIndexBits) // 3 + 8 = 11
+	// Shift left 8 to place hash bits at [252..8].
+	h.Lsh(&h, subIndexBits)
+
+	// OR zone prefix at [255..253].
+	var zoneBits uint256.Int
+	zoneBits.SetUint64(uint64(zone))
+	zoneBits.Lsh(&zoneBits, 256-zoneAccountBits) // 253
+	h.Or(&h, &zoneBits)
+
+	// OR sub_idx at [7..0].
+	var sub uint256.Int
+	sub.SetUint64(uint64(subIdx))
+	h.Or(&h, &sub)
+
+	return h.Bytes32()
 }
 
 // buildKeyStorageZone constructs a 256-bit key for zone 1 (storage).
@@ -132,21 +146,21 @@ func buildKeyStorageZone(addrHash, stemHash [32]byte, subIdx byte) [32]byte {
 }
 
 // GetBinaryTreeKeyBasicData returns the 256-bit key for an account's
-// basic data leaf (nonce, balance, code_size) in the account zone.
+// basic data leaf (nonce, balance, code_size) in zone 000.
 func GetBinaryTreeKeyBasicData(addr common.Address) []byte {
-	key := buildKeyZone(ZoneAccount, hashAddr(addr), BasicDataLeafKey)
+	key := buildKey3Zone(zoneAccountPrefix, hashAddr(addr), BasicDataLeafKey)
 	return key[:]
 }
 
 // GetBinaryTreeKeyCodeHash returns the 256-bit key for an account's
-// code hash leaf in the account zone.
+// code hash leaf in zone 000.
 func GetBinaryTreeKeyCodeHash(addr common.Address) []byte {
-	key := buildKeyZone(ZoneAccount, hashAddr(addr), CodeHashLeafKey)
+	key := buildKey3Zone(zoneAccountPrefix, hashAddr(addr), CodeHashLeafKey)
 	return key[:]
 }
 
 // GetBinaryTreeStemAccount returns the 31-byte stem for an account's
-// header in the account zone. All leaves in the account header (basic data,
+// header in zone 000. All leaves in the account header (basic data,
 // code hash, hot storage, initial code) share this stem prefix.
 func GetBinaryTreeStemAccount(addr common.Address) []byte {
 	key := GetBinaryTreeKeyBasicData(addr)
@@ -154,21 +168,21 @@ func GetBinaryTreeStemAccount(addr common.Address) []byte {
 }
 
 // GetBinaryTreeKeyStorageSlot returns the 256-bit key for a storage slot.
-// Slots 0-63 are in the account header (account zone, sub_idx 0x40-0x7F).
-// Slots >= 64 are in the storage zone with a 60-bit address prefix and 187-bit
+// Slots 0-63 are in the account header (zone 000, sub_idx 0x40-0x7F).
+// Slots >= 64 are in zone 1 with a 60-bit address prefix and 187-bit
 // stem suffix.
 func GetBinaryTreeKeyStorageSlot(addr common.Address, slotKey []byte) []byte {
 	var slot uint256.Int
 	slot.SetBytes(slotKey)
 
-	// Slots 0-63: account zone header.
+	// Slots 0-63: zone 000 account header.
 	if slot.Cmp(headerStorageMaxSlot) < 0 {
 		subIdx := byte(HeaderStorageStart + slot[0])
-		key := buildKeyZone(ZoneAccount, hashAddr(addr), subIdx)
+		key := buildKey3Zone(zoneAccountPrefix, hashAddr(addr), subIdx)
 		return key[:]
 	}
 
-	// Slots >= 64: storage zone.
+	// Slots >= 64: zone 1.
 	addrHash := hashAddr(addr)
 
 	// tree_index = slot / 256, sub_idx = slot % 256
@@ -182,21 +196,21 @@ func GetBinaryTreeKeyStorageSlot(addr common.Address, slotKey []byte) []byte {
 }
 
 // GetBinaryTreeKeyCodeChunk returns the 256-bit key for a code chunk.
-// Chunks 0-127 are in the account header (account zone, sub_idx 0x80-0xFF).
-// Chunks >= 128 are content-addressed in the code zone using the code hash.
+// Chunks 0-127 are in the account header (zone 000, sub_idx 0x80-0xFF).
+// Chunks >= 128 are content-addressed in zone 001 using the code hash.
 func GetBinaryTreeKeyCodeChunk(
 	addr common.Address,
 	codeHash common.Hash,
 	chunknr *uint256.Int,
 ) []byte {
-	// Chunks 0-127: account zone header.
+	// Chunks 0-127: zone 000 account header.
 	if chunknr.Cmp(headerCodeChunkCount) < 0 {
 		subIdx := byte(HeaderCodeStart + chunknr[0])
-		key := buildKeyZone(ZoneAccount, hashAddr(addr), subIdx)
+		key := buildKey3Zone(zoneAccountPrefix, hashAddr(addr), subIdx)
 		return key[:]
 	}
 
-	// Chunks >= 128: code zone, content-addressed by code_hash.
+	// Chunks >= 128: zone 001, content-addressed by code_hash.
 	var adjusted uint256.Int
 	adjusted.Sub(chunknr, headerCodeChunkCount)
 
@@ -208,7 +222,7 @@ func GetBinaryTreeKeyCodeChunk(
 	subIdx := byte(adjusted[0] & 0xFF)
 
 	h := hashConcat(codeHash[:], &treeIndex)
-	key := buildKeyZone(ZoneCode, h, subIdx)
+	key := buildKey3Zone(zoneCodePrefix, h, subIdx)
 	return key[:]
 }
 
