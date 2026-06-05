@@ -168,6 +168,8 @@ Output is pretty text by default; pass --json for machine-readable output.`,
 			eip8188InactiveMinAgeFlag,
 			eip8188CurrentPeriodFlag,
 			eip8188ScopeFlag,
+			eip8188SubtreeMinHeightFlag,
+			eip8188SubtreeMaxHeightFlag,
 			eip8188OutputFlag,
 		}, utils.NetworkFlags, utils.DatabaseFlags),
 		Description: `Walks the account trie (and per-contract storage tries) at the chaindb head
@@ -192,9 +194,14 @@ walk reads a consistent on-disk view.`,
 		Usage: "Move-out format: 'inactive' (EIP-8188 frozen-trie blob) or 'archive' (archive-expiry leaves-only records)",
 		Value: "inactive",
 	}
-	eip8188SubtreeHeightFlag = &cli.UintFlag{
-		Name:  "subtree-height",
-		Usage: "Subtree granularity: 0 = maximal inactive subtree; N = only fully-inactive subtrees of height exactly N (gballet-style height-N grouping)",
+	eip8188SubtreeMinHeightFlag = &cli.UintFlag{
+		Name:  "subtree-min-height",
+		Usage: "Floor: skip emitting fully-inactive subtrees shorter than this height (leaf-parent node = height 1)",
+		Value: 1,
+	}
+	eip8188SubtreeMaxHeightFlag = &cli.UintFlag{
+		Name:  "subtree-max-height",
+		Usage: "Cap: force-emit (tile) fully-inactive regions once they reach this height; 0 = unbounded (maximal). exactly-N = min==max==N",
 		Value: 0,
 	}
 	eip8188ArchiveFileFlag = &cli.StringFlag{
@@ -245,7 +252,8 @@ post-modification chaindb produces hybrids along the modified path.`,
 			eip8188InactiveFileFlag,
 			eip8188ConvertFormatFlag,
 			eip8188ArchiveFileFlag,
-			eip8188SubtreeHeightFlag,
+			eip8188SubtreeMinHeightFlag,
+			eip8188SubtreeMaxHeightFlag,
 			eip8188ConvertBatchSizeFlag,
 			eip8188ConvertDryRunFlag,
 			eip8188SkipCleanSlateFlag,
@@ -424,10 +432,17 @@ func dbIdentifyInactive(ctx *cli.Context) error {
 		}
 	}
 
+	minHeight, maxHeight, err := resolveSubtreeBounds(ctx)
+	if err != nil {
+		return err
+	}
+
 	stats, err := eip8188.Identify(ctx.Context, tdb, stateRoot, eip8188.IdentifyConfig{
 		CurrentPeriod:  currentPeriod,
 		InactiveMinAge: threshold,
 		Scope:          scope,
+		MinHeight:      minHeight,
+		MaxHeight:      maxHeight,
 	}, emit)
 	log.Info("EIP-8188 identify-inactive finished",
 		"accounts-scanned", stats.AccountsScanned,
@@ -438,6 +453,18 @@ func dbIdentifyInactive(ctx *cli.Context) error {
 		"snapshot-mismatches", stats.SnapshotMismatches,
 	)
 	return err
+}
+
+// resolveSubtreeBounds reads the floor/cap subtree-height flags and validates
+// them. A zero max means unbounded; otherwise min must not exceed max.
+func resolveSubtreeBounds(ctx *cli.Context) (minHeight, maxHeight uint8, err error) {
+	minHeight = uint8(ctx.Uint(eip8188SubtreeMinHeightFlag.Name))
+	maxHeight = uint8(ctx.Uint(eip8188SubtreeMaxHeightFlag.Name))
+	if maxHeight != 0 && minHeight > maxHeight {
+		return 0, 0, fmt.Errorf("--subtree-min-height %d exceeds --subtree-max-height %d",
+			minHeight, maxHeight)
+	}
+	return minHeight, maxHeight, nil
 }
 
 // dbConvertInactive runs the offline inactive-subtree conversion: identify +
@@ -485,6 +512,10 @@ func dbConvertInactive(ctx *cli.Context) error {
 		return err
 	}
 	dryRun := ctx.Bool(eip8188ConvertDryRunFlag.Name)
+	minHeight, maxHeight, err := resolveSubtreeBounds(ctx)
+	if err != nil {
+		return err
+	}
 
 	// Resolve move-out format + open the active writer.
 	format := ctx.String(eip8188ConvertFormatFlag.Name)
@@ -540,7 +571,8 @@ func dbConvertInactive(ctx *cli.Context) error {
 		"inactive-min-age", threshold,
 		"scope", scope,
 		"format", format,
-		"subtree-height", ctx.Uint(eip8188SubtreeHeightFlag.Name),
+		"subtree-min-height", minHeight,
+		"subtree-max-height", maxHeight,
 		"move-out-file", moveOutPath,
 		"dry-run", dryRun,
 	)
@@ -550,7 +582,8 @@ func dbConvertInactive(ctx *cli.Context) error {
 			CurrentPeriod:  currentPeriod,
 			InactiveMinAge: threshold,
 			Scope:          scope,
-			SubtreeHeight:  uint8(ctx.Uint(eip8188SubtreeHeightFlag.Name)),
+			MinHeight:      minHeight,
+			MaxHeight:      maxHeight,
 		},
 		StateRoot:      stateRoot,
 		Format:         format,
