@@ -324,6 +324,174 @@ func TestRunCoreLoop_SnapshotMismatch(t *testing.T) {
 	}
 }
 
+// makeIdentifierBounded is makeIdentifier with explicit floor/cap heights.
+func makeIdentifierBounded(currentPeriod, threshold uint32, minH, maxH uint8, emitted *[]InactiveSubtree) *identifier {
+	id := makeIdentifier(currentPeriod, threshold, emitted)
+	id.cfg.MinHeight = minH
+	id.cfg.MaxHeight = maxH
+	return id
+}
+
+// leafShort models how the real NodeIterator surfaces a leaf: a non-leaf
+// shortNode step (which the identifier frames as height 1) followed by its
+// valueNode step (Leaf()==true). The shortNode carries a standalone hash so it
+// can itself be emitted as a height-1 subtree in maximal mode. This keeps the
+// fixtures' heights aligned with gballet/the CLI (leaf = height 1, branch above
+// leaves = height 2), unlike the single-step leaves the older tests use.
+func leafShort(path []byte, hashByte, key byte) []fakeNode {
+	return []fakeNode{
+		{path: append([]byte{}, path...), hash: hashFromByte(hashByte)},
+		{path: term(path), isLeaf: true, leafKey: []byte{key}},
+	}
+}
+
+// emittedPaths returns the set of emitted subtree paths.
+func emittedPaths(emitted []InactiveSubtree) map[string]bool {
+	set := make(map[string]bool, len(emitted))
+	for _, e := range emitted {
+		set[e.Path] = true
+	}
+	return set
+}
+
+func samePathSet(got []InactiveSubtree, want ...string) bool {
+	set := emittedPaths(got)
+	if len(set) != len(got) || len(set) != len(want) {
+		return false // length mismatch (also catches duplicates)
+	}
+	for _, w := range want {
+		if !set[w] {
+			return false
+		}
+	}
+	return true
+}
+
+// floorCapFixture builds a mixed-root trie holding three fully-cold regions of
+// height 1, 2 and 3 (leaf=height 1), plus one active leaf so the root is mixed.
+//
+//	root (h4, mixed)
+//	├─ 0x1: leaf shortNode            cold  → height-1 region, path "01"
+//	├─ 0x2: branch above leaves       cold  → height-2 region, path "02"
+//	├─ 0x3: branch → branch → leaves  cold  → height-3 region, path "03"
+//	│        (height-2 descendant at path "0301")
+//	└─ 0x4: leaf shortNode            ACTIVE → keeps the root mixed
+func floorCapFixture() ([]fakeNode, leafLookup) {
+	var nodes []fakeNode
+	nodes = append(nodes, fakeNode{path: []byte{}, hash: hashFromByte(0xa0)}) // root
+	// 0x1 — height-1 cold region (lone leaf shortNode).
+	nodes = append(nodes, leafShort([]byte{0x1}, 0xb1, 0x11)...)
+	// 0x2 — height-2 cold region (branch above leaves).
+	nodes = append(nodes, fakeNode{path: []byte{0x2}, hash: hashFromByte(0xb2)})
+	nodes = append(nodes, leafShort([]byte{0x2, 0x1}, 0xc1, 0x21)...)
+	nodes = append(nodes, leafShort([]byte{0x2, 0x2}, 0xc2, 0x22)...)
+	// 0x3 — height-3 cold region (branch → branch → leaves).
+	nodes = append(nodes, fakeNode{path: []byte{0x3}, hash: hashFromByte(0xb3)})
+	nodes = append(nodes, fakeNode{path: []byte{0x3, 0x1}, hash: hashFromByte(0xa3)})
+	nodes = append(nodes, leafShort([]byte{0x3, 0x1, 0x1}, 0xd1, 0x31)...)
+	nodes = append(nodes, leafShort([]byte{0x3, 0x1, 0x2}, 0xd2, 0x32)...)
+	// 0x4 — active leaf so the root stays mixed.
+	nodes = append(nodes, leafShort([]byte{0x4}, 0xb4, 0x40)...)
+
+	periods := map[byte]uint32{
+		0x11: 0, 0x21: 0, 0x22: 0, 0x31: 0, 0x32: 0, // cold
+		0x40: 5, // active
+	}
+	lookup := func(k []byte) (uint32, bool) {
+		p, ok := periods[k[0]]
+		return p, ok
+	}
+	return nodes, lookup
+}
+
+// TestFinalizeFloorCap exercises the unified (floor, cap) selection over a
+// fixture with cold regions of height 1, 2 and 3 under a mixed root.
+func TestFinalizeFloorCap(t *testing.T) {
+	cases := []struct {
+		name           string
+		minH, maxH     uint8
+		wantPaths      []string
+		describeReason string
+	}{
+		{
+			name: "maximal", minH: 0, maxH: 0,
+			wantPaths:      []string{"01", "02", "03"},
+			describeReason: "every maximal cold root (incl. the lone leaf)",
+		},
+		{
+			name: "exactly-2", minH: 2, maxH: 2,
+			wantPaths:      []string{"02", "0301"},
+			describeReason: "height-2 region + height-2 tile of the taller one; h1 skipped",
+		},
+		{
+			name: "floor2-cap3", minH: 2, maxH: 3,
+			wantPaths:      []string{"02", "03"},
+			describeReason: "h2 and h3 regions whole; h1 skipped; h3 not tiled",
+		},
+		{
+			name: "exactly-3", minH: 3, maxH: 3,
+			wantPaths:      []string{"03"},
+			describeReason: "only the height-3 region; shorter skipped",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			nodes, lookup := floorCapFixture()
+			var emitted []InactiveSubtree
+			id := makeIdentifierBounded(5, 1, tc.minH, tc.maxH, &emitted)
+			if err := id.runCoreLoop(newFakeIterator(nodes), lookup, "account", common.Hash{}, true); err != nil {
+				t.Fatalf("runCoreLoop: %v", err)
+			}
+			if !samePathSet(emitted, tc.wantPaths...) {
+				t.Errorf("emitted %v, want %v (%s)",
+					emittedPaths(emitted), tc.wantPaths, tc.describeReason)
+			}
+		})
+	}
+}
+
+// TestFinalizeCapTiling pins the region-break: a uniformly cold tree taller than
+// the cap is tiled into cap-height units, never emitted as a taller subtree.
+// Maximal mode (no cap) emits the whole tree as one unit for contrast.
+func TestFinalizeCapTiling(t *testing.T) {
+	// Uniformly cold height-4 tree:
+	//   root → 0x1 (h3) → {0x11 (h2), 0x12 (h2)} → leaves
+	nodes := []fakeNode{
+		{path: []byte{}, hash: hashFromByte(0xa0)},
+		{path: []byte{0x1}, hash: hashFromByte(0xa1)},
+		{path: []byte{0x1, 0x1}, hash: hashFromByte(0xb1)},
+	}
+	nodes = append(nodes, leafShort([]byte{0x1, 0x1, 0x1}, 0xc1, 0x51)...)
+	nodes = append(nodes, leafShort([]byte{0x1, 0x1, 0x2}, 0xc2, 0x52)...)
+	nodes = append(nodes, fakeNode{path: []byte{0x1, 0x2}, hash: hashFromByte(0xb2)})
+	nodes = append(nodes, leafShort([]byte{0x1, 0x2, 0x1}, 0xc3, 0x53)...)
+	nodes = append(nodes, leafShort([]byte{0x1, 0x2, 0x2}, 0xc4, 0x54)...)
+	lookup := func(_ []byte) (uint32, bool) { return 0, true } // all cold
+
+	t.Run("cap-2-tiles", func(t *testing.T) {
+		var emitted []InactiveSubtree
+		id := makeIdentifierBounded(5, 1, 1, 2, &emitted)
+		if err := id.runCoreLoop(newFakeIterator(nodes), lookup, "account", common.Hash{}, true); err != nil {
+			t.Fatalf("runCoreLoop: %v", err)
+		}
+		if !samePathSet(emitted, "0101", "0102") {
+			t.Errorf("emitted %v, want the two height-2 tiles {0101,0102}; "+
+				"the root/height-3 node must not be emitted", emittedPaths(emitted))
+		}
+	})
+
+	t.Run("maximal-whole-tree", func(t *testing.T) {
+		var emitted []InactiveSubtree
+		id := makeIdentifierBounded(5, 1, 0, 0, &emitted)
+		if err := id.runCoreLoop(newFakeIterator(nodes), lookup, "account", common.Hash{}, true); err != nil {
+			t.Fatalf("runCoreLoop: %v", err)
+		}
+		if !samePathSet(emitted, "") {
+			t.Errorf("emitted %v, want the whole tree as one unit {\"\"}", emittedPaths(emitted))
+		}
+	})
+}
+
 // TestIsInactive covers the threshold edge cases.
 func TestIsInactive(t *testing.T) {
 	cases := []struct {

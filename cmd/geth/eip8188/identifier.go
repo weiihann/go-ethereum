@@ -109,13 +109,22 @@ type IdentifyConfig struct {
 	// Scope selects which tries to walk.
 	Scope Scope
 
-	// SubtreeHeight selects the granularity of emitted subtrees.
-	//   0 → maximal inactive subtrees (largest fully-inactive subtree; default).
-	//   N → emit only subtrees of height exactly N (from leaves: a leaf node is
-	//       height 1) whose leaves are all inactive. Mirrors gballet's height-N
-	//       archival, gated by inactivity. Taller fully-cold regions are tiled
-	//       into height-N pieces; cold regions shorter than N are left in place.
-	SubtreeHeight uint8
+	// MinHeight and MaxHeight bound the height (counted from leaves; a leaf
+	// node is height 1, a branch directly above leaves is height 2) of emitted
+	// fully-inactive subtrees, inclusive. They form a single selection rule
+	// that subsumes the three granularity modes:
+	//
+	//   MinHeight (floor, effective minimum 1): skip a maximal fully-cold region
+	//       shorter than this. A floor of 2 drops lone cold leaves, which cost a
+	//       stub plus a record with no interior saved (net-negative).
+	//   MaxHeight (cap, 0 = unbounded): force-emit (tile) a fully-cold region
+	//       once it reaches this height, so no emitted subtree is taller and a
+	//       single reconstruction touches at most 16^(MaxHeight-1) leaves.
+	//
+	// Modes: exactly-N = (N, N); maximal inactive subtree = (1, 0) — the zero
+	// value (0, 0) is also treated as maximal; floor/cap = (2, N).
+	MinHeight uint8
+	MaxHeight uint8
 }
 
 // IdentifyStats summarises an identification run.
@@ -126,7 +135,7 @@ type IdentifyStats struct {
 	InactiveAccountTrees uint64 `json:"inactive_account_subtrees"`
 	InactiveStorageTrees uint64 `json:"inactive_storage_subtrees"`
 	SnapshotMismatches   uint64 `json:"snapshot_mismatches"`
-	MaxSubtreeLeaves     uint64 `json:"max_subtree_leaves"` // largest emitted subtree (sanity: height-3 ⇒ ≤256)
+	MaxSubtreeLeaves     uint64 `json:"max_subtree_leaves"` // largest emitted subtree (sanity: bounded by 16^(MaxHeight-1) when a cap is set)
 }
 
 // EmitFunc receives each inactive subtree root as it's identified. Callers
@@ -194,7 +203,17 @@ type nodeFrame struct {
 	allInactive    bool
 	leafCount      uint64
 	maxChildHeight uint8             // tallest child seen so far; node height = maxChildHeight+1
-	candidates     []InactiveSubtree // deferred inactive children waiting for parent decision (maximal mode)
+	emittedAtCap   bool              // emitted as a complete unit at the cap; parent must not re-roll it
+	candidates     []deferredSubtree // deferred inactive children waiting for parent decision (maximal roll-up)
+}
+
+// deferredSubtree is a fully-inactive subtree root held on its parent's frame
+// pending the parent's finalization. Its height travels with it so the floor
+// (MinHeight) can be applied when the parent flushes candidates as maximal
+// roots.
+type deferredSubtree struct {
+	sub    InactiveSubtree
+	height uint8
 }
 
 // leafLookup returns (period, ok) for a leaf identified by leafKey. It also
@@ -438,45 +457,50 @@ func (id *identifier) runCoreLoop(trieIt trie.NodeIterator, lookup leafLookup, t
 	return nil
 }
 
-// finalize processes a popped frame: either propagate its status to the
-// parent, or emit candidates if the parent is mixed.
+// finalize processes a popped frame under the unified (floor, cap) rule:
+//
+//	floor = max(cfg.MinHeight, 1): skip a maximal fully-cold region shorter
+//	    than this height.
+//	cap   = cfg.MaxHeight (0 = unbounded): force-emit a fully-cold region once
+//	    it reaches this height, so no emitted subtree is taller.
+//
+// Heights are counted from leaves (a leaf node is height 1, a branch directly
+// above leaves is height 2). The result is one of: propagate the popped node's
+// status to its parent, emit
+// it as a complete unit at the cap, or flush its deferred candidates as maximal
+// roots when it turns out mixed.
 func (id *identifier) finalize(popped *nodeFrame, stack []*nodeFrame, trieLabel string, owner common.Hash, emitOutput bool) {
-	// Height-N gated mode: emit a subtree iff it is exactly the target height
-	// (from leaves) AND all its leaves are inactive. No maximal roll-up — taller
-	// fully-cold regions are tiled into height-N pieces (their height-N
-	// descendants were already emitted), and regions shorter than N are skipped.
-	if id.cfg.SubtreeHeight != 0 {
-		poppedHeight := popped.maxChildHeight + 1
-		if emitOutput && poppedHeight == id.cfg.SubtreeHeight && popped.allInactive && popped.hash != (common.Hash{}) {
-			id.emitSubtree(InactiveSubtree{
-				Trie:      trieLabel,
-				Owner:     owner,
-				Path:      common.Bytes2Hex(popped.path),
-				Hash:      popped.hash,
-				LeafCount: popped.leafCount,
-			})
-		}
-		if len(stack) > 0 {
-			parent := stack[len(stack)-1]
-			parent.leafCount += popped.leafCount
-			if poppedHeight > parent.maxChildHeight {
-				parent.maxChildHeight = poppedHeight
-			}
-			if !popped.allInactive {
-				parent.allInactive = false
-			}
-		}
-		return
+	floor := id.cfg.MinHeight
+	if floor < 1 {
+		floor = 1
+	}
+	capHeight := id.cfg.MaxHeight // 0 == unbounded
+	poppedHeight := popped.maxChildHeight + 1
+	emittable := popped.allInactive && popped.hash != (common.Hash{})
+
+	// Cap: a fully-cold node that reaches the cap is emitted as a complete unit
+	// (tiling taller regions). It is sealed — it must not roll up into anything
+	// larger, which the parent enforces below via emittedAtCap.
+	if emitOutput && emittable && capHeight != 0 && poppedHeight == capHeight {
+		id.emitSubtree(InactiveSubtree{
+			Trie:      trieLabel,
+			Owner:     owner,
+			Path:      common.Bytes2Hex(popped.path),
+			Hash:      popped.hash,
+			LeafCount: popped.leafCount,
+		})
+		popped.emittedAtCap = true
+		popped.candidates = nil // inner candidates are subsumed by the emitted unit
 	}
 
 	if len(stack) == 0 {
 		// popped is the trie root.
-		if !emitOutput {
+		if !emitOutput || popped.emittedAtCap {
 			return
 		}
-		if popped.allInactive && popped.hash != (common.Hash{}) {
-			// Whole trie is inactive — emit it and discard nested candidates
-			// (they're subsumed by the root).
+		if emittable && poppedHeight >= floor && withinCap(poppedHeight, capHeight) {
+			// Whole trie is one fully-cold unit within bounds; it subsumes any
+			// nested candidates.
 			id.emitSubtree(InactiveSubtree{
 				Trie:      trieLabel,
 				Owner:     owner,
@@ -486,58 +510,83 @@ func (id *identifier) finalize(popped *nodeFrame, stack []*nodeFrame, trieLabel 
 			})
 			return
 		}
-		// Root is mixed (or unhashable): emit its deferred inactive
-		// candidates as maximal subtree roots.
-		for _, c := range popped.candidates {
-			id.emitSubtree(c)
-		}
+		// Root is mixed, unhashable, or out of bounds: emit its deferred
+		// candidates that fall within [floor, cap].
+		id.flushCandidates(popped.candidates, floor, capHeight)
 		return
 	}
 
 	parent := stack[len(stack)-1]
 	parent.leafCount += popped.leafCount
+	if poppedHeight > parent.maxChildHeight {
+		parent.maxChildHeight = poppedHeight
+	}
 
-	if popped.allInactive {
-		// Subsume into parent — parent may also be fully inactive. If popped
-		// has a standalone hash, it becomes a candidate the parent will
-		// either keep (if itself inactive) or emit (if mixed).
-		if popped.hash != (common.Hash{}) {
-			parent.candidates = append(parent.candidates, InactiveSubtree{
+	if popped.emittedAtCap {
+		// The emitted unit is sealed. The parent starts a fresh region above it
+		// and must never roll this unit into a taller subtree (double-emit), so
+		// treat the cap boundary as a region break.
+		parent.allInactive = false
+		return
+	}
+
+	if !popped.allInactive {
+		// popped has at least one active leaf → parent is mixed. popped's
+		// deferred candidates are now maximal roots (their parent is mixed).
+		parent.allInactive = false
+		if emitOutput {
+			id.flushCandidates(popped.candidates, floor, capHeight)
+		}
+		popped.candidates = nil
+		return
+	}
+
+	// popped is fully inactive and below the cap → defer for maximal roll-up.
+	if popped.hash != (common.Hash{}) {
+		parent.candidates = append(parent.candidates, deferredSubtree{
+			sub: InactiveSubtree{
 				Trie:      trieLabel,
 				Owner:     owner,
 				Path:      common.Bytes2Hex(popped.path),
 				Hash:      popped.hash,
 				LeafCount: popped.leafCount,
-			})
-			// popped is itself emittable; its deferred inner candidates are
-			// PROPER SUBSETS of popped's subtree. If we inherited them, the
-			// parent would later emit popped AND all the inner ones — the
-			// double-counting bug. Inner candidates are subsumed by popped.
-			//
-			// On mainnet scale that overcounting led to the converter
-			// processing a parent first (deleting its interior) then trying
-			// to convert each child (now reading deleted nodes), producing
-			// millions of "Unexpected trie node" pathdb errors and
-			// eventually crashing pebble under the log volume.
-			popped.candidates = nil
-		} else {
-			// popped is embedded (no standalone hash); it can't be emitted
-			// as a subtree root itself, so bubble its inner candidates up.
-			parent.candidates = append(parent.candidates, popped.candidates...)
-		}
-		// allInactive unchanged — parent stays "all inactive so far" if it was.
-	} else {
-		// popped has at least one active leaf → parent is mixed.
-		parent.allInactive = false
-		// popped's deferred candidates are now maximal inactive subtree roots
-		// (their parent — popped — is mixed).
-		if emitOutput {
-			for _, c := range popped.candidates {
-				id.emitSubtree(c)
-			}
-		}
+			},
+			height: poppedHeight,
+		})
+		// popped is itself emittable; its deferred inner candidates are PROPER
+		// SUBSETS of popped's subtree. If the parent inherited them it would
+		// later emit popped AND the inner ones — the double-counting bug. On
+		// mainnet scale that overcounting made the converter delete a parent's
+		// interior then re-read it for each child, flooding pathdb with
+		// "Unexpected trie node" errors and crashing pebble. Inner candidates
+		// are subsumed by popped.
 		popped.candidates = nil
+	} else {
+		// popped is embedded (no standalone hash); it can't be emitted as a
+		// subtree root itself, so bubble its inner candidates up.
+		parent.candidates = append(parent.candidates, popped.candidates...)
 	}
+	// allInactive unchanged — parent stays "all inactive so far" if it was.
+}
+
+// flushCandidates emits deferred candidates whose height falls within the
+// inclusive [floor, cap] bounds (cap == 0 means unbounded). Candidates outside
+// the bounds are dropped: shorter than the floor by design, taller than the cap
+// only in the rare case where the cap height landed on an embedded node and the
+// region rolled past it (matching the exactly-N behaviour of skipping such a
+// branch rather than emitting an over-cap subtree).
+func (id *identifier) flushCandidates(cands []deferredSubtree, floor, capHeight uint8) {
+	for _, c := range cands {
+		if c.height >= floor && withinCap(c.height, capHeight) {
+			id.emitSubtree(c.sub)
+		}
+	}
+}
+
+// withinCap reports whether height is at or below the cap. A zero cap is
+// unbounded.
+func withinCap(height, capHeight uint8) bool {
+	return capHeight == 0 || height <= capHeight
 }
 
 // emitSubtree calls the user emit callback and updates stats.
