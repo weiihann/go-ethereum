@@ -193,10 +193,10 @@ chunk-compressed archive (explained below).
 
 | height | trie nodes after | subtrees moved (stubs) | PebbleDB reduction | archive raw | archive zstd | net raw | **net zstd** |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| **2** | 1,159.3 M | 295.1 M | **-66.93 GB** | 63.35 GB | 31.39 GB | -3.58 | **-35.54** |
-| 3 | 1,234.4 M | 77.0 M | -54.54 GB | 43.09 GB | 22.59 GB | -11.45 | -31.95 |
-| 4 | 1,380.6 M | 17.5 M | -41.60 GB | 30.45 GB | 16.44 GB | -11.15 | -25.16 |
-| 5 | 1,389.7 M | 3.44 M | -40.69 GB | 29.30 GB | 16.01 GB | -11.39 | -24.68 |
+| **2** | 1,159.3 M | 295.1 M | **-66.93 GB (-26.6%)** | 63.35 GB | 31.39 GB | -3.58 (-1.4%) | **-35.54 (-14.1%)** |
+| 3 | 1,234.4 M | 77.0 M | -54.54 GB (-21.7%) | 43.09 GB | 22.59 GB | -11.45 (-4.5%) | -31.95 (-12.7%) |
+| 4 | 1,380.6 M | 17.5 M | -41.60 GB (-16.5%) | 30.45 GB | 16.44 GB | -11.15 (-4.4%) | -25.16 (-10.0%) |
+| 5 | 1,389.7 M | 3.44 M | -40.69 GB (-16.2%) | 29.30 GB | 16.01 GB | -11.39 (-4.5%) | -24.68 (-9.8%) |
 
 The answer flips depending on whether you compress the archive. On the raw archive,
 height 3 is best (-11.45), because height 2's archive is too big to pay for itself. But
@@ -215,8 +215,8 @@ Physical footprint at height 2 (compacted pebble SSTs, ancient freezer excluded)
 ```
                        PebbleDB     + archive    = total       vs baseline
    baseline            251.75 GB     -            251.75 GB     -
-   after move-out      184.83 GB     63.35 GB     248.18 GB     -3.58 GB
-   archive compressed  184.83 GB     31.39 GB     216.22 GB     -35.54 GB
+   after move-out      184.83 GB     63.35 GB     248.18 GB     -3.58 GB (-1.4%)
+   archive compressed  184.83 GB     31.39 GB     216.22 GB     -35.54 GB (-14.1%)
 ```
 
 The archive is compressed in roughly 1 MB chunks, one zstd frame per chunk plus a
@@ -240,7 +240,7 @@ measured the same way:
 | stored in the flat file | full subtree structure | leaves only, interior rebuilt on read |
 | trie value bytes | 148.14 -> 32.68 GB (-115.46) | 148.13 -> 98.86 GB (-49.28) |
 | flat file | **162.39 GB** | **43.09 GB** raw / **22.59 GB** zstd |
-| net (trie delta + flat file) | **+46.93 GB** | **-6.19 GB** raw / **-26.69 GB** zstd |
+| net (trie delta + flat file) | **+46.93 GB (+18.6%)** | **-6.19 GB (-2.5%)** raw / **-26.69 GB (-10.6%)** zstd |
 
 The flat file is the whole story. The naive approach keeps the full structure, which
 costs 162 GB, close to four times the leaves-only archive and over seven times the
@@ -272,8 +272,8 @@ decrease.
 | trie nodes | 1,895.4 M | 1,895.4 M | **1,159.3 M** (-39%) |
 | snapshot | 101.38 GB | ~101.6 GB (+under 0.5%) | ~101.6 GB |
 | external archive | - | - | 63.35 GB raw / **31.39 GB** zstd |
-| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **184.83 GB** (-66.9) |
-| **net total disk vs baseline** | - | ~+0.3 GB | **-3.58 GB raw / -35.54 GB compressed** |
+| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **184.83 GB** (-66.9 GB, -26.6%) |
+| **net total disk vs baseline** | - | ~+0.3 GB (+0.1%) | **-3.58 GB (-1.4%) raw / -35.54 GB (-14.1%) compressed** |
 
 What we take from this:
 
