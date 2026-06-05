@@ -26,9 +26,9 @@ import (
 
 var testAddr = common.HexToAddress("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
 
-// TestZoneAccountPrefix verifies that account header keys have the correct
-// 16-bit zone prefix: the first two bytes are 0x0000.
-func TestZoneAccountPrefix(t *testing.T) {
+// TestZone000Prefix verifies that account header keys (zone 000) have
+// the correct 3-bit prefix: the top 3 bits of the first byte are 000.
+func TestZone000Prefix(t *testing.T) {
 	keys := [][]byte{
 		GetBinaryTreeKeyBasicData(testAddr),
 		GetBinaryTreeKeyCodeHash(testAddr),
@@ -42,26 +42,26 @@ func TestZoneAccountPrefix(t *testing.T) {
 		if len(key) != 32 {
 			t.Fatalf("key %d: expected 32 bytes, got %d", i, len(key))
 		}
-		// Zone prefix must be 0x0000.
-		if key[0] != 0x00 || key[1] != 0x00 {
-			t.Fatalf("key %d: account zone prefix violated, first bytes = 0x%02x%02x", i, key[0], key[1])
+		// Top 3 bits must be 000 → first byte AND 0xE0 == 0x00.
+		if key[0]&0xE0 != 0x00 {
+			t.Fatalf("key %d: zone 000 prefix violated, first byte = 0x%02x", i, key[0])
 		}
 	}
 }
 
-// TestZoneCodePrefix verifies that code overflow keys have the correct 16-bit
-// zone prefix: the first two bytes are 0x0001.
-func TestZoneCodePrefix(t *testing.T) {
+// TestZone001Prefix verifies that code overflow keys (zone 001) have
+// the correct 3-bit prefix: bits [255..253] = 001.
+func TestZone001Prefix(t *testing.T) {
 	codeHash := common.HexToHash("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
 
-	// Chunk 128 is the first chunk in the code zone.
+	// Chunk 128 is the first chunk in zone 001.
 	key := GetBinaryTreeKeyCodeChunk(testAddr, codeHash, uint256.NewInt(128))
 	if len(key) != 32 {
 		t.Fatalf("expected 32 bytes, got %d", len(key))
 	}
-	// Zone prefix must be 0x0001.
-	if key[0] != 0x00 || key[1] != 0x01 {
-		t.Fatalf("code zone prefix violated, first bytes = 0x%02x%02x", key[0], key[1])
+	// Top 3 bits must be 001 → first byte AND 0xE0 == 0x20.
+	if key[0]&0xE0 != 0x20 {
+		t.Fatalf("zone 001 prefix violated, first byte = 0x%02x", key[0])
 	}
 }
 
@@ -81,50 +81,50 @@ func TestZone1Prefix(t *testing.T) {
 	}
 }
 
-// TestStorageBoundary verifies that slot 63 goes to the account zone and slot
-// 64 goes to the storage zone.
+// TestStorageBoundary verifies that slot 63 goes to zone 000 and slot 64
+// goes to zone 1.
 func TestStorageBoundary(t *testing.T) {
-	// Slot 63: account zone, sub_idx = 0x40 + 63 = 0x7F.
+	// Slot 63: zone 000, sub_idx = 0x40 + 63 = 0x7F.
 	slot63 := common.Hash{}
 	slot63[31] = 63
 	key63 := GetBinaryTreeKeyStorageSlot(testAddr, slot63[:])
-	if key63[0] != 0x00 || key63[1] != 0x00 {
-		t.Fatalf("slot 63: expected account zone, first bytes = 0x%02x%02x", key63[0], key63[1])
+	if key63[0]&0xE0 != 0x00 {
+		t.Fatalf("slot 63: expected zone 000, first byte = 0x%02x", key63[0])
 	}
 	if key63[31] != 0x7F {
 		t.Fatalf("slot 63: expected sub_idx 0x7F, got 0x%02x", key63[31])
 	}
 
-	// Slot 64: storage zone, sub_idx = 64 % 256 = 64.
+	// Slot 64: zone 1, sub_idx = 64 % 256 = 64.
 	slot64 := common.Hash{}
 	slot64[31] = 64
 	key64 := GetBinaryTreeKeyStorageSlot(testAddr, slot64[:])
 	if key64[0]&0x80 != 0x80 {
-		t.Fatalf("slot 64: expected storage zone, first byte = 0x%02x", key64[0])
+		t.Fatalf("slot 64: expected zone 1, first byte = 0x%02x", key64[0])
 	}
 	if key64[31] != 64 {
 		t.Fatalf("slot 64: expected sub_idx 64, got %d", key64[31])
 	}
 }
 
-// TestCodeChunkBoundary verifies that chunk 127 goes to the account zone and
-// chunk 128 goes to the code zone.
+// TestCodeChunkBoundary verifies that chunk 127 goes to zone 000 and
+// chunk 128 goes to zone 001.
 func TestCodeChunkBoundary(t *testing.T) {
 	codeHash := common.HexToHash("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
 
-	// Chunk 127: account zone, sub_idx = 0x80 + 127 = 0xFF.
+	// Chunk 127: zone 000, sub_idx = 0x80 + 127 = 0xFF.
 	key127 := GetBinaryTreeKeyCodeChunk(testAddr, codeHash, uint256.NewInt(127))
-	if key127[0] != 0x00 || key127[1] != 0x00 {
-		t.Fatalf("chunk 127: expected account zone, first bytes = 0x%02x%02x", key127[0], key127[1])
+	if key127[0]&0xE0 != 0x00 {
+		t.Fatalf("chunk 127: expected zone 000, first byte = 0x%02x", key127[0])
 	}
 	if key127[31] != 0xFF {
 		t.Fatalf("chunk 127: expected sub_idx 0xFF, got 0x%02x", key127[31])
 	}
 
-	// Chunk 128: code zone, tree_index=0, sub_idx=0.
+	// Chunk 128: zone 001, tree_index=0, sub_idx=0.
 	key128 := GetBinaryTreeKeyCodeChunk(testAddr, codeHash, uint256.NewInt(128))
-	if key128[0] != 0x00 || key128[1] != 0x01 {
-		t.Fatalf("chunk 128: expected code zone, first bytes = 0x%02x%02x", key128[0], key128[1])
+	if key128[0]&0xE0 != 0x20 {
+		t.Fatalf("chunk 128: expected zone 001, first byte = 0x%02x", key128[0])
 	}
 	if key128[31] != 0x00 {
 		t.Fatalf("chunk 128: expected sub_idx 0x00, got 0x%02x", key128[31])
