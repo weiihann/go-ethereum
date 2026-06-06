@@ -168,18 +168,31 @@ subtree with a 17 byte pointer:
 ```
 
 Storing leaves only and rebuilding the interior on read is the choice that makes this pay
-off. The alternative, copying each cold subtree's full structure with its interior branches
-into the flat file, was measured on the same datadir:
+off, and it helps to see what the obvious alternative costs.
 
-| | full structure (every cold node) | leaves only (this design) |
+### Why leaves only: the naive alternative
+
+The naive move-out copies every cold node into the flat file as-is, interior branches and
+all. It frees the most from the main database, because it relocates everything cold, but the
+flat file pays for it. We measured both on the same datadir, in logical value bytes so the
+two are counted the same way:
+
+| | naive: every cold node, full structure | ours: cold subtrees, leaves only (cap 3) |
 |---|---:|---:|
 | what lands in the flat file | the whole subtree, interior and all | the leaves only, interior rebuilt on read |
-| flat file size | **162.39 GB** | **82.96 GB** raw / **41.58 GB** compressed |
+| stubs written | 316.3 M | 239.6 M |
+| trie shrinks from 148.1 GB to | 32.7 GB (-115.5) | 58.7 GB (-89.4) |
+| flat file | **162.39 GB** | **82.96 GB** raw / **41.58 GB** compressed |
+| net total disk | **+46.93 GB** (goes up) | **-6.43 GB** raw / **-47.81 GB** compressed |
 
-The full structure makes the flat file 162 GB, larger than the space it frees back in the
-main database, so total disk goes *up* by about 47 GB. Storing leaves only keeps the flat
-file far smaller, so total disk comes *down* instead, by how much is the rest of this
-section. Dropping the interior and rebuilding it on read is the whole trick.
+The naive approach frees more from the main database (-115 GB of trie against our -89 GB), but
+its flat file is 162 GB, larger than what it freed, so total disk goes *up* by about 47 GB.
+Storing leaves only keeps the flat file small enough that total disk comes *down*. Dropping
+the interior and rebuilding it on read is the whole trick.
+
+These are logical value-byte figures so the two move-outs line up. They come out a little
+smaller than the physical on-disk numbers in the cap table, which also count keys and database
+overhead, but the direction and the size of the gap are the same.
 
 ### Finding the cold subtrees
 

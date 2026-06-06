@@ -28,19 +28,25 @@ def tradeoff() -> None:
     ax1.plot(CAPS, DISK_SAVED, "o-", color=BLUE, lw=2.2)
     ax1.tick_params(axis="y", labelcolor=BLUE)
     ax1.set_xticks(CAPS)
-    ax1.set_ylim(0, 78)
+    ax1.set_ylim(0, 80)
     for x, y in zip(CAPS, DISK_SAVED):
+        # Last point sits near the top by the red marker; drop its label below.
+        dy, va = (-13, "top") if x == CAPS[-1] else (10, "bottom")
         ax1.annotate(f"-{y:.1f}", (x, y), textcoords="offset points",
-                     xytext=(0, 9), ha="center", color=BLUE, fontsize=9)
+                     xytext=(0, dy), ha="center", va=va, color=BLUE, fontsize=9)
 
     ax2 = ax1.twinx()
     ax2.set_ylabel("worst-case leaves rebuilt per read", color=RED)
     ax2.plot(CAPS, MAX_LEAVES, "s--", color=RED, lw=2.2)
     ax2.tick_params(axis="y", labelcolor=RED)
     ax2.set_yscale("log")
+    ax2.set_ylim(6, 2600)  # room below the lowest point (16) and above the highest (1118)
     for x, y in zip(CAPS, MAX_LEAVES):
+        # Lowest point would hit the x-axis, highest would collide with the blue
+        # label, so label both above and the middle ones below.
+        dy, va = (10, "bottom") if x in (CAPS[0], CAPS[-1]) else (-14, "top")
         ax2.annotate(f"{y}", (x, y), textcoords="offset points",
-                     xytext=(0, -15), ha="center", color=RED, fontsize=9)
+                     xytext=(0, dy), ha="center", va=va, color=RED, fontsize=9)
 
     ax1.annotate("most saving,\nstill a small rebuild", (3, 54.28),
                  textcoords="offset points", xytext=(26, -10), ha="left", fontsize=9,
