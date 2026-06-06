@@ -218,27 +218,7 @@ database shrinks more. We swept the cap from 2 to 5, floor fixed at 2:
 A taller cap always saves more disk, but the gains shrink fast, each step worth about half
 the last, while the worst-case rebuild grows the other way:
 
-```
-   space saved on disk, compressed (GB, longer is better)
-
-   cap 2  ##################                -35.54
-   cap 3  ###########################       -54.28   <- knee
-   cap 4  ###############################   -62.58
-   cap 5  ################################  -64.87
-          +--------+--------+--------+-------+
-          0       -20      -40      -60    -65
-```
-
-```
-   worst-case subtree rebuilt on a cold read (leaves, longer is slower)
-
-   cap 2  #                                       16
-   cap 3  ##                                      73
-   cap 4  ##########                             295
-   cap 5  #####################################  1118
-          +----------+----------+----------+--------+
-          0         300        600        900    1200
-```
+![Disk saved flattens after cap 3 while the worst-case rebuild keeps climbing](images/floorcap-tradeoff.png)
 
 This is the real tradeoff in picking a cap. A greater cap reduces disk further, but every
 read that touches expired state rebuilds the whole subtree it lands in, and a bigger subtree
@@ -247,6 +227,12 @@ sweet spot is not the deepest cap. **Cap 3 is the knee**: it captures most of th
 (-54.28 GB) while keeping the rebuild small, at most 73 leaves. Cap 4 trades another 8 GB for
 a roughly four times larger rebuild, and cap 5 saves almost nothing for a rebuild past a
 thousand leaves.
+
+The saving comes from the main database, not the archive. As the cap grows, PebbleDB frees
+more and more (it deletes more interior and leaves fewer stubs), while the compressed archive
+barely grows past cap 3, so the net keeps improving but with shrinking steps:
+
+![PebbleDB reduction grows with the cap while the compressed archive flattens, so net improves](images/floorcap-components.png)
 
 ---
 
