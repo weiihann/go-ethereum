@@ -62,9 +62,6 @@ physical on-disk compacted PebbleDB is about 251.75 GB.
 | snapshot, storage (keys / values) | - | 69.74 / 13.32 GB |
 | **snapshot total** | ~1.15 B records | **101.38 GB** |
 
-At this point the node has no way to tell which leaves are cold. Nothing carries a
-timestamp. That is what step 2 fixes.
-
 ---
 
 ## Step 2: period injection
@@ -72,10 +69,7 @@ timestamp. That is what step 2 fixes.
 **What it does.** For each account and slot, store the most recent period it was
 written. This goes only into the snapshot. A "period" is just a time window, here 1,314,000 blocks (about six months). A leaf is inactive if it has not been written for at least `minAge` periods (here it's 2, so 1-year inactivity in total).
 
-**Where the timestamps come from.** An external source (a database of historical
-access "diffs", meaning which address or slot changed at which block) streams
-`(key, block)` pairs. The injector turns each block into a period and stamps the
-matching snapshot record. In this experiment, we used [Xatu](https://github.com/ethpandaops/xatu) as the primary data source.
+**Where the timestamps come from.** In this experiment, we used [Xatu](https://github.com/ethpandaops/xatu) as the primary data source.
 
 ```
     access-history source                     injector             snapshot (pebble)
@@ -163,7 +157,7 @@ subtree with a 17 byte pointer:
   stub expects, which doubles as a corruption check.
 
 ```
-   read or write of an expired leaf:
+   read or write of an cold leaf:
      stub(offset, size) -> read records -> rebuild subtree in memory -> use it
 ```
 
@@ -190,24 +184,19 @@ its flat file is 162 GB, larger than what it freed, so total disk goes *up* by a
 Storing leaves only keeps the flat file small enough that total disk comes *down*. Dropping
 the interior and rebuilding it on read is the whole trick.
 
-These are logical value-byte figures so the two move-outs line up. They come out a little
-smaller than the physical on-disk numbers in the cap table, which also count keys and database
-overhead, but the direction and the size of the gap are the same.
-
 ### Finding the cold subtrees
 
 One streaming pass walks the trie and the period-stamped snapshot side by side, rolling the
 all-inactive answer up from the leaves. When a cold subtree is complete and within the floor
 and cap, it materialises the subtree, writes the leaf records, stages the stub, and deletes
 the interior, all in the same pass. The rebuilt-hash check runs before anything is deleted,
-so a mismatch aborts that one subtree rather than corrupting state. Across every run
-`errors = 0`.
+so a mismatch aborts that one subtree rather than corrupting state.
 
 ### Compressing the archive
 
 The flat file is raw on disk, but it compresses well. Squeezed in roughly 1 MB chunks, one
 zstd frame per chunk plus a small offset table, it drops by about half while still letting
-you resurrect a single subtree by decompressing just its chunk. Compression is the biggest
+you rebuild a single subtree by decompressing just its chunk. Compression is the biggest
 single lever in the whole pipeline, so the results below report both the raw and the
 compressed archive. Two things that did not work: compressing each leaf or each subtree on
 its own, because the blocks are too small for zstd to find anything, and a shared dictionary
@@ -230,8 +219,7 @@ database shrinks more. We swept the cap from 2 to 5, floor fixed at 2:
 
 The two percentages use different baselines. The trie reduction is against the **trie size**
 (148.1 GB from step 1), since the move-out only deletes trie nodes and leaves the snapshot
-alone. The **net disk** columns are against the full **251.75 GB on-disk footprint**, since
-net is a change to total disk.
+alone. The **net disk** columns are against the full **251.75 GB on-disk footprint**.
 
 A taller cap always saves more disk, but the gains shrink fast, each step worth about half
 the last, while the worst-case rebuild grows the other way:
@@ -239,7 +227,7 @@ the last, while the worst-case rebuild grows the other way:
 ![Disk saved flattens after cap 3 while the worst-case rebuild keeps climbing](images/floorcap-tradeoff.png)
 
 This is the real tradeoff in picking a cap. A greater cap reduces disk further, but every
-read that touches expired state rebuilds the whole subtree it lands in, and a bigger subtree
+read that touches cold state rebuilds the whole subtree it lands in, and a bigger subtree
 is a slower rebuild. Cap 2 rebuilds at most 16 leaves, cap 5 up to over a thousand. So the
 sweet spot is not the deepest cap. **Cap 3 is the best balance**: it banks most of the disk
 saving (-54.28 GB out of a possible -64.87 GB at the deepest cap) while keeping the rebuild
@@ -274,28 +262,26 @@ What we take from this:
   cold leaves. With the floor 2 / cap 3 rule PebbleDB drops 95.9 GB and the leaves land in
   a flat file you can park on cheaper storage.
 - Total on-disk still shrinks after counting the archive: -12.90 GB raw, and -54.28 GB
-  (about 22%) with the chunked compression. The price is rebuilding a small subtree on the
-  rare read of expired state, at most 73 leaves at this cap.
-- The cap height is a disk-versus-read-speed dial. A deeper cap frees more disk but makes
+  (about 22%) with the chunked compression. The price is rebuilding a small subtree on a rare access of cold state, at most 73 leaves at this cap.
+- The cap height is a tradeoff between disk size and rebuild cost. A deeper cap frees more disk but makes
   the worst-case rebuild larger, and the disk gains shrink fast while the rebuild cost
-  climbs. Cap 3 is the best balance, cap 4 the aggressive end (more disk, bigger rebuild),
+  climbs. Cap 3 is the best balance, cap 4 is more aggresive (more disk, bigger rebuild),
   and cap 5 is barely worth it.
 
 ## Open Questions
 
 **Performance under real workloads.** Everything above is a static footprint
-measurement. What it does not measure is the runtime cost of reading expired state. Every
+measurement. What it does not measure is the runtime cost of reading cold state. Every
 hit on a moved subtree pays a rebuild: read the leaf records, rebuild the subtree in memory,
 and hash-check it before returning. That is cheap at a shallow cap, at most 73 leaves at
 cap 3, but it grows with the cap, to about 300 leaves at cap 4 and over a thousand at cap 5,
-and it happens on every access to an expired subtree. This is the main reason a deeper cap
+and it happens on every access to an cold subtree. This is the main reason a deeper cap
 is not automatically better despite saving more disk.
 
 So the footprint winner is not automatically the workload winner. A design that saves the
 most disk can still lose if a common access pattern keeps reaching into cold subtrees and
 paying the rebuild. The experiment we have not run yet is to replay real mainnet blocks,
-plus some adversarial patterns that deliberately touch expired state, against an expired
-datadir and measure: resurrections per block, rebuild latency, the resulting read
-amplification, and tail latency on the unlucky reads. Compression adds a second layer
-here, since a hit on a compressed chunk also pays a zstd decompress of that chunk. Hence,
+plus some adversarial patterns that deliberately touch cold state, against an cold
+datadir and measure, such as rebuilds per block and rebuild latency. Compression adds a second layer
+here, since a hit on a compressed chunk also pays a decompress of that chunk. Hence,
 the numbers presented in this document should solely serve as references for storage footprint, and not performance.
