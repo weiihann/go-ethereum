@@ -16,9 +16,15 @@ thin snapshot of the periods-injected datadir; compacted vanilla baseline =
 **251.75 GB** chaindb (pebble SSTs, ancient freezer excluded). Net =
 `chaindb_after + archive − baseline`.
 
-## Headline frontier (heights 2–5)
+> **Update.** The "exactly height N" selection below is superseded by the
+> **floor/cap** rule (`--subtree-min-height 2 --subtree-max-height N`) measured in
+> [§Floor/cap selection](#floorcap-selection-maximal-cold-capped-at-height-n). Keeping
+> coverage and only varying consolidation reaches **−64.87 GB** compressed (cap-5), versus
+> the −35.54 GB best here. The exactly-N frontier is kept for the comparison.
 
-| height | chaindb reduction | raw archive | **chunked archive** | raw net | **chunked net** | subtrees | max leaves |
+## Exactly-N frontier (heights 2–5)
+
+| height (exactly) | chaindb reduction | raw archive | **chunked archive** | raw net | **chunked net** | subtrees | max leaves |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | **2** | **−66.93 GB (−26.6%)** | 63.35 GB | **31.39 GB** | −3.58 GB (−1.4%) | **−35.54 GB (−14.1%)** | 295.1 M | 14 |
 | 3 | −54.54 GB (−21.7%) | 43.09 GB | 22.59 GB | −11.45 GB (−4.5%) | −31.95 GB (−12.7%) | 77.0 M | 73 |
@@ -48,12 +54,68 @@ Chunked archive = 1 MB frames, zstd-9 (the realistic compressed on-disk size; se
   Height-2 is the floor: height-1 would move individual leaves with no interior to drop,
   which goes net-negative.
 
-**Conclusion: with a compressed archive, height-2 is the measured sweet spot — net
-−35.54 GB (≈ 14% of the 251.75 GB baseline), ~9.9× the uncompressed height-2 saving
+**Conclusion (within exactly-N): with a compressed archive, height-2 is the sweet spot —
+net −35.54 GB (≈ 14% of the 251.75 GB baseline), ~9.9× the uncompressed height-2 saving
 (−3.58 GB).** Raw, height-3 looked best; compression flips that, because it absorbs
 height-2's much larger archive (63 GB → 31 GB) while keeping its much larger chaindb
 reduction (−66.93 GB). Going deeper than 3 is counterproductive, and the shallow lever
-bottoms out at height-2 (height-1 has no interior to drop, so it goes net-negative).
+bottoms out at height-2 (height-1 has no interior to drop, so it goes net-negative). The
+next section drops the "exactly" constraint and does much better.
+
+## Floor/cap selection: maximal cold, capped at height N
+
+The exactly-N frontier leaves money on the table. Emitting *only* subtrees of height
+exactly N means a fully-cold height-2 clump under a mixed height-3 parent is **skipped** at
+N=3 — its leaves stay in chaindb. That is the coverage starvation that drags exactly-N down
+as N grows.
+
+A better rule decouples *coverage* from *granularity*: take **maximal** fully-cold regions
+(like the old height-0 maximal mode), but **cap** each emitted unit at height N so one
+reconstruction stays bounded, and **floor** it at height 2 so lone cold leaves — which cost
+a 17-byte stub and an archive record with no interior saved, i.e. net-negative — are left
+in place. The CLI is now `--subtree-min-height 2 --subtree-max-height N`; exactly-N is the
+special case `min == max == N`, and the old maximal mode is `--subtree-min-height 1
+--subtree-max-height 0`.
+
+The key property: **floor-2/cap-N moves the same leaves at every N** (all floored at 2, all
+skip lone leaves, all tile tall regions). Coverage is held constant; N changes only
+*consolidation* — a fully-cold height-3 region emits as one height-3 unit instead of up to
+16 height-2 tiles. Fewer 17-byte stubs, more interior deleted, bigger (better-compressing)
+archive blocks.
+
+| cap (floor 2) | chaindb reduction | raw archive | **chunked archive** | raw net | **chunked net** | gain | subtrees | max leaves |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **2** | −66.93 GB (−26.6%) | 63.35 GB | 31.39 GB | −3.58 GB | −35.54 GB (−14.1%) | — | 295.1 M | 16 |
+| **3** | −95.86 GB (−38.1%) | 82.96 GB | 41.58 GB | −12.90 GB | **−54.28 GB (−21.6%)** | −18.74 | 239.6 M | 73 |
+| **4** | −107.37 GB (−42.6%) | 89.19 GB | 44.79 GB | −18.18 GB | −62.58 GB (−24.9%) | −8.30 | 158.4 M | 295 |
+| **5** | −110.03 GB (−43.7%) | 89.98 GB | 45.16 GB | −20.05 GB | −64.87 GB (−25.8%) | −2.29 | 116.4 M | 1118 |
+
+cap-2 is definitionally exactly-2 and reproduced the exactly-2 run to the byte
+(295,100,165 subtrees, 63,349,951,768-byte archive), which validates the unified
+implementation on real mainnet data.
+
+Reading it:
+
+- **Floor/cap dominates exactly-N outright.** The best exactly-N point was exactly-2 at
+  −35.54 GB compressed; floor-2/**cap-3** alone lands at −54.28 GB, a **+18.7 GB**
+  improvement, and it only improves with depth. Holding coverage and consolidating beats
+  trading coverage for granularity.
+- **Diminishing returns, clear knee.** Compressed-net gains per step are −18.74, −8.30,
+  −2.29 GB — each roughly half the last — while worst-case reconstruction
+  (`max-subtree-leaves`) climbs 16 → 73 → 295 → 1118. cap-3 captures the big jump at modest
+  read cost; cap-4 buys another −8 GB if ~300-leaf rebuilds are acceptable; cap-5 is
+  marginal.
+- **The archive saturates.** Raw archive grows 63 → 83 → 89 → 90 GB and flattens: the leaf
+  set is fixed (same coverage), so the extra bytes are only the slightly longer relative
+  paths of deeper subtrees. Compression ratio stays ~50% throughout.
+- **chaindb reduction is the engine.** It climbs −67 → −96 → −107 → −110 GB as
+  consolidation drops more interior and mints fewer stubs; that, not the archive, moves the
+  net.
+
+**Conclusion: with floor/cap the sweet spot shifts deep — cap-3 is the knee (−54.28 GB,
+−21.6%), cap-4 the aggressive choice (−62.58 GB, −24.9%).** Both far exceed the exactly-N
+optimum. The remaining tradeoff is read cost: a deeper cap means a larger worst-case
+subtree to rebuild on a (rare) expired-state read, still unmeasured.
 
 ## Compression: why chunked
 
@@ -105,14 +167,17 @@ frame on read).
 
 ## Method
 
-Per height N: revert the work volume to the compacted vanilla snapshot →
-`db convert-inactive --format archive --subtree-height N --skip-clean-slate
+Per run: revert the work volume to the compacted vanilla snapshot →
+`db convert-inactive --format archive <selection flags> --skip-clean-slate
 --fork-block 17371256 --blocks-per-period 1314000` (→ current-period 2) →
 `db compact` → `du --exclude=ancient` chaindb + `du` raw archive +
-chunked-compress measure (1 MB/zstd-9) + `count-trienode-kinds`. Per-subtree
-hash-invariance is checked before any delete (so `errors=0` means every moved subtree
-reconstructs to its original root). Height correctness: `max-subtree-leaves ≤ 16^(N-1)`
-plus `trie/height_probe_test.go`.
+chunked-compress measure (1 MB/zstd-9) + `count-trienode-kinds`. Selection flags:
+exactly-N uses `--subtree-min-height N --subtree-max-height N`; floor/cap uses
+`--subtree-min-height 2 --subtree-max-height N`. Per-subtree hash-invariance is checked
+before any delete (so `errors=0` means every moved subtree reconstructs to its original
+root). Height correctness: `max-subtree-leaves ≤ 16^(N-1)` plus `trie/height_probe_test.go`.
 
-Run artifacts: `eip8188-mainnet-runs/ae-footprint-20260603-h{3,4,5}/`.
-Branch `feat/archive-expiry/footprint` (worktree `/mnt/disk0/repos/go-ethereum-archive`).
+Run artifacts: exactly-N in `eip8188-mainnet-runs/ae-footprint-20260603-h{3,4,5}/` and
+`ae-footprint-20260604-h2/`; floor/cap in `ae-footprint-2026060{5,6}-fc-cap{2,3,4,5}/`
+(each with a `RESULT.md`). Branch `feat/archive-expiry/footprint` (worktree
+`/mnt/disk0/repos/go-ethereum-archive`); floor/cap selection landed in `2c74d6701`.
