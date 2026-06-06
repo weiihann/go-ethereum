@@ -118,41 +118,27 @@ the bytes are identical to a legacy record, so only recently-written records gro
 
 ## Step 3: move inactive state out
 
-Now that every leaf carries a last-used period (step 2), we can take the cold parts of
-the state out of the main database and put them in a flat file, leaving the node
-a smaller hot working set. There are two ways to do this, and the gap between them is the
-point of this section.
+Now that every leaf carries a last-used period (step 2), we can pull the cold parts of the
+state out of the main database into a flat file, leaving the node a smaller hot working set.
 
-### The naive approach: move every cold node, as-is
+### What we move
 
-The obvious move is to take every inactive trie node out into a flat file, with
-interior branches and extensions included. A 17-byte stub replaces each moved subtree
-root in the main database, and a read follows the stub into the flat file where the
-original nodes are waiting.
+We look for **cold subtrees**: a node whose every leaf underneath is inactive
+(`currentPeriod - leafPeriod >= 2`, using the periods from step 2). When we find one we take
+the largest cold subtree we can, under two limits:
 
-This empties most of the cold state out of the hot database, so the main database shrinks
-a lot. The catch is the flat file. Copying the full tree structure verbatim makes it
-enormous, larger than the space freed back in the main database, so the total on disk
-goes up rather than down. The numbers are in the comparison at the end of this section.
+- a **cap** on its height, so one subtree never gets too big. Height is counted from the
+  leaves, so a leaf is height 1, a branch directly above leaves is height 2, and so on, with
+  at most 16^(height-1) leaves under a subtree of that height.
+- a **floor** of height 2, so we never move a lone cold leaf by itself. Moving a single leaf
+  costs a 17 byte stub plus an archive record and saves no interior, a net loss.
 
-### The subtree approach: move fully-inactive subtrees, leaves only
-
-**The idea.** Find chunks of the trie whose leaves are all inactive, write their leaf
-data to a flat file (`nodearchive`), and replace the whole chunk with a 17-byte
-pointer (a "stub"). The interior nodes get deleted. They are cheap to rebuild from the
-leaves on the rare read.
-
-**What gets moved, and the height param.** We move subtrees of a fixed height whose
-every leaf is inactive. Height is counted from the leaves, so a leaf node is height 1, a
-branch directly above leaves is height 2, and the height-3 root in the picture below sits
-two levels above its leaves (up to 16^(N-1) leaves under it). A deeper subtree holds more
-leaves, so it bounds how much you rebuild, but a deeper subtree is much less
-likely to be *entirely* cold. We swept heights 2, 3, 4 and 5.
+The cap is the one knob worth tuning, and most of this section is about choosing it.
 
 ```
    BEFORE (in PebbleDB)                  AFTER
 
-        N (subtree root, height 3)       N  ->  17-byte stub  --+
+        N (cold subtree root)            N  ->  17-byte stub  --+
        / \                                                      |
   (branch)(branch)   interior nodes      subtree gone from      |
    / \     / \         (deleted)         PebbleDB                v
@@ -162,128 +148,105 @@ likely to be *entirely* cold. We swept heights 2, 3, 4 and 5.
                                                 +------------------------+
 ```
 
-**What is stored where.**
+### What we store, and reading it back
+
+For each moved subtree we write its **leaves only** to the flat file and replace the whole
+subtree with a 17 byte pointer:
 
 - The stub, 17 bytes in PebbleDB: `[0x00 marker | fileOffset:8 | size:8]`. A real trie
-  node's first byte is `0xc0` or higher, so `0x00` can never be mistaken for one. The
-  offset and size bracket this subtree's records in the file.
-- The archive, leaves only: one RLP record per leaf, `[pathToLeaf, leafValue]`. No
-  interior nodes, just the leaves and their relative paths.
-- Reading it back: load the records, re-insert each `(path, value)` into a fresh
-  mini-trie. The rebuilt subtree is identical to the original, and its hash has to
-  match the one the stub expects, which doubles as a corruption check.
+  node's first byte is `0xc0` or higher, so `0x00` can never be mistaken for one. The offset
+  and size bracket this subtree's records in the file.
+- The archive, leaves only: one RLP record per leaf, `[pathToLeaf, leafValue]`. No interior
+  nodes, just the leaves and their relative paths. The interior is deleted from PebbleDB.
+- Reading it back: load the records, re-insert each `(path, value)` into a fresh mini-trie.
+  The rebuilt subtree is identical to the original, and its hash has to match the one the
+  stub expects, which doubles as a corruption check.
 
 ```
-   write of an expired leaf:
-     stub(offset, size) -> read records -> rebuild subtree -> modify path
-                                           (cheap: at most 256 leaves)
+   read or write of an expired leaf:
+     stub(offset, size) -> read records -> rebuild subtree in memory -> use it
 ```
 
-**How the cold subtrees are found.** One streaming pass walks the trie and the
-period-stamped snapshot side by side. At each candidate node it checks whether all
-leaves under it are inactive (`currentPeriod - leafPeriod >= 2`, using the periods from
-step 2). If they are, it moves the subtree, and the rebuilt-hash check runs before
-anything is deleted.
+Storing leaves only and rebuilding the interior on read is the choice that makes this pay
+off. The alternative, copying each cold subtree's full structure with its interior branches
+into the flat file, was measured on the same datadir:
 
-**Results, sweeping the height.** Shallower subtrees qualify more often, because a small
-group is more likely to be entirely cold, so more moves out, but they leave a bigger raw
-archive. Deeper subtrees move out far less. The snapshot does not change at any height.
-Net is `PebbleDB_after + archive - 251.75 GB baseline`, and the "zstd" column is the
-chunk-compressed archive (explained below).
-
-| height | trie nodes after | subtrees moved (stubs) | PebbleDB reduction | archive raw | archive zstd | net raw | **net zstd** |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| **2** | 1,159.3 M | 295.1 M | **-66.93 GB (-26.6%)** | 63.35 GB | 31.39 GB | -3.58 (-1.4%) | **-35.54 (-14.1%)** |
-| 3 | 1,234.4 M | 77.0 M | -54.54 GB (-21.7%) | 43.09 GB | 22.59 GB | -11.45 (-4.5%) | -31.95 (-12.7%) |
-| 4 | 1,380.6 M | 17.5 M | -41.60 GB (-16.5%) | 30.45 GB | 16.44 GB | -11.15 (-4.4%) | -25.16 (-10.0%) |
-| 5 | 1,389.7 M | 3.44 M | -40.69 GB (-16.2%) | 29.30 GB | 16.01 GB | -11.39 (-4.5%) | -24.68 (-9.8%) |
-
-The answer flips depending on whether you compress the archive. On the raw archive,
-height 3 is best (-11.45), because height 2's archive is too big to pay for itself. But
-the archive is exactly the thing we compress, and once we do, height 2 takes the lead.
-Height 2 has the largest PebbleDB reduction (-66.93 GB), and it carries far more account
-records, which compress well, so it gets the best ratio too (49.6%). That lands the best
-net by a clear margin, -35.54 GB. Going the other way, heights 4 and 5 move out far less,
-only 17.5 M and 3.4 M subtrees qualify against 295 M at height 2, and they converge on the
-same deep cold regions, so they net worse. This is the best we can do *if* every moved chunk
-must be exactly one height. Relaxing that constraint does much better, which we come to after
-the compression detail below.
-
-Physical footprint at height 2 (compacted pebble SSTs, ancient freezer excluded):
-
-```
-                       PebbleDB     + archive    = total       vs baseline
-   baseline            251.75 GB     -            251.75 GB     -
-   after move-out      184.83 GB     63.35 GB     248.18 GB     -3.58 GB (-1.4%)
-   archive compressed  184.83 GB     31.39 GB     216.22 GB     -35.54 GB (-14.1%)
-```
-
-The archive is compressed in roughly 1 MB chunks, one zstd frame per chunk plus a
-small offset table, which about halves it while still letting you resurrect a single
-subtree by decompressing just its chunk. Compression turned out to be the biggest lever
-by far. Two things that did not work: compressing each leaf or each subtree on its own,
-because the blocks are too small for zstd to find anything, and a shared dictionary
-trained on sample records, which moved the number by a couple of points and sometimes
-made it worse. You have to compress many subtrees together.
-
-### Up to a height, not exactly that height
-
-Everything above made each moved chunk exactly N levels tall. That quietly wastes coverage.
-If a cold clump is only 2 levels tall but sits under a parent that also has a hot leaf, the
-height-3 run skips it, and those cold leaves stay in the hot database.
-
-So we relaxed the rule. Instead of exactly N levels, we take the largest fully cold chunk we
-can find but never let it grow past N levels, and we skip the tiniest ones, the lone cold
-leaves, because moving a single leaf costs a 17 byte stub plus an archive record while saving
-no interior, a net loss. In the tool this is two knobs, a minimum height (we set it to 2) and
-a maximum height (the cap, which we sweep).
-
-The floor of 2 means every cap setting moves the same leaves. The cap only changes how those
-leaves are grouped. A cold region three levels tall becomes one chunk instead of up to sixteen
-smaller ones. Same data relocated, but fewer 17 byte stubs left behind, more interior nodes
-deleted, and larger archive blocks that compress a little better.
-
-Sweeping the cap from 2 to 5, floor fixed at 2:
-
-| cap (floor 2) | PebbleDB reduction | archive raw | archive zstd | net raw | net zstd | stubs | max leaves rebuilt |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2 | -66.93 GB | 63.35 GB | 31.39 GB | -3.58 | -35.54 (-14.1%) | 295.1 M | 16 |
-| 3 | -95.86 GB | 82.96 GB | 41.58 GB | -12.90 | **-54.28 (-21.6%)** | 239.6 M | 73 |
-| 4 | -107.37 GB | 89.19 GB | 44.79 GB | -18.18 | -62.58 (-24.9%) | 158.4 M | 295 |
-| 5 | -110.03 GB | 89.98 GB | 45.16 GB | -20.05 | -64.87 (-25.8%) | 116.4 M | 1118 |
-
-The cap-2 row is the same setting as exactly height 2 above, and it reproduced that run to
-the byte, which is how we know the new code is correct.
-
-This is a different league. The old best was -35.54 GB at height 2. Just moving the cap to 3
-lands at -54.28 GB, an extra 18.7 GB, because we keep the cold height-2 coverage that exactly
-height 3 used to throw away and we delete far more interior on top of it. The gains then
-shrink each step, -18.7 then -8.3 then -2.3 GB, while the worst case rebuild grows from 16
-leaves to over a thousand. Cap 3 is the knee, the most saving for the least read cost. Cap 4
-buys another 8 GB if rebuilding a few hundred leaves on a cold read is acceptable. Cap 5 is
-barely worth it.
-
-### Naive vs subtree
-
-Side by side on the same datadir, with logical (value-byte) figures so the two are
-measured the same way:
-
-| | naive (every cold node) | subtree (height 3) |
+| | full structure (every cold node) | leaves only (this design) |
 |---|---:|---:|
-| granularity | maximal, every inactive node | fully-inactive height-3 subtrees |
-| stubs written | 316.3 M | 77.0 M |
-| nodes moved out | ~1.66 B | 661 M |
-| stored in the flat file | full subtree structure | leaves only, interior rebuilt on read |
-| trie value bytes | 148.14 -> 32.68 GB (-115.46) | 148.13 -> 98.86 GB (-49.28) |
-| flat file | **162.39 GB** | **43.09 GB** raw / **22.59 GB** zstd |
-| net (trie delta + flat file) | **+46.93 GB (+18.6%)** | **-6.19 GB (-2.5%)** raw / **-26.69 GB (-10.6%)** zstd |
+| what lands in the flat file | the whole subtree, interior and all | the leaves only, interior rebuilt on read |
+| flat file size | **162.39 GB** | **82.96 GB** raw / **41.58 GB** compressed |
 
-The main point is the flat file. The naive approach keeps the full structure, which
-costs 162 GB, close to four times the leaves-only archive and over seven times the
-compressed one. It moves about 2.5x as many nodes, so its main-database saving is larger,
-but the flat file outgrows that saving and total disk goes *up* by about 47 GB. The
-subtree approach drops the intermediate nodes nd rebuilds it on read, so its flat file stays small
-and total disk comes *down*.
+The full structure makes the flat file 162 GB, larger than the space it frees back in the
+main database, so total disk goes *up* by about 47 GB. Storing leaves only keeps the flat
+file far smaller, so total disk comes *down* instead, by how much is the rest of this
+section. Dropping the interior and rebuilding it on read is the whole trick.
+
+### Finding the cold subtrees
+
+One streaming pass walks the trie and the period-stamped snapshot side by side, rolling the
+all-inactive answer up from the leaves. When a cold subtree is complete and within the floor
+and cap, it materialises the subtree, writes the leaf records, stages the stub, and deletes
+the interior, all in the same pass. The rebuilt-hash check runs before anything is deleted,
+so a mismatch aborts that one subtree rather than corrupting state. Across every run
+`errors = 0`.
+
+### Compressing the archive
+
+The flat file is raw on disk, but it compresses well. Squeezed in roughly 1 MB chunks, one
+zstd frame per chunk plus a small offset table, it drops by about half while still letting
+you resurrect a single subtree by decompressing just its chunk. Compression is the biggest
+single lever in the whole pipeline, so the results below report both the raw and the
+compressed archive. Two things that did not work: compressing each leaf or each subtree on
+its own, because the blocks are too small for zstd to find anything, and a shared dictionary
+trained on sample records, which moved the number by a couple of points and sometimes made
+it worse. You have to compress many subtrees together.
+
+### Choosing the cap height
+
+The floor of 2 means **every cap moves the same leaves**. The cap only changes how those
+leaves are grouped: a taller cap merges a cold region into one big subtree instead of many
+small ones, which leaves fewer 17 byte stubs behind and deletes more interior, so the main
+database shrinks more. We swept the cap from 2 to 5, floor fixed at 2:
+
+| cap (floor 2) | PebbleDB reduction | archive raw | archive compressed | net raw | net compressed | stubs | max leaves rebuilt |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 | -66.93 GB | 63.35 GB | 31.39 GB | -3.58 GB | -35.54 GB (-14.1%) | 295.1 M | 16 |
+| 3 | -95.86 GB | 82.96 GB | 41.58 GB | -12.90 GB | **-54.28 GB (-21.6%)** | 239.6 M | 73 |
+| 4 | -107.37 GB | 89.19 GB | 44.79 GB | -18.18 GB | -62.58 GB (-24.9%) | 158.4 M | 295 |
+| 5 | -110.03 GB | 89.98 GB | 45.16 GB | -20.05 GB | -64.87 GB (-25.8%) | 116.4 M | 1118 |
+
+A taller cap always saves more disk, but the gains shrink fast, each step worth about half
+the last, while the worst-case rebuild grows the other way:
+
+```
+   space saved on disk, compressed (GB, longer is better)
+
+   cap 2  ##################                -35.54
+   cap 3  ###########################       -54.28   <- knee
+   cap 4  ###############################   -62.58
+   cap 5  ################################  -64.87
+          +--------+--------+--------+-------+
+          0       -20      -40      -60    -65
+```
+
+```
+   worst-case subtree rebuilt on a cold read (leaves, longer is slower)
+
+   cap 2  #                                       16
+   cap 3  ##                                      73
+   cap 4  ##########                             295
+   cap 5  #####################################  1118
+          +----------+----------+----------+--------+
+          0         300        600        900    1200
+```
+
+This is the real tradeoff in picking a cap. A greater cap reduces disk further, but every
+read that touches expired state rebuilds the whole subtree it lands in, and a bigger subtree
+is a slower rebuild. Cap 2 rebuilds at most 16 leaves, cap 5 up to over a thousand. So the
+sweet spot is not the deepest cap. **Cap 3 is the knee**: it captures most of the disk saving
+(-54.28 GB) while keeping the rebuild small, at most 73 leaves. Cap 4 trades another 8 GB for
+a roughly four times larger rebuild, and cap 5 saves almost nothing for a rebuild past a
+thousand leaves.
 
 ---
 
@@ -310,29 +273,24 @@ and total disk comes *down*.
 What we take from this:
 
 - The move-out shrinks the hot database by deleting cold interior nodes and relocating
-  cold leaves. With the floor-2 / cap-3 rule PebbleDB drops 95.9 GB and the leaves land in
+  cold leaves. With the floor 2 / cap 3 rule PebbleDB drops 95.9 GB and the leaves land in
   a flat file you can park on cheaper storage.
 - Total on-disk still shrinks after counting the archive: -12.90 GB raw, and -54.28 GB
-  (about 22%) with the chunked compression. The price is recomputing a small subtree on
-  the rare read of expired state, at most 73 leaves at this cap.
-- How we group the moved leaves matters more than which exact height we pick. Requiring
-  each chunk to be exactly N levels throws away cold regions that are not that exact height.
-  Taking the largest cold chunk up to a cap instead, with a floor of 2, keeps that coverage
-  and consolidates it, which is why cap 3 (-54.28 GB) beats the best exactly-height result
-  (-35.54 GB) by 18.7 GB. Going deeper helps with sharply diminishing returns, cap 4 reaches
-  -62.58 GB and cap 5 -64.87 GB, while the worst case rebuild grows past a thousand leaves.
+  (about 22%) with the chunked compression. The price is rebuilding a small subtree on the
+  rare read of expired state, at most 73 leaves at this cap.
+- The cap height is a disk-versus-read-speed dial. A deeper cap frees more disk but makes
+  the worst-case rebuild larger, and the disk gains shrink fast while the rebuild cost
+  climbs. Cap 3 is the knee, cap 4 the aggressive end, and cap 5 is barely worth it.
 
 ## Open Questions
 
 **Performance under real workloads.** Everything above is a static footprint
-measurement. What it does not measure is the runtime cost of the design, and that cost
-differs sharply between the naive and subtree approaches. The naive approach serves a
-moved node with a single read into the side file. The subtree approach pays a rebuild on
-every hit: read the leaf records, rebuild the subtree in memory,
-and hash-check the result before returning. That is cheap per hit at a shallow cap (at most
-73 leaves at floor-2 / cap-3) but it grows with the cap, to about 300 leaves at cap 4 and over
-a thousand at cap 5, and it happens every time execution touches an expired subtree. This is
-the main reason the deeper caps are not obviously better despite saving more disk.
+measurement. What it does not measure is the runtime cost of reading expired state. Every
+hit on a moved subtree pays a rebuild: read the leaf records, rebuild the subtree in memory,
+and hash-check it before returning. That is cheap at a shallow cap, at most 73 leaves at
+cap 3, but it grows with the cap, to about 300 leaves at cap 4 and over a thousand at cap 5,
+and it happens on every access to an expired subtree. This is the main reason a deeper cap
+is not automatically better despite saving more disk.
 
 So the footprint winner is not automatically the workload winner. A design that saves the
 most disk can still lose if a common access pattern keeps reaching into cold subtrees and
