@@ -208,18 +208,17 @@ leaves are grouped: a taller cap merges a cold region into one big subtree inste
 small ones, which leaves fewer 17 byte stubs behind and deletes more interior, so the main
 database shrinks more. We swept the cap from 2 to 5, floor fixed at 2:
 
-| cap (floor 2) | PebbleDB reduction | archive raw | archive compressed | net raw | net compressed | stubs | max leaves rebuilt |
+| cap height | trie reduction | archive (raw) | archive (compressed) | net disk (raw) | net disk (compressed) | subtrees moved | worst-case rebuild (leaves) |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | 2 | -66.93 GB (-45.2%) | 63.35 GB | 31.39 GB | -3.58 GB (-1.4%) | -35.54 GB (-14.1%) | 295.1 M | 16 |
 | 3 | -95.86 GB (-64.7%) | 82.96 GB | 41.58 GB | -12.90 GB (-5.1%) | **-54.28 GB (-21.6%)** | 239.6 M | 73 |
 | 4 | -107.37 GB (-72.5%) | 89.19 GB | 44.79 GB | -18.18 GB (-7.2%) | -62.58 GB (-24.9%) | 158.4 M | 295 |
 | 5 | -110.03 GB (-74.3%) | 89.98 GB | 45.16 GB | -20.05 GB (-8.0%) | -64.87 GB (-25.8%) | 116.4 M | 1118 |
 
-The two percentages use different baselines on purpose. The PebbleDB reduction is against
-the **trie size in PebbleDB** (148.1 GB, the trie value bytes from step 1), because the
-move-out only deletes trie nodes and never touches the snapshot, so the trie is what it can
-shrink. The **net** columns are against the full **251.75 GB on-disk footprint**, since net
-is a change to total disk.
+The two percentages use different baselines. The trie reduction is against the **trie size**
+(148.1 GB from step 1), since the move-out only deletes trie nodes and leaves the snapshot
+alone. The **net disk** columns are against the full **251.75 GB on-disk footprint**, since
+net is a change to total disk.
 
 A taller cap always saves more disk, but the gains shrink fast, each step worth about half
 the last, while the worst-case rebuild grows the other way:
@@ -229,16 +228,10 @@ the last, while the worst-case rebuild grows the other way:
 This is the real tradeoff in picking a cap. A greater cap reduces disk further, but every
 read that touches expired state rebuilds the whole subtree it lands in, and a bigger subtree
 is a slower rebuild. Cap 2 rebuilds at most 16 leaves, cap 5 up to over a thousand. So the
-sweet spot is not the deepest cap. **Cap 3 is the knee**: it captures most of the disk saving
-(-54.28 GB) while keeping the rebuild small, at most 73 leaves. Cap 4 trades another 8 GB for
-a roughly four times larger rebuild, and cap 5 saves almost nothing for a rebuild past a
-thousand leaves.
-
-The saving comes from the main database, not the archive. As the cap grows, PebbleDB frees
-more and more (it deletes more interior and leaves fewer stubs), while the compressed archive
-barely grows past cap 3, so the net keeps improving but with shrinking steps:
-
-![PebbleDB reduction grows with the cap while the compressed archive flattens, so net improves](images/floorcap-components.png)
+sweet spot is not the deepest cap. **Cap 3 is the best balance**: it banks most of the disk
+saving (-54.28 GB out of a possible -64.87 GB at the deepest cap) while keeping the rebuild
+small, at most 73 leaves. Cap 4 trades another 8 GB for a roughly four times larger rebuild,
+and cap 5 saves almost nothing for a rebuild past a thousand leaves.
 
 ---
 
@@ -254,7 +247,7 @@ barely grows past cap 3, so the net keeps improving but with shrinking steps:
                             last-used period            (42 GB compressed)
 ```
 
-| | Step 1 baseline | Step 2 post-inject | Step 3 post-move-out (floor 2 / cap 3, the knee of the sweep) |
+| | Step 1 baseline | Step 2 post-inject | Step 3 post-move-out (floor 2 / cap 3, the best balance) |
 |---|---|---|---|
 | trie nodes | 1,895.4 M | 1,895.4 M | **788.0 M** (-58%) |
 | snapshot | 101.38 GB | ~101.6 GB (+under 0.5%) | ~101.6 GB |
@@ -272,7 +265,8 @@ What we take from this:
   rare read of expired state, at most 73 leaves at this cap.
 - The cap height is a disk-versus-read-speed dial. A deeper cap frees more disk but makes
   the worst-case rebuild larger, and the disk gains shrink fast while the rebuild cost
-  climbs. Cap 3 is the knee, cap 4 the aggressive end, and cap 5 is barely worth it.
+  climbs. Cap 3 is the best balance, cap 4 the aggressive end (more disk, bigger rebuild),
+  and cap 5 is barely worth it.
 
 ## Open Questions
 
