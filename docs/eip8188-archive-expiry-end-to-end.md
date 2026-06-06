@@ -205,7 +205,9 @@ Height 2 has the largest PebbleDB reduction (-66.93 GB), and it carries far more
 records, which compress well, so it gets the best ratio too (49.6%). That lands the best
 net by a clear margin, -35.54 GB. Going the other way, heights 4 and 5 move out far less,
 only 17.5 M and 3.4 M subtrees qualify against 295 M at height 2, and they converge on the
-same deep cold regions, so they net worse.
+same deep cold regions, so they net worse. This is the best we can do *if* every moved chunk
+must be exactly one height. Relaxing that constraint does much better, which we come to after
+the compression detail below.
 
 Physical footprint at height 2 (compacted pebble SSTs, ancient freezer excluded):
 
@@ -223,6 +225,43 @@ by far. Two things that did not work: compressing each leaf or each subtree on i
 because the blocks are too small for zstd to find anything, and a shared dictionary
 trained on sample records, which moved the number by a couple of points and sometimes
 made it worse. You have to compress many subtrees together.
+
+### Up to a height, not exactly that height
+
+Everything above made each moved chunk exactly N levels tall. That quietly wastes coverage.
+If a cold clump is only 2 levels tall but sits under a parent that also has a hot leaf, the
+height-3 run skips it, and those cold leaves stay in the hot database.
+
+So we relaxed the rule. Instead of exactly N levels, we take the largest fully cold chunk we
+can find but never let it grow past N levels, and we skip the tiniest ones, the lone cold
+leaves, because moving a single leaf costs a 17 byte stub plus an archive record while saving
+no interior, a net loss. In the tool this is two knobs, a minimum height (we set it to 2) and
+a maximum height (the cap, which we sweep).
+
+The floor of 2 means every cap setting moves the same leaves. The cap only changes how those
+leaves are grouped. A cold region three levels tall becomes one chunk instead of up to sixteen
+smaller ones. Same data relocated, but fewer 17 byte stubs left behind, more interior nodes
+deleted, and larger archive blocks that compress a little better.
+
+Sweeping the cap from 2 to 5, floor fixed at 2:
+
+| cap (floor 2) | PebbleDB reduction | archive raw | archive zstd | net raw | net zstd | stubs | max leaves rebuilt |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 | -66.93 GB | 63.35 GB | 31.39 GB | -3.58 | -35.54 (-14.1%) | 295.1 M | 16 |
+| 3 | -95.86 GB | 82.96 GB | 41.58 GB | -12.90 | **-54.28 (-21.6%)** | 239.6 M | 73 |
+| 4 | -107.37 GB | 89.19 GB | 44.79 GB | -18.18 | -62.58 (-24.9%) | 158.4 M | 295 |
+| 5 | -110.03 GB | 89.98 GB | 45.16 GB | -20.05 | -64.87 (-25.8%) | 116.4 M | 1118 |
+
+The cap-2 row is the same setting as exactly height 2 above, and it reproduced that run to
+the byte, which is how we know the new code is correct.
+
+This is a different league. The old best was -35.54 GB at height 2. Just moving the cap to 3
+lands at -54.28 GB, an extra 18.7 GB, because we keep the cold height-2 coverage that exactly
+height 3 used to throw away and we delete far more interior on top of it. The gains then
+shrink each step, -18.7 then -8.3 then -2.3 GB, while the worst case rebuild grows from 16
+leaves to over a thousand. Cap 3 is the knee, the most saving for the least read cost. Cap 4
+buys another 8 GB if rebuilding a few hundred leaves on a cold read is acceptable. Cap 5 is
+barely worth it.
 
 ### Naive vs subtree
 
@@ -253,34 +292,35 @@ and total disk comes *down*.
 ```
    STEP 1 baseline          STEP 2 period inject        STEP 3 move inactive out
    ---------------          --------------------        ------------------------
-   trie     148.1 GB  --->  trie     148.1 GB  (same) -> trie     ~84 GB + 295 M stubs
+   trie     148.1 GB  --->  trie     148.1 GB  (same) -> trie     ~59 GB + 240 M stubs
    snapshot 101.4 GB  --->  snapshot 101.6 GB  (+0.3) -> snapshot 101.6 GB (same)
 
-   no timestamps            every leaf has its          nodearchive 63 GB raw
-                            last-used period            (31 GB compressed)
+   no timestamps            every leaf has its          nodearchive 83 GB raw
+                            last-used period            (42 GB compressed)
 ```
 
-| | Step 1 baseline | Step 2 post-inject | Step 3 post-move-out (height 2, best of the 2 to 5 sweep) |
+| | Step 1 baseline | Step 2 post-inject | Step 3 post-move-out (floor 2 / cap 3, the knee of the sweep) |
 |---|---|---|---|
-| trie nodes | 1,895.4 M | 1,895.4 M | **1,159.3 M** (-39%) |
+| trie nodes | 1,895.4 M | 1,895.4 M | **788.0 M** (-58%) |
 | snapshot | 101.38 GB | ~101.6 GB (+under 0.5%) | ~101.6 GB |
-| external archive | - | - | 63.35 GB raw / **31.39 GB** zstd |
-| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **184.83 GB** (-66.9 GB, -26.6%) |
-| **net total disk vs baseline** | - | ~+0.3 GB (+0.1%) | **-3.58 GB (-1.4%) raw / -35.54 GB (-14.1%) compressed** |
+| external archive | - | - | 82.96 GB raw / **41.58 GB** zstd |
+| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **155.89 GB** (-95.9 GB, -38.1%) |
+| **net total disk vs baseline** | - | ~+0.3 GB (+0.1%) | **-12.90 GB (-5.1%) raw / -54.28 GB (-21.6%) compressed** |
 
 What we take from this:
 
 - The move-out shrinks the hot database by deleting cold interior nodes and relocating
-  cold leaves. At height 2 PebbleDB drops 66.9 GB and the leaves land in a flat file you
-  can park on cheaper storage.
-- Total on-disk still shrinks after counting the archive: -3.58 GB raw, and -35.54 GB
-  (about 14%) with the chunked compression. The price is recomputing a small subtree on
-  the rare read of expired state.
-- The best height depends on compression. We swept heights 2 to 5. On the raw archive
-  height 3 is best, but once the archive is compressed the shallowest height wins, because
-  height 2 frees the most from PebbleDB and its account-heavy archive compresses best.
-  Deeper subtrees qualify far less often, so they move out less and net worse, about
-  -25 GB at heights 4 and 5 against -35.54 GB at height 2.
+  cold leaves. With the floor-2 / cap-3 rule PebbleDB drops 95.9 GB and the leaves land in
+  a flat file you can park on cheaper storage.
+- Total on-disk still shrinks after counting the archive: -12.90 GB raw, and -54.28 GB
+  (about 22%) with the chunked compression. The price is recomputing a small subtree on
+  the rare read of expired state, at most 73 leaves at this cap.
+- How we group the moved leaves matters more than which exact height we pick. Requiring
+  each chunk to be exactly N levels throws away cold regions that are not that exact height.
+  Taking the largest cold chunk up to a cap instead, with a floor of 2, keeps that coverage
+  and consolidates it, which is why cap 3 (-54.28 GB) beats the best exactly-height result
+  (-35.54 GB) by 18.7 GB. Going deeper helps with sharply diminishing returns, cap 4 reaches
+  -62.58 GB and cap 5 -64.87 GB, while the worst case rebuild grows past a thousand leaves.
 
 ## Open Questions
 
@@ -289,8 +329,10 @@ measurement. What it does not measure is the runtime cost of the design, and tha
 differs sharply between the naive and subtree approaches. The naive approach serves a
 moved node with a single read into the side file. The subtree approach pays a rebuild on
 every hit: read the leaf records, rebuild the subtree in memory,
-and hash-check the result before returning. That is cheap per hit (at most 16 leaves at
-height 2, 256 at height 3) but it is not free, and it happens every time execution touches an expired subtree.
+and hash-check the result before returning. That is cheap per hit at a shallow cap (at most
+73 leaves at floor-2 / cap-3) but it grows with the cap, to about 300 leaves at cap 4 and over
+a thousand at cap 5, and it happens every time execution touches an expired subtree. This is
+the main reason the deeper caps are not obviously better despite saving more disk.
 
 So the footprint winner is not automatically the workload winner. A design that saves the
 most disk can still lose if a common access pattern keeps reaching into cold subtrees and
