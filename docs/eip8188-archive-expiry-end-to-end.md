@@ -210,10 +210,16 @@ database shrinks more. We swept the cap from 2 to 5, floor fixed at 2:
 
 | cap (floor 2) | PebbleDB reduction | archive raw | archive compressed | net raw | net compressed | stubs | max leaves rebuilt |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 2 | -66.93 GB | 63.35 GB | 31.39 GB | -3.58 GB | -35.54 GB (-14.1%) | 295.1 M | 16 |
-| 3 | -95.86 GB | 82.96 GB | 41.58 GB | -12.90 GB | **-54.28 GB (-21.6%)** | 239.6 M | 73 |
-| 4 | -107.37 GB | 89.19 GB | 44.79 GB | -18.18 GB | -62.58 GB (-24.9%) | 158.4 M | 295 |
-| 5 | -110.03 GB | 89.98 GB | 45.16 GB | -20.05 GB | -64.87 GB (-25.8%) | 116.4 M | 1118 |
+| 2 | -66.93 GB (-45.2%) | 63.35 GB | 31.39 GB | -3.58 GB (-1.4%) | -35.54 GB (-14.1%) | 295.1 M | 16 |
+| 3 | -95.86 GB (-64.7%) | 82.96 GB | 41.58 GB | -12.90 GB (-5.1%) | **-54.28 GB (-21.6%)** | 239.6 M | 73 |
+| 4 | -107.37 GB (-72.5%) | 89.19 GB | 44.79 GB | -18.18 GB (-7.2%) | -62.58 GB (-24.9%) | 158.4 M | 295 |
+| 5 | -110.03 GB (-74.3%) | 89.98 GB | 45.16 GB | -20.05 GB (-8.0%) | -64.87 GB (-25.8%) | 116.4 M | 1118 |
+
+The two percentages use different baselines on purpose. The PebbleDB reduction is against
+the **trie size in PebbleDB** (148.1 GB, the trie value bytes from step 1), because the
+move-out only deletes trie nodes and never touches the snapshot, so the trie is what it can
+shrink. The **net** columns are against the full **251.75 GB on-disk footprint**, since net
+is a change to total disk.
 
 A taller cap always saves more disk, but the gains shrink fast, each step worth about half
 the last, while the worst-case rebuild grows the other way:
@@ -253,7 +259,7 @@ barely grows past cap 3, so the net keeps improving but with shrinking steps:
 | trie nodes | 1,895.4 M | 1,895.4 M | **788.0 M** (-58%) |
 | snapshot | 101.38 GB | ~101.6 GB (+under 0.5%) | ~101.6 GB |
 | external archive | - | - | 82.96 GB raw / **41.58 GB** zstd |
-| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **155.89 GB** (-95.9 GB, -38.1%) |
+| PebbleDB (physical, compacted) | 251.75 GB | 251.75 GB | **155.89 GB** (-95.9 GB) |
 | **net total disk vs baseline** | - | ~+0.3 GB (+0.1%) | **-12.90 GB (-5.1%) raw / -54.28 GB (-21.6%) compressed** |
 
 What we take from this:
