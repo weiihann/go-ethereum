@@ -1,16 +1,16 @@
-# How much cold state can EIP-8188 move out?
+# Hot-Cold Storage Separation in Practice
 
-We ran a three-step experiment on a real mainnet go-ethereum (geth) node to see how much disk you save
-by pulling "cold" state out of the hot database. This writes up what each step does
-and what it actually measured.
+[EIP-8188](https://eips.ethereum.org/EIPS/eip-8188) adds a consensus-visible timestamp to every account and storage slot, recording when each was last mutated. Its pricing rules use that field to charge more for writing to write-inactive state, but the field itself is the part that matters here because it gives every client the same signal for which state is recently mutated (hot) and which has not been mutated in a long time (cold). The EIP deliberately mandates no storage architecture. It only hands clients the metadata and leaves what to do with it open.
+
+This writeup takes that signal and measures one thing a client can do with it: physically separate cold state from hot, keeping a smaller hot working set in the main database and parking the cold remainder in a cheaper flat file. The question is how much disk that actually saves on a real node, and which way of doing the separation wins.
+
+We ran a three-step experiment on a real mainnet go-ethereum (geth) node to see how much disk you save by pulling "cold" state out of the hot database. This writes up what each step does and what it actually measured.
 
 The three steps:
 
 - **Baseline.** The normal geth node.
-- **Period injection.** Tag every account and slot with when it was last used, so we
-  can tell what is cold.
-- **Move inactive state out.** Pull the cold parts out of the main database into a
-  flat file, shrinking what the node has to keep hot.
+- **Period injection.** Tag every account and slot with when it was last used, so we can tell what is cold.
+- **Move inactive state out.** Pull the cold parts out of the main database into a flat file, shrinking what the node has to keep hot.
 
 Everything below is measured on one data directory: mainnet at block 19,999,256.
 
@@ -18,28 +18,25 @@ Everything below is measured on one data directory: mainnet at block 19,999,256.
 
 ## How geth stores the state
 
-The state is every account (balance, nonce, code, storage root) plus every contract's
-storage slots. geth keeps it twice inside its key-value store (PebbleDB).
+The state is every account (balance, nonce, code, storage root) plus every contract's storage slots. geth keeps it twice inside its key-value store (PebbleDB).
 
-**1. The Merkle-Patricia Trie (MPT).** The authenticated tree whose root hash is the
-block's state root.
+**1. Merkle-Patricia Trie (MPT).** The authenticated tree whose root hash is the block's state root.
 
 ```
    account trie  (root hash = stateRoot)
             |
-         (branch)                 
+         (branch)
         /        \
-  (extension)   (branch)          
+  (extension)   (branch)
       |          /     \
-   (branch)   (leaf)  (leaf)      
+   (branch)   (leaf)  (leaf)
     /    \
  (leaf) (leaf)
 
    every contract account's storage is its own trie of the same shape.
 ```
 
-**2. The snapshot.** A flat key-to-value copy of just the leaves, so a read does not
-have to walk the tree.
+**2. The snapshot.** A flat key-to-value copy of just the leaves, so a read does not have to walk the tree.
 
 ```
    accountHash             -> account
@@ -50,8 +47,7 @@ have to walk the tree.
 
 ## Step 1: baseline
 
-The node at block 19,999,256. Sizes are logical bytes (sum of record contents) unless noted. The
-physical on-disk compacted PebbleDB is about 251.75 GB.
+The node at block 19,999,256. Sizes are logical bytes (sum of record contents) unless noted. The physical on-disk compacted PebbleDB is about 251.75 GB.
 
 | component | count | size |
 |---|---:|---:|
@@ -66,10 +62,9 @@ physical on-disk compacted PebbleDB is about 251.75 GB.
 
 ## Step 2: period injection
 
-**What it does.** For each account and slot, store the most recent period it was
-written. This goes only into the snapshot. A "period" is just a time window, here 1,314,000 blocks (about six months). A leaf is inactive if it has not been written for at least `minAge` periods (here it's 2, so 1-year inactivity in total).
+For each account and storage slot, we store the most recent period it was written. This goes only into the snapshot. A "period" is just a time window, here 1,314,000 blocks (about six months). A leaf is inactive if it has not been written for at least `minAge` periods (here it's 2, so 1-year inactivity in total).
 
-**Where the timestamps come from.** In this experiment, we used [Xatu](https://github.com/ethpandaops/xatu) as the primary data source.
+In this experiment, we used [Xatu](https://github.com/ethpandaops/xatu) as the primary data source.
 
 ```
     access-history source                     injector             snapshot (pebble)
@@ -82,14 +77,9 @@ written. This goes only into the snapshot. A "period" is just a time window, her
                                                               (only ever raises a period)
 ```
 
-`ComputePeriod(block) = (block - forkBlock) / blocksPerPeriod`. With `forkBlock`
-17,371,256 and `blocksPerPeriod` 1,314,000, the head sits in period 2. The update only
-ever raises a record's period, so the source can emit diffs in any order, in batches,
-with retries.
+`ComputePeriod(block) = (block - forkBlock) / blocksPerPeriod`. With `forkBlock` 17,371,256 and `blocksPerPeriod` 1,314,000, the head sits in period 2. The update only ever raises a record's period, so the source can emit diffs in any order, in batches, with retries.
 
-**How it is stored, and why it barely costs anything.** The period is an optional
-trailing RLP field. When it is 0 (the record was never written in the tracked range)
-the bytes are identical to a legacy record, so only recently-written records grow.
+**How it is stored, and why it barely costs anything.** The period is an optional trailing RLP field. When it is 0 (the record was never written in the tracked range) the bytes are identical to a legacy record, so only recently-written records grow.
 
 ```
    account record:
@@ -112,22 +102,14 @@ the bytes are identical to a legacy record, so only recently-written records gro
 
 ## Step 3: move inactive state out
 
-Now that every leaf carries a last-used period (step 2), we can pull the cold parts of the
-state out of the main database into a flat file, leaving the node a smaller hot working set.
+Now that every leaf carries a last-used period (step 2), we can pull the cold parts of the state out of the main database into a flat file, leaving the node a smaller hot working set.
 
 ### What we move
 
-We look for **cold subtrees**: a node whose every leaf underneath is inactive
-(`currentPeriod - leafPeriod >= 2`, using the periods from step 2). When we find one we take
-the largest cold subtree we can, under two limits:
+We look for **cold subtrees**: a node whose every leaf underneath is inactive (`currentPeriod - leafPeriod >= 2`, using the periods from step 2). When we find one we take the largest cold subtree we can, under two limits:
 
-- a **cap** on its height, so one subtree never gets too big. Height is counted from the
-  leaves, so a leaf is height 1, a branch directly above leaves is height 2, and so on, with
-  at most 16^(height-1) leaves under a subtree of that height.
-- a **floor** of height 2, so we never move a lone cold leaf by itself. Moving a single leaf
-  costs a 17 byte stub plus an archive record and saves no interior, a net loss.
-
-The cap is the one knob worth tuning, and most of this section is about choosing it.
+- a **cap** on its height, so one subtree never gets too big. Height is counted from the leaves, so a leaf is height 1, a branch directly above leaves is height 2, and so on, with at most 16^(height-1) leaves under a subtree of that height.
+- a **floor** of height 2, so we never move a lone cold leaf by itself. Moving a single leaf costs a 17-byte stub plus an archive record and saves no interior, a net loss.
 
 ```
    BEFORE (in PebbleDB)                  AFTER
@@ -144,71 +126,42 @@ The cap is the one knob worth tuning, and most of this section is about choosing
 
 ### What we store, and reading it back
 
-For each moved subtree we write its **leaves only** to the flat file and replace the whole
-subtree with a 17 byte pointer:
+For each moved subtree we write its **leaves only** to the flat file and replace the whole subtree with a 17-byte pointer:
 
-- The stub, 17 bytes in PebbleDB: `[0x00 marker | fileOffset:8 | size:8]`. A real trie
-  node's first byte is `0xc0` or higher, so `0x00` can never be mistaken for one. The offset
-  and size bracket this subtree's records in the file.
-- The archive, leaves only: one RLP record per leaf, `[pathToLeaf, leafValue]`. No interior
-  nodes, just the leaves and their relative paths. The interior is deleted from PebbleDB.
-- Reading it back: load the records, re-insert each `(path, value)` into a fresh mini-trie.
-  The rebuilt subtree is identical to the original, and its hash has to match the one the
-  stub expects, which doubles as a corruption check.
+- The stub, 17 bytes in PebbleDB: `[0x00 marker | fileOffset:8 | size:8]`. A real trie node's first byte is `0xc0` or higher, so `0x00` can never be mistaken for one. The offset and size bracket this subtree's records in the file.
+- The archive, leaves only: one RLP record per leaf, `[pathToLeaf, leafValue]`. No interior nodes, just the leaves and their relative paths. The interior is deleted from PebbleDB.
+- Reading it back: load the records, re-insert each `(path, value)` into a fresh mini-trie. The rebuilt subtree is identical to the original, and its hash has to match the one the stub expects, which doubles as a corruption check.
 
 ```
-   read or write of an cold leaf:
+   access a cold leaf:
      stub(offset, size) -> read records -> rebuild subtree in memory -> use it
 ```
 
-Storing leaves only and rebuilding the interior on read is the choice that makes this pay
-off, and it helps to see what the obvious alternative costs.
-
 ### Why leaves only: the naive alternative
 
-The naive move-out copies every cold node into the flat file as-is, interior branches and
-all. It frees the most from the main database, because it relocates everything cold, but the
-flat file pays for it. We measured both on the same datadir, in logical value bytes so the
-two are counted the same way:
+The naive move-out copies every cold node into the flat file as-is, interior branches and all. It frees the most from the main database, because it relocates everything cold, but the flat file pays for it. We measured both on the same datadir, in logical value bytes so the two are counted the same way:
 
 | | naive: every cold node, full structure | ours: cold subtrees, leaves only (cap 3) |
 |---|---:|---:|
-| what lands in the flat file | the whole subtree, interior and all | the leaves only, interior rebuilt on read |
+| what lands in the flat file | the whole subtree, interior and all | the leaves only, interior rebuilt on access |
 | stubs written | 316.3 M | 239.6 M |
 | trie shrinks from 148.1 GB to | 32.7 GB (-115.5) | 58.7 GB (-89.4) |
 | flat file | **162.39 GB** | **82.96 GB** raw / **41.58 GB** compressed |
 | net total disk | **+46.93 GB** (goes up) | **-6.43 GB** raw / **-47.81 GB** compressed |
 
-The naive approach frees more from the main database (-115 GB of trie against our -89 GB), but
-its flat file is 162 GB, larger than what it freed, so total disk goes *up* by about 47 GB.
-Storing leaves only keeps the flat file small enough that total disk comes *down*. Dropping
-the interior and rebuilding it on read is the whole trick.
+The naive approach frees more from the main database (-115 GB of trie against our -89 GB), but its flat file is 162 GB, larger than what it freed, so total disk goes *up* by about 47 GB. Storing leaves only keeps the flat file small enough that total disk comes *down*. Dropping the interior and rebuilding it on access is the whole trick.
 
 ### Finding the cold subtrees
 
-One streaming pass walks the trie and the period-stamped snapshot side by side, rolling the
-all-inactive answer up from the leaves. When a cold subtree is complete and within the floor
-and cap, it materialises the subtree, writes the leaf records, stages the stub, and deletes
-the interior, all in the same pass. The rebuilt-hash check runs before anything is deleted,
-so a mismatch aborts that one subtree rather than corrupting state.
+One streaming pass walks the trie and the period-stamped snapshot side by side, rolling the all-inactive answer up from the leaves. When a cold subtree is complete and within the floor and cap, it materialises the subtree, writes the leaf records, stages the stub, and deletes the interior, all in the same pass. The rebuilt-hash check runs before anything is deleted, so a mismatch aborts that one subtree rather than corrupting state.
 
 ### Compressing the archive
 
-The flat file is raw on disk, but it compresses well. Squeezed in roughly 1 MB chunks, one
-zstd frame per chunk plus a small offset table, it drops by about half while still letting
-you rebuild a single subtree by decompressing just its chunk. Compression is the biggest
-single lever in the whole pipeline, so the results below report both the raw and the
-compressed archive. Two things that did not work: compressing each leaf or each subtree on
-its own, because the blocks are too small for zstd to find anything, and a shared dictionary
-trained on sample records, which moved the number by a couple of points and sometimes made
-it worse. You have to compress many subtrees together.
+The flat file is raw on disk, but it compresses well. Squeezed in roughly 1 MB chunks, one zstd frame per chunk plus a small offset table, it drops by about half while still letting you rebuild a single subtree by decompressing just its chunk. Compression is the biggest single lever in the whole pipeline, so the results below report both the raw and the compressed archive. Two things that did not work: compressing each leaf or each subtree on its own, because the blocks are too small for zstd to find anything, and a shared dictionary trained on sample records, which moved the number by a couple of points and sometimes made it worse. You have to compress many subtrees together.
 
 ### Choosing the cap height
 
-The floor of 2 means **every cap moves the same leaves**. The cap only changes how those
-leaves are grouped: a taller cap merges a cold region into one big subtree instead of many
-small ones, which leaves fewer 17 byte stubs behind and deletes more interior, so the main
-database shrinks more. We swept the cap from 2 to 5, floor fixed at 2:
+The floor of 2 means **every cap moves the same leaves**. The cap only changes how those leaves are grouped: a taller cap merges a cold region into one big subtree instead of many small ones, which leaves fewer 17-byte stubs behind and deletes more interior, so the main database shrinks more. We swept the cap from 2 to 5, floor fixed at 2:
 
 | cap height | trie reduction | archive (raw) | archive (compressed) | net disk (raw) | net disk (compressed) | subtrees moved | worst-case rebuild (leaves) |
 |---:|---:|---:|---:|---:|---:|---:|---:|
@@ -217,22 +170,13 @@ database shrinks more. We swept the cap from 2 to 5, floor fixed at 2:
 | 4 | -107.37 GB (-72.5%) | 89.19 GB | 44.79 GB | -18.18 GB (-7.2%) | -62.58 GB (-24.9%) | 158.4 M | 295 |
 | 5 | -110.03 GB (-74.3%) | 89.98 GB | 45.16 GB | -20.05 GB (-8.0%) | -64.87 GB (-25.8%) | 116.4 M | 1118 |
 
-The two percentages use different baselines. The trie reduction is against the **trie size**
-(148.1 GB from step 1), since the move-out only deletes trie nodes and leaves the snapshot
-alone. The **net disk** columns are against the full **251.75 GB on-disk footprint**.
+The two percentages use different baselines. The trie reduction is against the **trie size** (148.1 GB from step 1), since the move-out only deletes trie nodes and leaves the snapshot alone. The **net disk** columns are against the full **251.75 GB on-disk footprint**.
 
-A taller cap always saves more disk, but the gains shrink fast, each step worth about half
-the last, while the worst-case rebuild grows the other way:
+A taller cap always saves more disk, but the gains shrink fast, each step worth about half the last, while the worst-case rebuild grows the other way:
 
 ![Disk saved flattens after cap 3 while the worst-case rebuild keeps climbing](images/floorcap-tradeoff.png)
 
-This is the real tradeoff in picking a cap. A greater cap reduces disk further, but every
-read that touches cold state rebuilds the whole subtree it lands in, and a bigger subtree
-is a slower rebuild. Cap 2 rebuilds at most 16 leaves, cap 5 up to over a thousand. So the
-sweet spot is not the deepest cap. **Cap 3 is the best balance**: it banks most of the disk
-saving (-54.28 GB out of a possible -64.87 GB at the deepest cap) while keeping the rebuild
-small, at most 73 leaves. Cap 4 trades another 8 GB for a roughly four times larger rebuild,
-and cap 5 saves almost nothing for a rebuild past a thousand leaves.
+This is the real tradeoff in picking a cap. A greater cap reduces disk further, but every access that touches cold state rebuilds the whole subtree it lands in, and a bigger subtree is a slower rebuild. Cap 2 rebuilds at most 16 leaves, cap 5 up to over a thousand. So the sweet spot is not the deepest cap. **Cap 3 is the best balance**: it banks most of the disk saving (-54.28 GB out of a possible -64.87 GB at the deepest cap) while keeping the rebuild small, at most 73 leaves. Cap 4 trades another 8 GB for a roughly four times larger rebuild, and cap 5 saves almost nothing for a rebuild past a thousand leaves.
 
 ---
 
@@ -258,30 +202,12 @@ and cap 5 saves almost nothing for a rebuild past a thousand leaves.
 
 What we take from this:
 
-- The move-out shrinks the hot database by deleting cold interior nodes and relocating
-  cold leaves. With the floor 2 / cap 3 rule PebbleDB drops 95.9 GB and the leaves land in
-  a flat file you can park on cheaper storage.
-- Total on-disk still shrinks after counting the archive: -12.90 GB raw, and -54.28 GB
-  (about 22%) with the chunked compression. The price is rebuilding a small subtree on a rare access of cold state, at most 73 leaves at this cap.
-- The cap height is a tradeoff between disk size and rebuild cost. A deeper cap frees more disk but makes
-  the worst-case rebuild larger, and the disk gains shrink fast while the rebuild cost
-  climbs. Cap 3 is the best balance, cap 4 is more aggresive (more disk, bigger rebuild),
-  and cap 5 is barely worth it.
+- The move-out shrinks the hot database by deleting cold interior nodes and relocating cold leaves. With the floor 2 / cap 3 rule PebbleDB drops 95.9 GB and the leaves land in a flat file you can park on cheaper storage.
+- Total on-disk still shrinks after counting the archive: -12.90 GB raw, and -54.28 GB (about 22%) with the chunked compression. The price is rebuilding a small subtree on a rare access of cold state, at most 73 leaves at this cap.
+- The cap height is a tradeoff between disk size and rebuild cost. A deeper cap frees more disk but makes the worst-case rebuild larger, and the disk gains shrink fast while the rebuild cost climbs. Cap 3 is the best balance, cap 4 is more aggressive (more disk, bigger rebuild), and cap 5 is barely worth it.
 
 ## Open Questions
 
-**Performance under real workloads.** Everything above is a static footprint
-measurement. What it does not measure is the runtime cost of reading cold state. Every
-hit on a moved subtree pays a rebuild: read the leaf records, rebuild the subtree in memory,
-and hash-check it before returning. That is cheap at a shallow cap, at most 73 leaves at
-cap 3, but it grows with the cap, to about 300 leaves at cap 4 and over a thousand at cap 5,
-and it happens on every access to an cold subtree. This is the main reason a deeper cap
-is not automatically better despite saving more disk.
+**Performance under real workloads.** Everything above is a static footprint measurement. What it does not measure is the performance cost of modifying cold state. Every hit on a cold subtree pays a rebuild: read the leaf records, rebuild the subtree in memory, and hash-check it before returning. That is cheap at a shallow cap, at most 73 leaves at cap 3, but it grows with the cap, to about 300 leaves at cap 4 and over a thousand at cap 5, and it happens on every access to a cold subtree. This is the main reason a deeper cap is not automatically better despite saving more disk.
 
-So the footprint winner is not automatically the workload winner. A design that saves the
-most disk can still lose if a common access pattern keeps reaching into cold subtrees and
-paying the rebuild. The experiment we have not run yet is to replay real mainnet blocks,
-plus some adversarial patterns that deliberately touch cold state, against an cold
-datadir and measure, such as rebuilds per block and rebuild latency. Compression adds a second layer
-here, since a hit on a compressed chunk also pays a decompress of that chunk. Hence,
-the numbers presented in this document should solely serve as references for storage footprint, and not performance.
+So the footprint winner is not automatically the workload winner. A design that saves the most disk can still lose if a common access pattern keeps reaching into cold subtrees and paying the rebuild. The experiment we have not run yet is to replay real mainnet blocks, plus some adversarial patterns that deliberately access cold state. Compression adds a second layer here, since a hit on a compressed chunk also pays a decompress of that chunk. Hence, the numbers presented in this document should solely serve as references for storage footprint, and not performance.
