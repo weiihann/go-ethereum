@@ -151,7 +151,7 @@ func TestDecodeRejectsNonCanonicalPosition(t *testing.T) {
 	blob := []byte{nodeTypeInternal, 5}
 	// bitmap[0] = bit at position 5 → 1 << (7-5) = 0x04
 	blob = append(blob, 0x04, 0x00, 0x00, 0x00)
-	// depths[0] = 2, packed as (2-1)=1 in 3 bits MSB-first → 0b001_00000 = 0x20
+	// depths[0] = 2, packed as (2-1)=1 in 3 bits MSB-first → 0b0010_0000 = 0x20
 	blob = append(blob, 0x20)
 	// hashes[0] = 32 zero bytes
 	blob = append(blob, make([]byte, HashSize)...)
