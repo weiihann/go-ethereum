@@ -146,35 +146,29 @@ func (s *nodeStore) serializeSubtree(ref nodeRef, remainingDepth int, position i
 	}
 }
 
-// depthBits is the number of bits used to encode one depth offset. A depth
-// offset is in [1, MaxGroupDepth] and is stored as (offset-1) in [0, 7], so it
-// always fits in 3 bits.
+// depthBits is the number of bits used to encode one depth offset.
 const depthBits = 3
 
-// packedDepthsLen returns the byte length of the packed depth stream for k
-// entries, rounding the k*depthBits bit stream up to whole bytes.
+// packedDepthsLen returns the byte length of k packed depth entries
 func packedDepthsLen(k int) int {
 	return (k*depthBits + 7) / 8
 }
 
-// putDepth3 writes the 3-bit value v (0..7) for entry idx into buf, MSB-first:
-// entry idx occupies bit positions [idx*3, idx*3+2], where earlier entries take
-// the higher-order bits. buf must be at least packedDepthsLen(idx+1) bytes.
-func putDepth3(buf []byte, idx int, v uint8) {
+// writeDepth writes a depth entry at idx into the buf, MSB-first.
+func writeDepth(buf []byte, idx int, v uint8) {
 	pos := idx * depthBits
-	for i := 0; i < depthBits; i++ {
+	for i := range depthBits {
 		bit := (v >> (depthBits - 1 - i)) & 1
 		p := pos + i
 		buf[p>>3] |= bit << (7 - (p & 7))
 	}
 }
 
-// getDepth3 reads the 3-bit value (0..7) for entry idx from buf, inverse of
-// putDepth3.
-func getDepth3(buf []byte, idx int) uint8 {
+// readDepth reads a depth for entry idx from buf.
+func readDepth(buf []byte, idx int) uint8 {
 	pos := idx * depthBits
 	var v uint8
-	for i := 0; i < depthBits; i++ {
+	for i := range depthBits {
 		p := pos + i
 		bit := (buf[p>>3] >> (7 - (p & 7))) & 1
 		v = v<<1 | bit
@@ -206,7 +200,7 @@ func (s *nodeStore) serializeNode(ref nodeRef, groupDepth int) []byte {
 
 		depthsOff := NodeTypeBytes + 1 + bitmapSize
 		for i, d := range depths {
-			putDepth3(serialized[depthsOff:depthsOff+depthsLen], i, d-1)
+			writeDepth(serialized[depthsOff:depthsOff+depthsLen], i, d-1)
 		}
 
 		hashesOff := depthsOff + depthsLen
@@ -286,7 +280,7 @@ func (s *nodeStore) deserializeSubtree(hn common.Hash, groupDepth int, nodeDepth
 		if bitmap[bit/8]>>(7-(bit%8))&1 == 0 {
 			continue
 		}
-		depthOffset := int(getDepth3(depths, entryIdx)) + 1
+		depthOffset := int(readDepth(depths, entryIdx)) + 1
 		if depthOffset > groupDepth {
 			return emptyRef, errors.New("invalid depth offset")
 		}
