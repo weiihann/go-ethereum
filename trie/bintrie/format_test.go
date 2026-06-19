@@ -178,7 +178,7 @@ func TestDecodeRejectsInvalidDepthOffset(t *testing.T) {
 		bitmap := make([]byte, bitmapSize)
 		bitmap[0] = 0x80 // bit at position 0
 		depths := make([]byte, packedDepthsLen(1))
-		putDepth3(depths, 0, depthOffset-1)
+		writeDepth(depths, 0, depthOffset-1)
 		blob := []byte{nodeTypeInternal, byte(groupDepth)}
 		blob = append(blob, bitmap...)
 		blob = append(blob, depths...)
