@@ -74,6 +74,46 @@ func DeleteAccountTrieNode(db ethdb.KeyValueWriter, path []byte) {
 	}
 }
 
+// ReadAccountTriePage retrieves the account trie page at the specified packed path.
+func ReadAccountTriePage(db ethdb.KeyValueReader, path []byte) []byte {
+	data, _ := db.Get(accountTriePageKey(path))
+	return data
+}
+
+// WriteAccountTriePage writes the provided account trie page into database.
+func WriteAccountTriePage(db ethdb.KeyValueWriter, path []byte, page []byte) {
+	if err := db.Put(accountTriePageKey(path), page); err != nil {
+		log.Crit("Failed to store account trie page", "err", err)
+	}
+}
+
+// DeleteAccountTriePage deletes the specified account trie page from the database.
+func DeleteAccountTriePage(db ethdb.KeyValueWriter, path []byte) {
+	if err := db.Delete(accountTriePageKey(path)); err != nil {
+		log.Crit("Failed to delete account trie page", "err", err)
+	}
+}
+
+// ReadStorageTriePage retrieves the storage trie page at the specified packed path.
+func ReadStorageTriePage(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) []byte {
+	data, _ := db.Get(storageTriePageKey(accountHash, path))
+	return data
+}
+
+// WriteStorageTriePage writes the provided storage trie page into database.
+func WriteStorageTriePage(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte, page []byte) {
+	if err := db.Put(storageTriePageKey(accountHash, path), page); err != nil {
+		log.Crit("Failed to store storage trie page", "err", err)
+	}
+}
+
+// DeleteStorageTriePage deletes the specified storage trie page from the database.
+func DeleteStorageTriePage(db ethdb.KeyValueWriter, accountHash common.Hash, path []byte) {
+	if err := db.Delete(storageTriePageKey(accountHash, path)); err != nil {
+		log.Crit("Failed to delete storage trie page", "err", err)
+	}
+}
+
 // ReadStorageTrieNode retrieves the storage trie node with the specified node path.
 func ReadStorageTrieNode(db ethdb.KeyValueReader, accountHash common.Hash, path []byte) []byte {
 	data, _ := db.Get(storageTrieNodeKey(accountHash, path))
