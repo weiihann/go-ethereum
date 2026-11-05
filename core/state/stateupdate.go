@@ -68,10 +68,12 @@ type stateUpdate struct {
 	root           common.Hash               // hash of the state after applying mutation
 	accounts       map[common.Hash][]byte    // accounts stores mutated accounts in 'slim RLP' encoding
 	accountsOrigin map[common.Address][]byte // accountsOrigin stores the original values of mutated accounts in 'slim RLP' encoding
+	accountsMeta   map[common.Hash]uint64
 
 	// storages stores mutated slots in 'prefix-zero-trimmed' RLP format.
 	// The value is keyed by account hash and **storage slot key hash**.
-	storages map[common.Hash]map[common.Hash][]byte
+	storages     map[common.Hash]map[common.Hash][]byte
+	storagesMeta map[common.Hash]map[common.Hash]uint64
 
 	// storagesOrigin stores the original values of mutated slots in
 	// 'prefix-zero-trimmed' RLP format.
@@ -95,7 +97,9 @@ func (sc *stateUpdate) empty() bool {
 //
 // rawStorageKey is a flag indicating whether to use the raw storage slot key or
 // the hash of the slot key for constructing state update object.
-func newStateUpdate(rawStorageKey bool, originRoot common.Hash, root common.Hash, deletes map[common.Hash]*accountDelete, updates map[common.Hash]*accountUpdate, nodes *trienode.MergedNodeSet) *stateUpdate {
+func newStateUpdate(rawStorageKey bool, originRoot common.Hash, root common.Hash, deletes map[common.Hash]*accountDelete, updates map[common.Hash]*accountUpdate, nodes *trienode.MergedNodeSet,
+	accountsMeta map[common.Hash]uint64, storagesMeta map[common.Hash]map[common.Hash]uint64,
+) *stateUpdate {
 	var (
 		accounts       = make(map[common.Hash][]byte)
 		accountsOrigin = make(map[common.Address][]byte)
@@ -161,13 +165,32 @@ func newStateUpdate(rawStorageKey bool, originRoot common.Hash, root common.Hash
 			}
 		}
 	}
+
+	// weiihann:
+	// instead of using the original storage slot key, we use the hash of the storage slot key
+	// remember to change in the analysis code too
+	// newStoragesMeta := make(map[common.Hash]map[common.Hash]uint64, len(storagesMeta))
+	// buf := crypto.NewKeccakState()
+	// for addrHash, slots := range storagesMeta {
+	// 	for slotHash, bn := range slots {
+	// 		hash := crypto.HashData(buf, slotHash[:])
+	// 		if _, exist := newStoragesMeta[addrHash]; !exist {
+	// 			newStoragesMeta[addrHash] = make(map[common.Hash]uint64)
+	// 		}
+	// 		newStoragesMeta[addrHash][hash] = bn
+	// 	}
+	// }
+	// storagesMeta = newStoragesMeta
+
 	return &stateUpdate{
 		originRoot:     originRoot,
 		root:           root,
 		accounts:       accounts,
 		accountsOrigin: accountsOrigin,
+		accountsMeta:   accountsMeta,
 		storages:       storages,
 		storagesOrigin: storagesOrigin,
+		storagesMeta:   storagesMeta,
 		rawStorageKey:  rawStorageKey,
 		codes:          codes,
 		nodes:          nodes,

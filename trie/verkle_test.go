@@ -138,7 +138,7 @@ func TestVerkleRollBack(t *testing.T) {
 
 	// ensure there is some code in the 2nd group of the 1st account
 	keyOf2ndGroup := utils.CodeChunkKeyWithEvaluatedAddress(tr.cache.Get(common.Address{1}.Bytes()), uint256.NewInt(128))
-	chunk, err := tr.root.Get(keyOf2ndGroup, nil)
+	chunk, err := tr.root.Get(keyOf2ndGroup, 0, nil)
 	if err != nil {
 		t.Fatalf("Failed to get account, %v", err)
 	}
@@ -163,7 +163,7 @@ func TestVerkleRollBack(t *testing.T) {
 	}
 
 	// ensure that the last code chunk is also gone from the tree
-	chunk, err = tr.root.Get(keyOf2ndGroup, nil)
+	chunk, err = tr.root.Get(keyOf2ndGroup, 0, nil)
 	if err != nil {
 		t.Fatalf("Failed to get account, %v", err)
 	}

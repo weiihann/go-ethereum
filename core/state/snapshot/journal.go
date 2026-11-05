@@ -36,7 +36,8 @@ import (
 const (
 	journalV0             uint64 = 0 // initial version
 	journalV1             uint64 = 1 // current version, with destruct flag (in diff layers) removed
-	journalCurrentVersion        = journalV1
+	journalV2             uint64 = 2 // current version, with block number (in diff layers) added
+	journalCurrentVersion        = journalV2
 )
 
 // journalGenerator is a disk layer entry containing the generator progress marker.
@@ -68,6 +69,21 @@ type journalStorage struct {
 	Hash common.Hash
 	Keys []common.Hash
 	Vals [][]byte
+}
+
+type journalAccountMeta struct {
+	Hash  common.Hash
+	Block uint64
+}
+
+type journalStorageMeta struct {
+	Hash  common.Hash
+	Slots []journalSlotMeta
+}
+
+type journalSlotMeta struct {
+	Key   common.Hash
+	Block uint64
 }
 
 func ParseGeneratorStatus(generatorBlob []byte) string {
@@ -113,8 +129,8 @@ func loadAndParseJournal(db ethdb.KeyValueStore, base *diskLayer) (snapshot, jou
 	// is not matched with disk layer; or the it's the legacy-format journal,
 	// etc.), we just discard all diffs and try to recover them later.
 	var current snapshot = base
-	err := iterateJournal(db, func(parent common.Hash, root common.Hash, accountData map[common.Hash][]byte, storageData map[common.Hash]map[common.Hash][]byte) error {
-		current = newDiffLayer(current, root, accountData, storageData)
+	err := iterateJournalWithMeta(db, func(parent common.Hash, root common.Hash, accountData map[common.Hash][]byte, storageData map[common.Hash]map[common.Hash][]byte, accountMeta map[common.Hash]uint64, storageMeta map[common.Hash]map[common.Hash]uint64) error {
+		current = newDiffLayerWithMeta(current, root, 0, accountData, storageData, accountMeta, storageMeta)
 		return nil
 	})
 	if err != nil {
@@ -225,6 +241,7 @@ func (dl *diskLayer) Journal(buffer *bytes.Buffer) (common.Hash, error) {
 
 // Journal writes the memory layer contents into a buffer to be stored in the
 // database as the snapshot journal.
+// TODO(weiihann)
 func (dl *diffLayer) Journal(buffer *bytes.Buffer) (common.Hash, error) {
 	// Journal the parent first
 	base, err := dl.parent.Journal(buffer)
@@ -242,17 +259,21 @@ func (dl *diffLayer) Journal(buffer *bytes.Buffer) (common.Hash, error) {
 	if err := rlp.Encode(buffer, dl.root); err != nil {
 		return common.Hash{}, err
 	}
+
 	accounts := make([]journalAccount, 0, len(dl.accountData))
 	for hash, blob := range dl.accountData {
-		accounts = append(accounts, journalAccount{
+		acc := journalAccount{
 			Hash: hash,
 			Blob: blob,
-		})
+		}
+		accounts = append(accounts, acc)
 	}
+
 	if err := rlp.Encode(buffer, accounts); err != nil {
 		return common.Hash{}, err
 	}
-	storage := make([]journalStorage, 0, len(dl.storageData))
+
+	storages := make([]journalStorage, 0, len(dl.storageData))
 	for hash, slots := range dl.storageData {
 		keys := make([]common.Hash, 0, len(slots))
 		vals := make([][]byte, 0, len(slots))
@@ -260,11 +281,38 @@ func (dl *diffLayer) Journal(buffer *bytes.Buffer) (common.Hash, error) {
 			keys = append(keys, key)
 			vals = append(vals, val)
 		}
-		storage = append(storage, journalStorage{Hash: hash, Keys: keys, Vals: vals})
+		st := journalStorage{Hash: hash, Keys: keys, Vals: vals}
+		storages = append(storages, st)
 	}
-	if err := rlp.Encode(buffer, storage); err != nil {
+
+	if err := rlp.Encode(buffer, storages); err != nil {
 		return common.Hash{}, err
 	}
+
+	// Journal the account meta
+	accountsMeta := make([]journalAccountMeta, 0, len(dl.accountMeta))
+	for hash, block := range dl.accountMeta {
+		accountsMeta = append(accountsMeta, journalAccountMeta{Hash: hash, Block: block})
+	}
+
+	if err := rlp.Encode(buffer, accountsMeta); err != nil {
+		return common.Hash{}, err
+	}
+
+	// Journal the storage meta
+	storageMeta := make([]journalStorageMeta, 0, len(dl.storageMeta))
+	for hash, slots := range dl.storageMeta {
+		slotsMeta := make([]journalSlotMeta, 0, len(slots))
+		for key, block := range slots {
+			slotsMeta = append(slotsMeta, journalSlotMeta{Key: key, Block: block})
+		}
+		storageMeta = append(storageMeta, journalStorageMeta{Hash: hash, Slots: slotsMeta})
+	}
+
+	if err := rlp.Encode(buffer, storageMeta); err != nil {
+		return common.Hash{}, err
+	}
+
 	log.Debug("Journalled diff layer", "root", dl.root, "parent", dl.parent.Root())
 	return base, nil
 }
@@ -292,7 +340,7 @@ func iterateJournal(db ethdb.KeyValueReader, callback journalCallback) error {
 		log.Warn("Failed to resolve the journal version", "error", err)
 		return errors.New("failed to resolve journal version")
 	}
-	if version != journalV0 && version != journalCurrentVersion {
+	if version != journalV0 && version != journalV1 && version != journalCurrentVersion {
 		log.Warn("Discarded journal with wrong version", "required", journalCurrentVersion, "got", version)
 		return errors.New("wrong journal version")
 	}
@@ -378,6 +426,147 @@ func iterateJournal(db ethdb.KeyValueReader, callback journalCallback) error {
 			storageData[entry.Hash] = slots
 		}
 		if err := callback(parent, root, accountData, storageData); err != nil {
+			return err
+		}
+		parent = root
+	}
+}
+
+type journalCallbackMeta = func(parent common.Hash, root common.Hash, accounts map[common.Hash][]byte, storage map[common.Hash]map[common.Hash][]byte, accountMeta map[common.Hash]uint64, storageMeta map[common.Hash]map[common.Hash]uint64) error
+
+// iterateJournal iterates through the journalled difflayers, loading them from
+// the database, and invoking the callback for each loaded layer.
+// The order is incremental; starting with the bottom-most difflayer, going towards
+// the most recent layer.
+// This method returns error either if there was some error reading from disk,
+// OR if the callback returns an error when invoked.
+func iterateJournalWithMeta(db ethdb.KeyValueReader, callback journalCallbackMeta) error {
+	journal := rawdb.ReadSnapshotJournal(db)
+	if len(journal) == 0 {
+		log.Warn("Loaded snapshot journal", "diffs", "missing")
+		return nil
+	}
+	r := rlp.NewStream(bytes.NewReader(journal), 0)
+	// Firstly, resolve the first element as the journal version
+	version, err := r.Uint64()
+	if err != nil {
+		log.Warn("Failed to resolve the journal version", "error", err)
+		return errors.New("failed to resolve journal version")
+	}
+	if version != journalV0 && version != journalV1 && version != journalCurrentVersion {
+		log.Warn("Discarded journal with wrong version", "required", journalCurrentVersion, "got", version)
+		return errors.New("wrong journal version")
+	}
+	// Secondly, resolve the disk layer root, ensure it's continuous
+	// with disk layer. Note now we can ensure it's the snapshot journal
+	// correct version, so we expect everything can be resolved properly.
+	var parent common.Hash
+	if err := r.Decode(&parent); err != nil {
+		return errors.New("missing disk layer root")
+	}
+	if baseRoot := rawdb.ReadSnapshotRoot(db); baseRoot != parent {
+		log.Warn("Loaded snapshot journal", "diskroot", baseRoot, "diffs", "unmatched")
+		return errors.New("mismatched disk and diff layers")
+	}
+	for {
+		var (
+			root        common.Hash
+			accounts    []journalAccount
+			storages    []journalStorage
+			accountData = make(map[common.Hash][]byte)
+			storageData = make(map[common.Hash]map[common.Hash][]byte)
+
+			jAccountMeta []journalAccountMeta
+			jStorageMeta []journalStorageMeta
+			accountMeta  = make(map[common.Hash]uint64)
+			storageMeta  = make(map[common.Hash]map[common.Hash]uint64)
+		)
+		// Read the next diff journal entry
+		if err := r.Decode(&root); err != nil {
+			// The first read may fail with EOF, marking the end of the journal
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("load diff root: %v", err)
+		}
+		// If a legacy journal is detected, decode the destruct set from the stream.
+		// The destruct set has been deprecated. If the journal contains non-empty
+		// destruct set, then it is deemed incompatible.
+		//
+		// Since self-destruction has been deprecated following the cancun fork,
+		// the destruct set is expected to be nil for layers above the fork block.
+		// However, an exception occurs during contract deployment: pre-funded accounts
+		// may self-destruct, causing accounts with non-zero balances to be removed
+		// from the state. For example,
+		// https://etherscan.io/tx/0xa087333d83f0cd63b96bdafb686462e1622ce25f40bd499e03efb1051f31fe49).
+		//
+		// For nodes with a fully synced state, the legacy journal is likely compatible
+		// with the updated definition, eliminating the need for regeneration. Unfortunately,
+		// nodes performing a full sync of historical chain segments or encountering
+		// pre-funded account deletions may face incompatibilities, leading to automatic
+		// snapshot regeneration.
+		//
+		// This approach minimizes snapshot regeneration for Geth nodes upgrading from a
+		// legacy version that are already synced. The workaround can be safely removed
+		// after the next hard fork.
+		if version == journalV0 {
+			var destructs []journalDestruct
+			if err := r.Decode(&destructs); err != nil {
+				return fmt.Errorf("load diff destructs: %v", err)
+			}
+			if len(destructs) > 0 {
+				log.Warn("Incompatible legacy journal detected", "version", journalV0)
+				return fmt.Errorf("incompatible legacy journal detected")
+			}
+		}
+
+		if err := r.Decode(&accounts); err != nil {
+			return fmt.Errorf("load diff accounts: %v", err)
+		}
+		if err := r.Decode(&storages); err != nil {
+			return fmt.Errorf("load diff storage: %v", err)
+		}
+
+		for _, entry := range accounts {
+			if len(entry.Blob) > 0 { // RLP loses nil-ness, but `[]byte{}` is not a valid item, so reinterpret that
+				accountData[entry.Hash] = entry.Blob
+			} else {
+				accountData[entry.Hash] = nil
+			}
+		}
+		for _, entry := range storages {
+			slots := make(map[common.Hash][]byte)
+			for i, key := range entry.Keys {
+				if len(entry.Vals[i]) > 0 { // RLP loses nil-ness, but `[]byte{}` is not a valid item, so reinterpret that
+					slots[key] = entry.Vals[i]
+				} else {
+					slots[key] = nil
+				}
+			}
+			storageData[entry.Hash] = slots
+		}
+
+		if version == journalV2 {
+			if err := r.Decode(&jAccountMeta); err != nil {
+				return fmt.Errorf("load diff account meta: %v", err)
+			}
+			if err := r.Decode(&jStorageMeta); err != nil {
+				return fmt.Errorf("load diff storage meta: %v", err)
+			}
+
+			for _, entry := range jAccountMeta {
+				accountMeta[entry.Hash] = entry.Block
+			}
+			for _, entry := range jStorageMeta {
+				slotsMeta := make(map[common.Hash]uint64)
+				for _, slot := range entry.Slots {
+					slotsMeta[slot.Key] = slot.Block
+				}
+				storageMeta[entry.Hash] = slotsMeta
+			}
+		}
+
+		if err := callback(parent, root, accountData, storageData, accountMeta, storageMeta); err != nil {
 			return err
 		}
 		parent = root

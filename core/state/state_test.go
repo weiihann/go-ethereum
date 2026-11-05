@@ -34,7 +34,7 @@ type stateEnv struct {
 }
 
 func newStateEnv() *stateEnv {
-	sdb, _ := New(types.EmptyRootHash, NewDatabaseForTesting())
+	sdb, _ := New(types.EmptyRootHash, NewDatabaseForTesting(), 0)
 	return &stateEnv{state: sdb}
 }
 
@@ -42,7 +42,7 @@ func TestDump(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
 	triedb := triedb.NewDatabase(db, &triedb.Config{Preimages: true})
 	tdb := NewDatabase(triedb, nil)
-	sdb, _ := New(types.EmptyRootHash, tdb)
+	sdb, _ := New(types.EmptyRootHash, tdb, 0)
 	s := &stateEnv{state: sdb}
 
 	// generate a few entries
@@ -59,7 +59,7 @@ func TestDump(t *testing.T) {
 	root, _ := s.state.Commit(0, false, false)
 
 	// check that DumpToCollector contains the state objects that are in trie
-	s.state, _ = New(root, tdb)
+	s.state, _ = New(root, tdb, 0)
 	got := string(s.state.Dump(nil))
 	want := `{
     "root": "71edff0130dd2385947095001c73d9e28d862fc286fca2b922ca6f6f3cddfdd2",
@@ -100,7 +100,7 @@ func TestIterativeDump(t *testing.T) {
 	db := rawdb.NewMemoryDatabase()
 	triedb := triedb.NewDatabase(db, &triedb.Config{Preimages: true})
 	tdb := NewDatabase(triedb, nil)
-	sdb, _ := New(types.EmptyRootHash, tdb)
+	sdb, _ := New(types.EmptyRootHash, tdb, 0)
 	s := &stateEnv{state: sdb}
 
 	// generate a few entries
@@ -117,7 +117,7 @@ func TestIterativeDump(t *testing.T) {
 	s.state.updateStateObject(obj1)
 	s.state.updateStateObject(obj2)
 	root, _ := s.state.Commit(0, false, false)
-	s.state, _ = New(root, tdb)
+	s.state, _ = New(root, tdb, 0)
 
 	b := &bytes.Buffer{}
 	s.state.IterativeDump(nil, json.NewEncoder(b))
@@ -138,7 +138,7 @@ func TestNull(t *testing.T) {
 	s := newStateEnv()
 	address := common.HexToAddress("0x823140710bf13990e4500136726d8b55")
 	s.state.CreateAccount(address)
-	//value := common.FromHex("0x823140710bf13990e4500136726d8b55")
+	// value := common.FromHex("0x823140710bf13990e4500136726d8b55")
 	var value common.Hash
 
 	s.state.SetState(address, common.Hash{}, value)
@@ -193,7 +193,7 @@ func TestSnapshotEmpty(t *testing.T) {
 }
 
 func TestCreateObjectRevert(t *testing.T) {
-	state, _ := New(types.EmptyRootHash, NewDatabaseForTesting())
+	state, _ := New(types.EmptyRootHash, NewDatabaseForTesting(), 0)
 	addr := common.BytesToAddress([]byte("so0"))
 	snap := state.Snapshot()
 

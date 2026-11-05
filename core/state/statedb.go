@@ -81,6 +81,7 @@ type StateDB struct {
 	prefetcher *triePrefetcher
 	trie       Trie
 	reader     Reader
+	block      uint64
 
 	// originalRoot is the pre-state root, before any changes were made.
 	// It will be updated when the Commit is called.
@@ -158,7 +159,7 @@ type StateDB struct {
 }
 
 // New creates a new state from a given trie.
-func New(root common.Hash, db Database) (*StateDB, error) {
+func New(root common.Hash, db Database, block uint64) (*StateDB, error) {
 	tr, err := db.OpenTrie(root)
 	if err != nil {
 		return nil, err
@@ -180,6 +181,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		journal:              newJournal(),
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
+		block:                block,
 	}
 	if db.TrieDB().IsVerkle() {
 		sdb.accessEvents = NewAccessEvents(db.PointCache())
@@ -667,6 +669,7 @@ func (s *StateDB) Copy() *StateDB {
 		logs:                 make(map[common.Hash][]*types.Log, len(s.logs)),
 		logSize:              s.logSize,
 		preimages:            maps.Clone(s.preimages),
+		block:                s.block,
 
 		// Do we need to copy the access list and transient storage?
 		// In practice: No. At the start of a transaction, these two lists are empty.
@@ -1109,6 +1112,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 	if s.dbErr != nil {
 		return nil, fmt.Errorf("commit aborted due to earlier error: %v", s.dbErr)
 	}
+
 	// Finalize any pending changes and merge everything into the tries
 	s.IntermediateRoot(deleteEmptyObjects)
 
@@ -1116,6 +1120,18 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 	if s.dbErr != nil {
 		return nil, fmt.Errorf("commit aborted due to database error: %v", s.dbErr)
 	}
+
+	accountsMeta := make(map[common.Hash]uint64, len(s.stateObjects))
+	storagesMeta := make(map[common.Hash]map[common.Hash]uint64, len(s.stateObjects))
+	for _, obj := range s.stateObjects {
+		if obj == nil { // this shouldn't happen but just in case
+			continue
+		}
+
+		accountsMeta[obj.addrHash] = s.block
+		storagesMeta[obj.addrHash] = maps.Clone(obj.storageMeta)
+	}
+
 	// Commit objects to the trie, measuring the elapsed time
 	var (
 		accountTrieNodesUpdated int
@@ -1204,6 +1220,9 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 	// more expensive than it should be, so let's fix that and revisit this todo.
 	for addr, op := range s.mutations {
 		if op.isDelete() {
+			addrHash := common.BytesToHash(addr.Bytes())
+			delete(accountsMeta, addrHash)
+			delete(storagesMeta, addrHash)
 			continue
 		}
 		// Write any contract code associated with the state object
@@ -1256,7 +1275,7 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 	origin := s.originalRoot
 	s.originalRoot = root
 
-	return newStateUpdate(noStorageWiping, origin, root, deletes, updates, nodes), nil
+	return newStateUpdate(noStorageWiping, origin, root, deletes, updates, nodes, accountsMeta, storagesMeta), nil
 }
 
 // commitAndFlush is a wrapper of commit which also commits the state mutations
@@ -1280,7 +1299,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 		// If snapshotting is enabled, update the snapshot tree with this new version
 		if snap := s.db.Snapshot(); snap != nil && snap.Snapshot(ret.originRoot) != nil {
 			start := time.Now()
-			if err := snap.Update(ret.root, ret.originRoot, ret.accounts, ret.storages); err != nil {
+			if err := snap.UpdateWithMeta(ret.root, block, ret.originRoot, ret.accounts, ret.storages, ret.accountsMeta, ret.storagesMeta); err != nil {
 				log.Warn("Failed to update snapshot tree", "from", ret.originRoot, "to", ret.root, "err", err)
 			}
 			// Keep 128 diff layers in the memory, persistent layer is 129th.

@@ -85,7 +85,7 @@ func TestEIP2200(t *testing.T) {
 	for i, tt := range eip2200Tests {
 		address := common.BytesToAddress([]byte("contract"))
 
-		statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+		statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 		statedb.CreateAccount(address)
 		statedb.SetCode(address, hexutil.MustDecode(tt.input))
 		statedb.SetState(address, common.Hash{}, common.BytesToHash([]byte{tt.original}))
@@ -134,10 +134,10 @@ var createGasTests = []struct {
 
 func TestCreateGas(t *testing.T) {
 	for i, tt := range createGasTests {
-		var gasUsed = uint64(0)
+		gasUsed := uint64(0)
 		doCheck := func(testGas int) bool {
 			address := common.BytesToAddress([]byte("contract"))
-			statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting())
+			statedb, _ := state.New(types.EmptyRootHash, state.NewDatabaseForTesting(), 0)
 			statedb.CreateAccount(address)
 			statedb.SetCode(address, hexutil.MustDecode(tt.code))
 			statedb.Finalise(true)
@@ -152,7 +152,7 @@ func TestCreateGas(t *testing.T) {
 			}
 
 			evm := NewEVM(vmctx, statedb, params.AllEthashProtocolChanges, config)
-			var startGas = uint64(testGas)
+			startGas := uint64(testGas)
 			ret, gas, err := evm.Call(common.Address{}, address, nil, startGas, new(uint256.Int))
 			if err != nil {
 				return false

@@ -59,6 +59,10 @@ type stateObject struct {
 	dirtyStorage   Storage // Storage entries that have been modified within the current transaction
 	pendingStorage Storage // Storage entries that have been modified within the current block
 
+	// Storage entries that have been modified/accessed at given any time
+	// The slot key is the actual slot key, not the hash.
+	storageMeta map[common.Hash]uint64
+
 	// uncommittedStorage tracks a set of storage entries that have been modified
 	// but not yet committed since the "last commit operation", along with their
 	// original values before mutation.
@@ -106,6 +110,7 @@ func newObject(db *StateDB, address common.Address, acct *types.StateAccount) *s
 		dirtyStorage:       make(Storage),
 		pendingStorage:     make(Storage),
 		uncommittedStorage: make(Storage),
+		storageMeta:        make(map[common.Hash]uint64),
 	}
 }
 
@@ -170,6 +175,8 @@ func (s *stateObject) getState(key common.Hash) (common.Hash, common.Hash) {
 // GetCommittedState retrieves the value associated with the specific key
 // without any mutations caused in the current execution.
 func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
+	s.storageMeta[key] = s.db.block
+
 	// If we have a pending write or clean cached, return that
 	if value, pending := s.pendingStorage[key]; pending {
 		return value
@@ -271,6 +278,14 @@ func (s *stateObject) finalise() {
 	// of the newly-created object as it's no longer eligible for self-destruct
 	// by EIP-6780. For non-newly-created objects, it's a no-op.
 	s.newContract = false
+
+	// Map the slots accessed in this block for both modified and accessed slots
+	for slot := range s.pendingStorage {
+		s.storageMeta[slot] = s.db.block
+	}
+	for slot := range s.originStorage {
+		s.storageMeta[slot] = s.db.block
+	}
 }
 
 // updateTrie is responsible for persisting cached storage changes into the
@@ -394,7 +409,7 @@ func (s *stateObject) commitStorage(op *accountUpdate) {
 		if val == s.originStorage[key] {
 			continue
 		}
-		hash := crypto.HashData(buf, key[:])
+		hash := crypto.HashData(buf, key[:]) // weiihann: this thing here hashes the slot before committing
 		if op.storages == nil {
 			op.storages = make(map[common.Hash][]byte)
 		}
@@ -494,6 +509,7 @@ func (s *stateObject) deepCopy(db *StateDB) *stateObject {
 		selfDestructed:     s.selfDestructed,
 		newContract:        s.newContract,
 	}
+	obj.storageMeta = maps.Clone(s.storageMeta)
 	if s.trie != nil {
 		obj.trie = mustCopyTrie(s.trie)
 	}

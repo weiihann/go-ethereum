@@ -145,7 +145,7 @@ func hashAlloc(ga *types.GenesisAlloc, isVerkle bool) (common.Hash, error) {
 		emptyRoot = types.EmptyVerkleHash
 	}
 	db := rawdb.NewMemoryDatabase()
-	statedb, err := state.New(emptyRoot, state.NewDatabase(triedb.NewDatabase(db, config), nil))
+	statedb, err := state.New(emptyRoot, state.NewDatabase(triedb.NewDatabase(db, config), nil), 0)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -169,7 +169,7 @@ func flushAlloc(ga *types.GenesisAlloc, triedb *triedb.Database) (common.Hash, e
 	if triedb.IsVerkle() {
 		emptyRoot = types.EmptyVerkleHash
 	}
-	statedb, err := state.New(emptyRoot, state.NewDatabase(triedb, nil))
+	statedb, err := state.New(emptyRoot, state.NewDatabase(triedb, nil), 0)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -483,9 +483,7 @@ func (g *Genesis) toBlockWithRoot(root common.Hash) *types.Block {
 			head.BaseFee = new(big.Int).SetUint64(params.InitialBaseFee)
 		}
 	}
-	var (
-		withdrawals []*types.Withdrawal
-	)
+	var withdrawals []*types.Withdrawal
 	if conf := g.Config; conf != nil {
 		num := big.NewInt(int64(g.Number))
 		if conf.IsShanghai(num, g.Timestamp) {

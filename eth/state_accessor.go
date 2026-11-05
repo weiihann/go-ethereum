@@ -70,7 +70,7 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 			// please re-enable it for better performance.
 			tdb := triedb.NewDatabase(eth.chainDb, triedb.HashDefaults)
 			database = state.NewDatabase(tdb, nil)
-			if statedb, err = state.New(block.Root(), database); err == nil {
+			if statedb, err = state.New(block.Root(), database, 0); err == nil {
 				log.Info("Found disk backend for state trie", "root", block.Root(), "number", block.Number())
 				return statedb, noopReleaser, nil
 			}
@@ -93,7 +93,7 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 		// otherwise we would rewind past a persisted block (specific corner case is
 		// chain tracing from the genesis).
 		if !readOnly {
-			statedb, err = state.New(current.Root(), database)
+			statedb, err = state.New(current.Root(), database, 0)
 			if err == nil {
 				return statedb, noopReleaser, nil
 			}
@@ -112,7 +112,7 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 			}
 			current = parent
 
-			statedb, err = state.New(current.Root(), database)
+			statedb, err = state.New(current.Root(), database, 0)
 			if err == nil {
 				break
 			}
@@ -157,7 +157,7 @@ func (eth *Ethereum) hashState(ctx context.Context, block *types.Block, reexec u
 			return nil, nil, fmt.Errorf("stateAtBlock commit failed, number %d root %v: %w",
 				current.NumberU64(), current.Root().Hex(), err)
 		}
-		statedb, err = state.New(root, database)
+		statedb, err = state.New(root, database, 0)
 		if err != nil {
 			return nil, nil, fmt.Errorf("state reset after block %d failed: %v", current.NumberU64(), err)
 		}
